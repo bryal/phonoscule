@@ -17,8 +17,8 @@ It's essentially just a very thin wrapper that provides a REPL for interacting w
 
 ## Roadmap 
 
-- [ ] Read .wav files to PCM data
-- [ ] Read .opus container
+- [ ] Demux .wav files to PCM data
+- [ ] Demux .opus container
 - [ ] Decode Opus stream to PCM
 - [ ] Get tracks by genre, artist, & album
 - [ ] Add track(s) to playback queue
