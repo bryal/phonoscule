@@ -1,0 +1,9 @@
+[package]
+name = "phonoscule-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+phonoscule = { path = "../" }
+pulse-simple = "1.0.1"
+bevy = { version = "*", default-features = false, features = ["bevy_asset", "bevy_scene", "bevy_winit", "render", "png", "wayland"] }

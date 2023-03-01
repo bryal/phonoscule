@@ -25,3 +25,4 @@ It's essentially just a very thin wrapper that provides a REPL for interacting w
 - [ ] Play / pause
 - [ ] Next / previous track in queue
 - [ ] phonoscule-cli
+- [ ] phonoscule-gui
