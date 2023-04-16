@@ -1,7 +1,28 @@
+######## WORKSPACE #######################
+
 [workspace]
 members = [".", "cli", "gui"]
 
-[package]
-name = "phonoscule"
+[workspace.package]
+authors = ["JoJo <jo@jo.zone>"]
 version = "0.1.0"
 edition = "2021"
+
+[workspace.dependencies]
+log = { version = "0.4", features = ["max_level_debug", "release_max_level_info"] }
+simple_logger = "4.0"
+
+######## PACKAGE #######################
+
+[package]
+name = "phonoscule"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+utf8-decode = "1.0"
+log           = { workspace = true }
+
+[dev-dependencies]
+simple_logger = { workspace = true }
