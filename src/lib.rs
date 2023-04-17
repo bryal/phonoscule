@@ -1,11 +1,12 @@
-#![feature(iter_next_chunk)]
+#![feature(iter_next_chunk, let_chains)]
 
-mod metadata;
-mod wav;
+pub mod metadata;
+pub mod pcm;
+pub mod wav;
 
 #[cfg(test)]
 mod test {
-    use super::{metadata::*, wav::*};
+    use super::{metadata::*, pcm::*, wav::*};
     use std::{
         fs::File,
         io::{BufReader, Read},
@@ -24,9 +25,11 @@ mod test {
     fn parse_a_wav_file() {
         init();
         let f = BufReader::new(File::open("assets/Listless.wav").unwrap());
-        let wav = WavStream::<StaticMetadata>::parse(f.bytes().map(|b| b.unwrap())).unwrap();
+        let mut wav = WavStream::<StaticMetadata, _>::parse(f.bytes().map(|b| b.unwrap())).unwrap();
+        assert_eq!(wav.format.n_channels, 2);
         assert_eq!(wav.metadata.title(), "Listless");
         assert_eq!(wav.metadata.album(), "Listless/Second Skin 2019 Single");
         assert_eq!(wav.metadata.artist(), "Siamese Twins");
+        assert!(matches!(wav.format_samples(), Some(Samples::StereoS16(_))));
     }
 }

@@ -24,7 +24,7 @@ impl<const BUF_SIZE: usize> StaticMetadata<BUF_SIZE> {
 
     fn collect_field(&mut self, field: usize, inp: impl Iterator<Item = u8>) {
         let mut field_buf = [0u8; BUF_SIZE];
-        let mut inp = Utf8Decoder::new(inp).map(|c| c.unwrap_or('�')).take_while(|&c| c != '\0');
+        let inp = Utf8Decoder::new(inp).map(|c| c.unwrap_or('�')).take_while(|&c| c != '\0');
         let mut i = 0;
         for c in inp {
             let n = c.len_utf8();
@@ -49,9 +49,9 @@ impl<const BUF_SIZE: usize> StaticMetadata<BUF_SIZE> {
         let last = self.fields.last().unwrap();
         let last_end = last.0 as usize + last.1 as usize;
         if shift < 0 {
-            self.buf[start + new_size..last_end].rotate_left(shift.abs() as usize);
+            self.buf[start + new_size..last_end].rotate_left(shift.unsigned_abs());
             for next in &mut self.fields[field + 1..] {
-                next.0 -= shift.abs() as u16;
+                next.0 -= shift.unsigned_abs() as u16;
             }
         } else {
             self.buf[start + old_size..min(BUF_SIZE, last_end + shift as usize)].rotate_right(shift as usize);
