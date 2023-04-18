@@ -9,7 +9,7 @@ pub use crossterm::{
     Command,
 };
 use futures::StreamExt;
-use phonoscule::{metadata::*, wav::*};
+use phonoscule::{metadata::*, pcm::*, wav::*};
 use std::{
     fs::File,
     io,
@@ -29,6 +29,7 @@ type StereoSample = [i16; 2];
 #[derive(Debug)]
 enum Cmd {
     PlayPause,
+    Restart,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -58,6 +59,24 @@ async fn main() -> io::Result<()> {
         let mut samples = wav.format_samples().expect("format should be supported").convert::<StereoSample>();
         let mut t = Duration::from_secs(0);
 
+        fn play_chunk(
+            t: &mut Duration,
+            samples: &mut PcmReader<impl Iterator<Item = u8>, StereoSample>,
+            play: impl FnOnce(&[StereoSample]),
+        ) -> bool {
+            *t += Duration::from_secs_f64(128.0 / PLAYBACK_SAMPLE_RATE as f64);
+            match samples.next_chunk::<128>() {
+                Ok(samples) => {
+                    play(&samples);
+                    false
+                }
+                Err(rest) => {
+                    play(rest.as_slice());
+                    true
+                }
+            }
+        }
+
         let mut playing = true;
         loop {
             let maybe_cmd = if !playing {
@@ -72,20 +91,23 @@ async fn main() -> io::Result<()> {
             if let Some(cmd) = maybe_cmd {
                 match cmd {
                     Cmd::PlayPause => playing = !playing,
+                    Cmd::Restart => {
+                        t = Duration::from_secs(0);
+                        wav = open_stream_wav(path);
+                        samples = wav.format_samples().expect("format should be supported").convert::<StereoSample>();
+                    }
                 }
             }
             if !playing {
                 continue;
             }
 
-            match samples.next_chunk::<128>() {
-                Ok(samples) => player.write(&samples),
-                Err(rest) => {
-                    player.write(rest.as_slice());
-                    break;
-                }
-            };
-            t += Duration::from_secs_f64(128.0 / PLAYBACK_SAMPLE_RATE as f64);
+            let done = play_chunk(&mut t, &mut samples, |chunk| {
+                player.write(chunk);
+            });
+            if done {
+                break;
+            }
             t_playback_s1.store(t.as_secs() as u32, Relaxed)
         }
     });
@@ -104,6 +126,7 @@ async fn main() -> io::Result<()> {
                     // (KeyCode::Left, _) => (),
                     // (KeyCode::Right, _) => (),
                     (KeyCode::Char(' '), _) => cmd_tx.send(Cmd::PlayPause).await.unwrap(),
+                    (KeyCode::Char('r'), _) => cmd_tx.send(Cmd::Restart).await.unwrap(),
                     (KeyCode::Char('q'), _) => {
                         execute!(w, cursor::SetCursorStyle::DefaultUserShape).unwrap();
                         break;
@@ -139,6 +162,7 @@ async fn main() -> io::Result<()> {
 const MENU: &str = r#"Phonoscule CLI Demo
 Controls:
  - Q - quit (or return to this menu)
+ - R - restart track
  - space - play/pause
 "#;
 // - left  - seek backward
