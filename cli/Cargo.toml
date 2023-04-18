@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-phonoscule = { path = "../" }
+tokio = { version = "1.26", features = ["rt", "sync", "time", "macros"] }
+futures = "0.3"
 pulse-simple = "1.0.1"
-crossterm = "0.26"
+crossterm = { version = "0.26", features = ["event-stream"] }
+phonoscule = { path = "../" }
+simple_logger = { workspace = true, features = ["stderr"] }
+log           = { workspace = true }
