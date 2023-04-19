@@ -14,10 +14,6 @@ use std::{
     fs::File,
     io,
     io::{BufReader, Read, Write},
-    sync::{
-        atomic::{AtomicU32, Ordering::Relaxed},
-        Arc,
-    },
     time::Duration,
 };
 use tokio::time::interval;
@@ -32,14 +28,17 @@ enum Cmd {
     Restart,
 }
 
+#[derive(Debug)]
+enum Status {
+    Progress(Duration, Duration),
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
     simple_logger::init().unwrap();
 
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<Cmd>(2);
-
-    let t_playback_s = Arc::new(AtomicU32::new(0));
-    let t_playback_s1 = t_playback_s.clone();
+    let (status_tx, mut status_rx) = tokio::sync::mpsc::channel::<Status>(2);
 
     std::thread::spawn(move || {
         let player = pulse_simple::Playback::<StereoSample>::new(
@@ -55,28 +54,30 @@ async fn main() -> io::Result<()> {
         }
         let path = "../assets/Listless.wav";
 
-        let mut wav = open_stream_wav(path);
-        let mut samples = wav.format_samples().expect("format should be supported").convert::<StereoSample>();
-        let mut t = Duration::from_secs(0);
+        let (format, samples) = open_stream_wav(path).into_format_samples().expect("format should be supported");
+        let mut samples = samples.convert::<StereoSample>();
 
         fn play_chunk(
-            t: &mut Duration,
+            n_played_samples: &mut u64,
             samples: &mut PcmReader<impl Iterator<Item = u8>, StereoSample>,
             play: impl FnOnce(&[StereoSample]),
         ) -> bool {
-            *t += Duration::from_secs_f64(128.0 / PLAYBACK_SAMPLE_RATE as f64);
             match samples.next_chunk::<128>() {
                 Ok(samples) => {
+                    *n_played_samples += samples.len() as u64;
                     play(&samples);
                     false
                 }
                 Err(rest) => {
-                    play(rest.as_slice());
+                    let samples = rest.as_slice();
+                    *n_played_samples += samples.len() as u64;
+                    play(samples);
                     true
                 }
             }
         }
 
+        let mut n_played_samples = 0;
         let mut playing = true;
         loop {
             let maybe_cmd = if !playing {
@@ -92,9 +93,12 @@ async fn main() -> io::Result<()> {
                 match cmd {
                     Cmd::PlayPause => playing = !playing,
                     Cmd::Restart => {
-                        t = Duration::from_secs(0);
-                        wav = open_stream_wav(path);
-                        samples = wav.format_samples().expect("format should be supported").convert::<StereoSample>();
+                        n_played_samples = 0;
+                        samples = open_stream_wav(path)
+                            .into_format_samples()
+                            .expect("format should be supported")
+                            .1
+                            .convert::<StereoSample>();
                     }
                 }
             }
@@ -102,13 +106,15 @@ async fn main() -> io::Result<()> {
                 continue;
             }
 
-            let done = play_chunk(&mut t, &mut samples, |chunk| {
+            let done = play_chunk(&mut n_played_samples, &mut samples, |chunk| {
                 player.write(chunk);
             });
             if done {
                 break;
             }
-            t_playback_s1.store(t.as_secs() as u32, Relaxed)
+            let t_current = Duration::from_secs_f64(n_played_samples as f64 / format.sample_rate() as f64);
+            let t_end = Duration::from_secs_f64(format.len_samples() as f64 / format.sample_rate() as f64);
+            status_tx.blocking_send(Status::Progress(t_current, t_end)).unwrap();
         }
     });
 
@@ -119,6 +125,7 @@ async fn main() -> io::Result<()> {
     let mut events = EventStream::new();
     let mut refresh = interval(Duration::from_millis(100));
 
+    let (mut t_current, mut t_end) = (Duration::from_secs(0), Duration::from_secs(0));
     loop {
         tokio::select! {
             maybe_event = events.next() => match maybe_event {
@@ -137,6 +144,12 @@ async fn main() -> io::Result<()> {
                 Some(Err(err)) => log::error!("crossterm read event error: {:?}", err),
                 None => break,
             },
+            status = status_rx.recv() => match status.unwrap() {
+                Status::Progress(t_c, t_e) => {
+                    t_current = t_c;
+                    t_end = t_e
+                }
+            },
             _ = refresh.tick() => {
                 queue!(w, style::ResetColor, terminal::Clear(ClearType::All), cursor::Hide, cursor::MoveTo(1, 1))?;
 
@@ -145,10 +158,9 @@ async fn main() -> io::Result<()> {
                 }
                 queue!(w, style::Print(""), cursor::MoveToNextLine(1))?;
 
-                let t = t_playback_s.load(Relaxed);
-                let mins = t / 60;
-                let secs = t % 60;
-                queue!(w, style::Print(format!("{mins:02}:{secs:02}")), cursor::MoveToNextLine(1))?;
+                let (mins_current, secs_current) = (t_current.as_secs() / 60, t_current.as_secs() % 60);
+                let (mins_end, secs_end) = (t_end.as_secs() / 60, t_end.as_secs() % 60);
+                queue!(w, style::Print(format!("{mins_current:02}:{secs_current:02} / {mins_end:02}:{secs_end:02}")), cursor::MoveToNextLine(1))?;
 
                 w.flush()?;
             }

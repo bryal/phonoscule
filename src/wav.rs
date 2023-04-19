@@ -83,7 +83,7 @@ where
                                 return None
                             }
                         };
-                        format = Some(Format { n_channels, float, bits_per_sample });
+                        format = Some(Format { n_channels, float, bits_per_sample, n_bytes: 0, blocks_per_sec });
                     }
                     // The story with metadata in WAV files doesn't look great. There's the standard RIFF/LIST-INFO
                     // method, but most applications only support writing this, and not reading. Then there's ID3v2,
@@ -106,7 +106,8 @@ where
                 for _ in (0..(chunk_size & 1)).zip(&mut outer_inp) {} // there's a padding byte when chunk size is not even
             }
         };
-        let format = format?;
+        let mut format = format?;
+        format.n_bytes = data_size as u64;
         Some(WavStream { format, metadata, data: inp.take(data_size) })
     }
 
@@ -120,12 +121,37 @@ where
             }
         }
     }
+
+    pub fn into_format_samples(self) -> Option<(Format, Samples<I>)> {
+        let f = self.format;
+        match (f.float, f.bits_per_sample, f.n_channels) {
+            (false, 16, 2) => Some((f, Samples::StereoS16(PcmReader::new(self.data)))),
+            (_, _, _) => {
+                log::error!("Unsupported format: {} bit {}-channel {}", f.bits_per_sample, f.n_channels, if f.float { "float" } else { "signed/unsigned" });
+                None
+            }
+        }
+    }
 }
 
 pub struct Format {
     pub float: bool,
     pub bits_per_sample: u16,
+    pub blocks_per_sec: u32,
     pub n_channels: u16,
+    pub n_bytes: u64,
+}
+
+impl Format {
+    pub fn sample_rate(&self) -> u32 {
+        self.blocks_per_sec
+    }
+    pub fn len_bytes(&self) -> u64 {
+        self.n_bytes 
+    }
+    pub fn len_samples(&self) -> u64 {
+        self.n_bytes / ((self.bits_per_sample as u64 / 8) * self.n_channels as u64)
+    }
 }
 
 const WAVE_FORMAT_PCM: u16 = 0x0001;
