@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.26", features = ["rt", "sync", "time", "macros"] }
+crossterm = { version = "0.26", features = ["event-stream"] }
 futures = "0.3"
 pulse-simple = "1.0.1"
-crossterm = { version = "0.26", features = ["event-stream"] }
+ringbuf = "0.3"
+tokio = { version = "1.26", features = ["rt", "sync", "time", "macros"] }
 phonoscule = { path = "../" }
 simple_logger = { workspace = true, features = ["stderr"] }
 log           = { workspace = true }

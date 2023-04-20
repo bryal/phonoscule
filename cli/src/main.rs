@@ -1,4 +1,4 @@
-#![feature(iter_next_chunk)]
+#![feature(atomic_bool_fetch_not)]
 
 use crossterm::event::KeyEventKind;
 pub use crossterm::{
@@ -14,6 +14,10 @@ use std::{
     fs::File,
     io,
     io::{BufReader, Read, Write},
+    sync::{
+        atomic::{AtomicBool, Ordering::Relaxed},
+        Arc,
+    },
     time::Duration,
 };
 use tokio::time::interval;
@@ -26,6 +30,8 @@ type StereoSample = [i16; 2];
 enum Cmd {
     PlayPause,
     Restart,
+    SeekForward(Duration),
+    SeekBackward(Duration),
 }
 
 #[derive(Debug)]
@@ -33,51 +39,83 @@ enum Status {
     Progress(Duration, Duration),
 }
 
+trait Sink {
+    fn buffer_samples(&mut self, samples: &mut impl Iterator<Item = StereoSample>) -> Option<usize>;
+}
+
+struct PulseSimpleSink<const N: usize> {
+    stop: Arc<AtomicBool>,
+    buf: ringbuf::Producer<StereoSample, Arc<ringbuf::StaticRb<StereoSample, N>>>,
+}
+
+impl<const N: usize> PulseSimpleSink<N> {
+    fn start() -> Self {
+        let (prod, mut cons) = ringbuf::StaticRb::<StereoSample, N>::default().split();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop1 = stop.clone();
+        std::thread::spawn(move || {
+            let pulse = pulse_simple::Playback::<StereoSample>::new(
+                "phonoscule-cli",
+                "CLI-based application based on the Phonoscule music player library",
+                None,
+                PLAYBACK_SAMPLE_RATE,
+            );
+            let mut buf = [StereoSample::default(); N];
+            while !stop1.load(Relaxed) {
+                let n = cons.pop_slice(&mut buf[..]);
+                let buf = &buf[..n];
+                if !buf.is_empty() {
+                    pulse.write(buf)
+                }
+            }
+        });
+        Self { stop, buf: prod }
+    }
+}
+
+impl<const N: usize> Drop for PulseSimpleSink<N> {
+    fn drop(&mut self) {
+        self.stop.store(true, Relaxed)
+    }
+}
+
+impl<const N: usize> Sink for PulseSimpleSink<N> {
+    fn buffer_samples(&mut self, samples: &mut impl Iterator<Item = StereoSample>) -> Option<usize> {
+        let free = self.buf.free_len();
+        let pushed = self.buf.push_iter(samples);
+        (pushed >= free).then_some(pushed)
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
     simple_logger::init().unwrap();
+
+    let mut sink = PulseSimpleSink::<256>::start();
 
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<Cmd>(2);
     let (status_tx, mut status_rx) = tokio::sync::mpsc::channel::<Status>(2);
 
     std::thread::spawn(move || {
-        let player = pulse_simple::Playback::<StereoSample>::new(
-            "phonoscule-cli",
-            "CLI-based application based on the Phonoscule music player library",
-            None,
-            PLAYBACK_SAMPLE_RATE,
-        );
-
-        fn open_stream_wav(path: &str) -> WavStream<StaticMetadata, impl Iterator<Item = u8>> {
-            let f = BufReader::new(File::open(path).unwrap());
-            WavStream::<StaticMetadata, _>::parse(f.bytes().map(|b| b.unwrap())).unwrap()
-        }
         let path = "../assets/Listless.wav";
+        let mut n_played_samples = 0;
+        let (format, mut samples) = play_file(&mut n_played_samples, path);
 
-        let (format, samples) = open_stream_wav(path).into_format_samples().expect("format should be supported");
-        let mut samples = samples.convert::<StereoSample>();
-
-        fn play_chunk(
-            n_played_samples: &mut u64,
-            samples: &mut PcmReader<impl Iterator<Item = u8>, StereoSample>,
-            play: impl FnOnce(&[StereoSample]),
-        ) -> bool {
-            match samples.next_chunk::<128>() {
-                Ok(samples) => {
-                    *n_played_samples += samples.len() as u64;
-                    play(&samples);
-                    false
-                }
-                Err(rest) => {
-                    let samples = rest.as_slice();
-                    *n_played_samples += samples.len() as u64;
-                    play(samples);
-                    true
-                }
-            }
+        fn play_file(
+            n_played_samples: &mut usize,
+            path: &str,
+        ) -> (Format, PcmReader<impl Iterator<Item = u8>, StereoSample>) {
+            *n_played_samples = 0;
+            let f = BufReader::new(File::open(path).unwrap());
+            let wav = WavStream::<StaticMetadata, _>::parse(f.bytes().map(|b| b.unwrap())).unwrap();
+            let (format, samples) = wav.into_format_samples().expect("format should be supported");
+            (format, samples.convert::<StereoSample>())
         }
 
-        let mut n_played_samples = 0;
+        fn seek_sample(i: usize, samples: &mut impl Iterator<Item = StereoSample>) -> usize {
+            samples.take(i).count()
+        }
+
         let mut playing = true;
         loop {
             let maybe_cmd = if !playing {
@@ -93,12 +131,17 @@ async fn main() -> io::Result<()> {
                 match cmd {
                     Cmd::PlayPause => playing = !playing,
                     Cmd::Restart => {
-                        n_played_samples = 0;
-                        samples = open_stream_wav(path)
-                            .into_format_samples()
-                            .expect("format should be supported")
-                            .1
-                            .convert::<StereoSample>();
+                        samples = play_file(&mut n_played_samples, path).1;
+                    }
+                    Cmd::SeekForward(dt) => {
+                        let n = (dt.as_secs_f64() * format.sample_rate() as f64) as usize;
+                        n_played_samples += seek_sample(n, &mut samples);
+                    }
+                    Cmd::SeekBackward(dt) => {
+                        let i =
+                            n_played_samples.saturating_sub((dt.as_secs_f64() * format.sample_rate() as f64) as usize);
+                        samples = play_file(&mut n_played_samples, path).1;
+                        n_played_samples = seek_sample(i, &mut samples);
                     }
                 }
             }
@@ -106,12 +149,7 @@ async fn main() -> io::Result<()> {
                 continue;
             }
 
-            let done = play_chunk(&mut n_played_samples, &mut samples, |chunk| {
-                player.write(chunk);
-            });
-            if done {
-                break;
-            }
+            n_played_samples += sink.buffer_samples(&mut samples).unwrap_or(0);
             let t_current = Duration::from_secs_f64(n_played_samples as f64 / format.sample_rate() as f64);
             let t_end = Duration::from_secs_f64(format.len_samples() as f64 / format.sample_rate() as f64);
             status_tx.blocking_send(Status::Progress(t_current, t_end)).unwrap();
@@ -130,8 +168,8 @@ async fn main() -> io::Result<()> {
         tokio::select! {
             maybe_event = events.next() => match maybe_event {
                 Some(Ok(Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers, state: _ }))) => match (code, modifiers) {
-                    // (KeyCode::Left, _) => (),
-                    // (KeyCode::Right, _) => (),
+                    (KeyCode::Left, _) => cmd_tx.send(Cmd::SeekBackward(Duration::from_secs(5))).await.unwrap(),
+                    (KeyCode::Right, _) => cmd_tx.send(Cmd::SeekForward(Duration::from_secs(5))).await.unwrap(),
                     (KeyCode::Char(' '), _) => cmd_tx.send(Cmd::PlayPause).await.unwrap(),
                     (KeyCode::Char('r'), _) => cmd_tx.send(Cmd::Restart).await.unwrap(),
                     (KeyCode::Char('q'), _) => {
