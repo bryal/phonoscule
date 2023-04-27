@@ -1,7 +1,8 @@
 [package]
 name = "phonoscule-cli"
-version = "0.1.0"
-edition = "2021"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 crossterm = { version = "0.26", features = ["event-stream"] }
