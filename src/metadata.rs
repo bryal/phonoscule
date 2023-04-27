@@ -1,13 +1,17 @@
 use core::cmp::min;
+use embedded_io::asynch::Read;
 use utf8_decode::Decoder as Utf8Decoder;
 
 pub trait Metadata: Default {
     fn title(&self) -> &str;
     fn album(&self) -> &str;
     fn artist(&self) -> &str;
-    fn collect_title(&mut self, inp: impl Iterator<Item = u8>);
-    fn collect_album(&mut self, inp: impl Iterator<Item = u8>);
-    fn collect_artist(&mut self, inp: impl Iterator<Item = u8>);
+    async fn read_title<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
+    async fn read_album<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
+    async fn read_artist<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
+    fn set_title(&mut self, inp: &str);
+    fn set_album(&mut self, inp: &str);
+    fn set_artist(&mut self, inp: &str);
 }
 
 #[derive(Clone)]
@@ -22,21 +26,32 @@ impl<const BUF_SIZE: usize> StaticMetadata<BUF_SIZE> {
     const ARTIST: usize = 1;
     const ALBUM: usize = 2;
 
-    fn collect_field(&mut self, field: usize, inp: impl Iterator<Item = u8>) {
+    async fn read_field<R: Read>(&mut self, field: usize, size: usize, inp: &mut R) -> Result<usize, R::Error> {
         let mut field_buf = [0u8; BUF_SIZE];
-        let inp = Utf8Decoder::new(inp).map(|c| c.unwrap_or('�')).take_while(|&c| c != '\0');
         let mut i = 0;
-        for c in inp {
-            let n = c.len_utf8();
-            if n > field_buf[i..].len() {
+        let mut inp_buf = [0u8; 80];
+        let mut remaining = size;
+        'outer: while remaining > 0 {
+            let n = inp.read(&mut inp_buf[..min(remaining, 80)]).await?;
+            if n == 0 {
+                // Really this should be an unexpected EOF error, but we can't construct that with these types...
                 break;
             }
-            c.encode_utf8(&mut field_buf[i..]);
-            i += n;
+            remaining -= n;
+            let chars = Utf8Decoder::new(inp_buf.into_iter()).map(|c| c.unwrap_or('�')).take_while(|&c| c != '\0');
+            for c in chars {
+                let n = c.len_utf8();
+                if n > field_buf[i..].len() {
+                    break 'outer;
+                }
+                c.encode_utf8(&mut field_buf[i..]);
+                i += n;
+            }
         }
         let s = unsafe { std::str::from_utf8_unchecked(&field_buf[..i]) };
         log::debug!("set field {} to {:?}", field, s);
-        self.set_field(field, s)
+        self.set_field(field, s);
+        Ok(size - remaining)
     }
 
     fn set_field(&mut self, field: usize, s: &str) {
@@ -93,14 +108,23 @@ impl<const BUF_SIZE: usize> Metadata for StaticMetadata<BUF_SIZE> {
     fn artist(&self) -> &str {
         self.field_str(Self::ARTIST)
     }
-    fn collect_title(&mut self, inp: impl Iterator<Item = u8>) {
-        self.collect_field(Self::TITLE, inp)
+    async fn read_title<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error> {
+        self.read_field(Self::TITLE, size, inp).await
     }
-    fn collect_album(&mut self, inp: impl Iterator<Item = u8>) {
-        self.collect_field(Self::ALBUM, inp)
+    async fn read_album<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error> {
+        self.read_field(Self::ALBUM, size, inp).await
     }
-    fn collect_artist(&mut self, inp: impl Iterator<Item = u8>) {
-        self.collect_field(Self::ARTIST, inp)
+    async fn read_artist<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error> {
+        self.read_field(Self::ARTIST, size, inp).await
+    }
+    fn set_title(&mut self, inp: &str) {
+        self.set_field(Self::TITLE, inp)
+    }
+    fn set_album(&mut self, inp: &str) {
+        self.set_field(Self::ALBUM, inp)
+    }
+    fn set_artist(&mut self, inp: &str) {
+        self.set_field(Self::ARTIST, inp)
     }
 }
 
@@ -140,7 +164,7 @@ mod test {
         assert_eq!(md.title(), "");
         assert_eq!(md.artist(), "");
         assert_eq!(md.album(), "");
-        md.collect_artist("Foo".bytes());
+        md.set_artist("Foo");
         assert_eq!(md.title(), "");
         assert_eq!(md.album(), "");
     }
@@ -148,13 +172,13 @@ mod test {
     #[test]
     fn set_fields() {
         let mut md = StaticMetadata::<32>::default();
-        md.collect_title("Ok Song".bytes());
-        md.collect_artist("Ok Artist".bytes());
-        md.collect_album("Ok Album".bytes());
+        md.set_title("Ok Song");
+        md.set_artist("Ok Artist");
+        md.set_album("Ok Album");
         assert_eq!(md.title(), "Ok Song");
         assert_eq!(md.artist(), "Ok Artist");
         assert_eq!(md.album(), "Ok Album");
-        md.collect_title("ツ".bytes());
+        md.set_title("ツ");
         assert_eq!('ツ'.len_utf8(), 3);
         assert_eq!(md.title(), "ツ");
         assert_eq!(md.artist(), "Ok Artist");
@@ -163,29 +187,29 @@ mod test {
     #[test]
     fn set_fields_overflow() {
         let mut md1 = StaticMetadata::<32>::default();
-        md1.collect_title("Great Song".bytes());
-        md1.collect_artist("Great Artist".bytes());
-        md1.collect_album("Great Album".bytes());
+        md1.set_title("Great Song");
+        md1.set_artist("Great Artist");
+        md1.set_album("Great Album");
         assert_eq!(md1.title(), "Great Song");
         assert_eq!(md1.artist(), "Great Artist");
         assert_eq!(md1.album(), "Great Albu"); // Note that `m` has been cut off -- total length became greater than 32
 
         // Same thing, different order
         let mut md2 = StaticMetadata::<32>::default();
-        md2.collect_album("Great Album".bytes());
-        md2.collect_artist("Great Artist".bytes());
-        md2.collect_title("Great Song".bytes());
+        md2.set_album("Great Album");
+        md2.set_artist("Great Artist");
+        md2.set_title("Great Song");
         assert_eq!(md1, md2);
     }
 
     #[test]
     fn shrink_field() {
         let mut md = StaticMetadata::<32>::default();
-        md.collect_title("Foo".bytes());
-        md.collect_artist("Bar".bytes());
-        md.collect_album("Baz".bytes());
-        md.collect_artist("Y".bytes());
-        md.collect_title("X".bytes());
+        md.set_title("Foo");
+        md.set_artist("Bar");
+        md.set_album("Baz");
+        md.set_artist("Y");
+        md.set_title("X");
         assert_eq!(md.title(), "X");
         assert_eq!(md.artist(), "Y");
         assert_eq!(md.album(), "Baz");
@@ -194,11 +218,11 @@ mod test {
     #[test]
     fn grow_field() {
         let mut md = StaticMetadata::<32>::default();
-        md.collect_title("X".bytes());
-        md.collect_artist("Y".bytes());
-        md.collect_album("Z".bytes());
-        md.collect_title("Foo".bytes());
-        md.collect_artist("Bar".bytes());
+        md.set_title("X");
+        md.set_artist("Y");
+        md.set_album("Z");
+        md.set_title("Foo");
+        md.set_artist("Bar");
         assert_eq!(md.title(), "Foo");
         assert_eq!(md.artist(), "Bar");
         assert_eq!(md.album(), "Z");
@@ -207,10 +231,10 @@ mod test {
     #[test]
     fn grow_field_overflow() {
         let mut md = StaticMetadata::<20>::default();
-        md.collect_title("Ok Song".bytes());
-        md.collect_artist("Great Artist".bytes());
+        md.set_title("Ok Song");
+        md.set_artist("Great Artist");
         assert_eq!(md.artist(), "Great Artist");
-        md.collect_title("Great Song".bytes());
+        md.set_title("Great Song");
         assert_eq!(md.title(), "Great Song");
         assert_eq!(md.artist(), "Great Arti");
     }
@@ -218,12 +242,12 @@ mod test {
     #[test]
     fn grow_field_overflow_broken_utf8() {
         let mut md = StaticMetadata::<6>::default();
-        md.collect_title("Foo".bytes());
-        md.collect_artist("ツ".bytes());
+        md.set_title("Foo");
+        md.set_artist("ツ");
         assert_eq!(md.title(), "Foo");
         assert_eq!(md.artist(), "ツ");
         assert_eq!(md.album(), "");
-        md.collect_title("Foo!".bytes());
+        md.set_title("Foo!");
         assert_eq!(md.title(), "Foo!");
         assert_eq!(md.artist(), "");
         assert_eq!(md.album(), "");

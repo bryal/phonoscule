@@ -1,6 +1,6 @@
-//! Streaming PCM WAV reader
+//! PCM WAV reader
 //!
-//! Simple and `no_std` friendly. Only requires a byte iterator as input. Seeking not supported.
+//! Simple and `no_std` friendly. Only requires an (embedded-io) async Reader as input.
 //!
 //! Not standard complete. Makes some inflexible assumptions about the format that nontheless are quite reasonable and
 //! very common in .wav files in the wild. Assumptions / limitations include:
@@ -11,146 +11,148 @@
 //! - Audio must be stereo (2 channels) or mono (1 channel)
 //! - "Valid bits per sample" is equal to "bits per sample"
 
-use crate::{metadata::*, pcm::*};
-use core::iter::Take;
+use crate::{
+    io::{ReadExt, Skip, Take},
+    metadata::*,
+    sample::*,
+};
+use embedded_io::asynch::Read;
 
-pub struct WavStream<M, I> {
+pub struct Wav<Md, R> {
+    pub metadata: Md,
     pub format: Format,
-    pub metadata: M,
-    pub data: I,
+    pub samples: MultiReader<R>,
 }
 
-impl<M, I> WavStream<M, I>
+impl<Md, R> Wav<Md, Take<R>>
 where
-    M: Metadata,
-    I: Iterator<Item = u8>,
+    Md: Metadata,
+    R: Read + Skip,
 {
-    pub fn parse(mut inp: I) -> Option<WavStream<M, Take<I>>> {
-        if FourCc::parse(&mut inp)?.as_str() != "RIFF" {
+    pub async fn parse(mut inp: R) -> Option<Self> {
+        if FourCc::parse(&mut inp).await?.as_str() != "RIFF" {
             return None;
         }
-        let size = u32::from_le_bytes(inp.next_chunk().ok()?) as usize;
+        let size = inp.read_u32_le().await.ok()? as usize;
+        let mut inp = inp.take(size as u64);
         let mut format = None::<Format>;
-        let mut metadata = M::default();
+        let mut metadata = Md::default();
         let data_size = {
-            let mut inp = (&mut inp).take(size);
-            if FourCc::parse(&mut inp)?.as_str() != "WAVE" {
+            if FourCc::parse(&mut inp).await?.as_str() != "WAVE" {
                 return None;
             }
             loop {
-                let chunk_id = FourCc::parse(&mut inp)?;
-                let chunk_size = u32::from_le_bytes(inp.next_chunk().ok()?) as usize;
+                let chunk_id = FourCc::parse(&mut inp).await?;
+                let chunk_size = inp.read_u32_le().await.ok()? as usize;
                 log::debug!("chunk id: {}, size: {}", chunk_id.as_str(), chunk_size);
-                let mut outer_inp = &mut inp;
-                let mut inp = (&mut outer_inp).take(chunk_size);
-                match chunk_id.as_str() {
-                    "fmt " => {
-                        let format_code = u16::from_le_bytes(inp.next_chunk().ok()?);
-                        let n_channels = u16::from_le_bytes(inp.next_chunk().ok()?);
-                        let blocks_per_sec = u32::from_le_bytes(inp.next_chunk().ok()?);
-                        let avg_bytes_per_sec = u32::from_le_bytes(inp.next_chunk().ok()?);
-                        let _block_size = u16::from_le_bytes(inp.next_chunk().ok()?);
-                        let bits_per_sample = u16::from_le_bytes(inp.next_chunk().ok()?);
-                        let ext_size = inp.next_chunk().ok().map(u16::from_le_bytes);
-                        let valid_bits_per_sample = inp.next_chunk().ok().map(u16::from_le_bytes);
-                        let _speaker_position_mask = inp.next_chunk().ok().map(u32::from_le_bytes);
-                        let sub_format_code = inp.next_chunk().ok().map(u16::from_le_bytes);
-                        let guid_constant = inp.next_chunk::<14>().ok();
-                        log::debug!(
-                            "fc: {}, ch: {}, blps: {}, avg: {}, bps: {}, es: {:?}, sf: {:?}, gc: {:?}",
-                            format_code,
-                            n_channels,
-                            blocks_per_sec,
-                            avg_bytes_per_sec,
-                            bits_per_sample,
-                            ext_size,
-                            sub_format_code,
-                            guid_constant
-                        );
-                        if let Some(v) = valid_bits_per_sample && v != bits_per_sample {
-                            log::error!("Valid bits per sample not equal to bits per sample is unsupported. {} != {}", v, bits_per_sample);
-                            return None             
-                        }
-                        let float = match (format_code, sub_format_code) {
-                            (WAVE_FORMAT_PCM, _) |  (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_PCM)) => false,
-                            (WAVE_FORMAT_IEEE_FLOAT, _) | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_IEEE_FLOAT)) => true,
-                            (c, Some(s)) => {
-                                log::error!("Unsupported format. Format code = {:X}, sub format code = {:X}", c, s);
+                {
+                    match chunk_id.as_str() {
+                        "fmt " => {
+                            let mut inp = (&mut inp).take_exact(chunk_size as u64);
+                            let format_code = inp.read_u16_le().await.ok()?;
+                            let n_channels = inp.read_u16_le().await.ok()?;
+                            let blocks_per_sec = inp.read_u32_le().await.ok()?;
+                            let avg_bytes_per_sec = inp.read_u32_le().await.ok()?;
+                            let _block_size = inp.read_u16_le().await.ok()?;
+                            let bits_per_sample = inp.read_u16_le().await.ok()?;
+                            let ext_size = inp.read_u16_le().await.ok();
+                            let valid_bits_per_sample = inp.read_u16_le().await.ok();
+                            let _speaker_position_mask = inp.read_u32_le().await.ok();
+                            let sub_format_code = inp.read_u16_le().await.ok();
+                            let mut guid_constant = [0u8; 14];
+                            let guid_constant =
+                                inp.read_exact(&mut guid_constant).await.ok().map(move |_| guid_constant);
+                            log::debug!(
+                                "fc: {}, ch: {}, blps: {}, avg: {}, bps: {}, es: {:?}, sf: {:?}, gc: {:?}",
+                                format_code,
+                                n_channels,
+                                blocks_per_sec,
+                                avg_bytes_per_sec,
+                                bits_per_sample,
+                                ext_size,
+                                sub_format_code,
+                                guid_constant
+                            );
+                            if let Some(v) = valid_bits_per_sample && v != bits_per_sample {
+                                log::error!("Valid bits per sample not equal to bits per sample is unsupported. {} != {}", v, bits_per_sample);
                                 return None
                             }
-                            (c, None) => {
-                                log::error!("Unsupported format. Format code = {:X}", c);
-                                return None
-                            }
-                        };
-                        format = Some(Format { n_channels, float, bits_per_sample, n_bytes: 0, blocks_per_sec });
-                    }
-                    // The story with metadata in WAV files doesn't look great. There's the standard RIFF/LIST-INFO
-                    // method, but most applications only support writing this, and not reading. Then there's ID3v2,
-                    // which is non-standard but generally better supported. See
-                    // `https://github.com/Borewit/music-metadata/wiki/RIFF-WAVE`
-                    "LIST" => {
-                        let tag = FourCc::parse(&mut inp)?;
-                        if tag.as_str() == "INFO" {
-                            parse_metadata(&mut metadata, &mut inp)?
-                        } else {
-                            log::debug!("ignored LIST chunk with tag {:?}", tag.as_str());
+                            let float = match (format_code, sub_format_code) {
+                                (WAVE_FORMAT_PCM, _) | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_PCM)) => false,
+                                (WAVE_FORMAT_IEEE_FLOAT, _)
+                                | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_IEEE_FLOAT)) => true,
+                                (c, Some(s)) => {
+                                    log::error!("Unsupported format. Format code = {:X}, sub format code = {:X}", c, s);
+                                    return None;
+                                }
+                                (c, None) => {
+                                    log::error!("Unsupported format. Format code = {:X}", c);
+                                    return None;
+                                }
+                            };
+                            inp.skip_rest().await.ok()?;
+                            format = Some(Format { n_channels, float, bits_per_sample, size: 0, blocks_per_sec });
                         }
-                    }
-                    "data" => break chunk_size,
-                    id => {
-                        log::debug!("ignored chunk {:?}", id);
+                        // The story with metadata in WAV files doesn't look great. There's the standard RIFF/LIST-INFO
+                        // method, but most applications only support writing this, and not reading. Then there's ID3v2,
+                        // which is non-standard but generally better supported. See
+                        // `https://github.com/Borewit/music-metadata/wiki/RIFF-WAVE`
+                        "LIST" => {
+                            let mut inp = (&mut inp).take_exact(chunk_size as u64);
+                            let tag = FourCc::parse(&mut inp).await?;
+                            if tag.as_str() == "INFO" {
+                                parse_metadata(&mut metadata, &mut inp).await?
+                            } else {
+                                log::debug!("ignored LIST chunk with tag {:?}", tag.as_str());
+                            }
+                            inp.skip_rest().await.ok()?;
+                        }
+                        "data" => break chunk_size,
+                        id => {
+                            let inp = (&mut inp).take_exact(chunk_size as u64);
+                            log::debug!("ignored chunk {:?}", id);
+                            inp.skip_rest().await.ok()?;
+                        }
                     }
                 }
-                for _ in inp {}
-                for _ in (0..(chunk_size & 1)).zip(&mut outer_inp) {} // there's a padding byte when chunk size is not even
+                inp.skip(chunk_size as u64 & 1).await.ok()?; // there's a padding byte when chunk size is not even
             }
         };
         let mut format = format?;
-        format.n_bytes = data_size as u64;
-        Some(WavStream { format, metadata, data: inp.take(data_size) })
-    }
-
-    pub fn format_samples(&mut self) -> Option<Samples<&mut I>> {
-        let f = &self.format;
-        match (f.float, f.bits_per_sample, f.n_channels) {
-            (false, 16, 2) => Some(Samples::StereoS16(PcmReader::new(&mut self.data))),
+        format.size = data_size as u64;
+        let samples = match (format.float, format.bits_per_sample, format.n_channels) {
+            (false, 16, 2) => Some(MultiReader::StereoPcmS16(FormatReader::new(inp))),
+            (false, 24, 2) => Some(MultiReader::StereoPcmS24(FormatReader::new(inp))),
             (_, _, _) => {
-                log::error!("Unsupported format: {} bit {}-channel {}", f.bits_per_sample, f.n_channels, if f.float { "float" } else { "signed/unsigned" });
+                log::error!(
+                    "Unsupported format: {} bit {}-channel {}",
+                    format.bits_per_sample,
+                    format.n_channels,
+                    if format.float { "float" } else { "signed/unsigned" }
+                );
                 None
             }
-        }
-    }
-
-    pub fn into_format_samples(self) -> Option<(Format, Samples<I>)> {
-        let f = self.format;
-        match (f.float, f.bits_per_sample, f.n_channels) {
-            (false, 16, 2) => Some((f, Samples::StereoS16(PcmReader::new(self.data)))),
-            (_, _, _) => {
-                log::error!("Unsupported format: {} bit {}-channel {}", f.bits_per_sample, f.n_channels, if f.float { "float" } else { "signed/unsigned" });
-                None
-            }
-        }
+        }?;
+        Some(Wav { metadata, format, samples })
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Format {
     pub float: bool,
     pub bits_per_sample: u16,
     pub blocks_per_sec: u32,
     pub n_channels: u16,
-    pub n_bytes: u64,
+    pub size: u64,
 }
 
 impl Format {
     pub fn sample_rate(&self) -> u32 {
         self.blocks_per_sec
     }
-    pub fn len_bytes(&self) -> u64 {
-        self.n_bytes 
-    }
+
     pub fn len_samples(&self) -> u64 {
-        self.n_bytes / ((self.bits_per_sample as u64 / 8) * self.n_channels as u64)
+        self.size / ((self.bits_per_sample as u64 / 8) * self.n_channels as u64)
     }
 }
 
@@ -158,20 +160,26 @@ const WAVE_FORMAT_PCM: u16 = 0x0001;
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 0x0003;
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 
-fn parse_metadata(m: &mut impl Metadata, mut inp: impl Iterator<Item = u8>) -> Option<()> {
-    while let Some(chunk_id) = FourCc::parse(&mut inp) {
-        let chunk_size = u32::from_le_bytes(inp.next_chunk().ok()?) as usize;
+async fn parse_metadata<R>(m: &mut impl Metadata, inp: &mut R) -> Option<()>
+where
+    R: Read + Skip,
+{
+    while let Some(chunk_id) = FourCc::parse(inp).await {
+        let mut buf = [0; 4];
+        inp.read_exact(&mut buf).await.ok()?;
+        let chunk_size = u32::from_le_bytes(buf) as usize;
         log::debug!("INFO subchunk id: {}, size: {}", chunk_id.as_str(), chunk_size);
-        let mut outer_inp = &mut inp;
-        let mut inp = (&mut outer_inp).take(chunk_size);
-        match chunk_id.as_str() {
-            "INAM" => m.collect_title(&mut inp),
-            "IPRD" => m.collect_album(&mut inp),
-            "IART" => m.collect_artist(&mut inp),
-            id => log::debug!("ignored INFO subchunk {:?}", id),
-        }
-        for _ in inp {}
-        for _ in (0..(chunk_size & 1)).zip(&mut outer_inp) {} // padding
+        let nread = match chunk_id.as_str() {
+            "INAM" => m.read_title(chunk_size, inp).await.ok()?,
+            "IPRD" => m.read_album(chunk_size, inp).await.ok()?,
+            "IART" => m.read_artist(chunk_size, inp).await.ok()?,
+            id => {
+                log::debug!("ignored INFO subchunk {:?}", id);
+                0
+            }
+        };
+        let padding_size = chunk_size & 1;
+        inp.skip(chunk_size as u64 + padding_size as u64 - nread as u64).await.ok()?;
     }
     Some(())
 }
@@ -180,8 +188,9 @@ fn parse_metadata(m: &mut impl Metadata, mut inp: impl Iterator<Item = u8>) -> O
 pub struct FourCc([u8; 4]);
 
 impl FourCc {
-    fn parse<I: Iterator<Item = u8>>(mut inp: I) -> Option<Self> {
-        let bs = inp.next_chunk::<4>().ok()?;
+    async fn parse<R: Read>(inp: &mut R) -> Option<Self> {
+        let mut bs = [0; 4];
+        inp.read_exact(&mut bs).await.ok()?;
         bs.iter().all(|c| c.is_ascii() && !c.is_ascii_control()).then_some(Self(bs))
     }
 

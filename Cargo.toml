@@ -10,7 +10,12 @@ edition = "2021"
 
 [workspace.dependencies]
 log = { version = "0.4", features = ["max_level_debug", "release_max_level_info"] }
+embedded-io = { version = "0.4", features = ["async"] }
+tokio = { version = "1.26", features = ["rt", "macros"] }
 simple_logger = "4.0"
+
+[profile.release.package.phonoscule-cli]
+debug = true
 
 ######## PACKAGE #######################
 
@@ -22,7 +27,10 @@ edition.workspace = true
 
 [dependencies]
 utf8-decode = "1.0"
-log           = { workspace = true }
+embedded-io = { workspace = true }
+log         = { workspace = true }
 
 [dev-dependencies]
+embedded-io   = { workspace = true, features = ["tokio"] }
+tokio         = { workspace = true, features = ["io-util", "fs"] }
 simple_logger = { workspace = true }
