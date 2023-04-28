@@ -60,11 +60,8 @@ where
                             let _speaker_position_mask = inp.read_u32_le().await.ok();
                             let sub_format_code = inp.read_u16_le().await.ok();
                             let mut guid_constant = [0u8; 14];
-                            let guid_constant = inp
-                                .read_exact(&mut guid_constant)
-                                .await
-                                .ok()
-                                .map(move |_| guid_constant);
+                            let guid_constant =
+                                inp.read_exact(&mut guid_constant).await.ok().map(move |_| guid_constant);
                             log::trace!(
                                 "fc: {}, ch: {}, blps: {}, avg: {}, blsz: {}, bps: {}, es: {:?}, sf: {:?}, gc: {:?}",
                                 format_code,
@@ -82,8 +79,7 @@ where
                                 return None
                             }
                             let float = match (format_code, sub_format_code) {
-                                (WAVE_FORMAT_PCM, _)
-                                | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_PCM)) => false,
+                                (WAVE_FORMAT_PCM, _) | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_PCM)) => false,
                                 (WAVE_FORMAT_IEEE_FLOAT, _)
                                 | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_IEEE_FLOAT)) => true,
                                 (c, Some(s)) => {
@@ -132,12 +128,7 @@ where
         };
         let mut format = format?;
         format.size = data_size as u64;
-        let samples = match (
-            format.float,
-            format.bits_per_sample,
-            format.block_size,
-            format.n_channels,
-        ) {
+        let samples = match (format.float, format.bits_per_sample, format.block_size, format.n_channels) {
             (false, 16, 4, 2) => {
                 log::debug!("Format matches Stereo PCM S16");
                 Some(MultiReader::StereoPcmS16(FormatReader::new(inp)))
@@ -151,21 +142,13 @@ where
                     "Unsupported format: {} bit {}-channel {} (block size = {})",
                     format.bits_per_sample,
                     format.n_channels,
-                    if format.float {
-                        "float"
-                    } else {
-                        "signed/unsigned"
-                    },
+                    if format.float { "float" } else { "signed/unsigned" },
                     format.block_size
                 );
                 None
             }
         }?;
-        Some(Wav {
-            metadata,
-            format,
-            samples,
-        })
+        Some(Wav { metadata, format, samples })
     }
 }
 
@@ -201,11 +184,7 @@ where
         let mut buf = [0; 4];
         inp.read_exact(&mut buf).await.ok()?;
         let chunk_size = u32::from_le_bytes(buf) as usize;
-        log::trace!(
-            "INFO subchunk id: {}, size: {}",
-            chunk_id.as_str(),
-            chunk_size
-        );
+        log::trace!("INFO subchunk id: {}, size: {}", chunk_id.as_str(), chunk_size);
         let nread = match chunk_id.as_str() {
             "INAM" => m.read_title(chunk_size, inp).await.ok()?,
             "IPRD" => m.read_album(chunk_size, inp).await.ok()?,
@@ -216,9 +195,7 @@ where
             }
         };
         let padding_size = chunk_size & 1;
-        inp.skip(chunk_size as u64 + padding_size as u64 - nread as u64)
-            .await
-            .ok()?;
+        inp.skip(chunk_size as u64 + padding_size as u64 - nread as u64).await.ok()?;
     }
     Some(())
 }
@@ -230,9 +207,7 @@ impl FourCc {
     async fn parse<R: Read>(inp: &mut R) -> Option<Self> {
         let mut bs = [0; 4];
         inp.read_exact(&mut bs).await.ok()?;
-        bs.iter()
-            .all(|c| c.is_ascii() && !c.is_ascii_control())
-            .then_some(Self(bs))
+        bs.iter().all(|c| c.is_ascii() && !c.is_ascii_control()).then_some(Self(bs))
     }
 
     pub fn as_str(&self) -> &str {

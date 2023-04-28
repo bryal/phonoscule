@@ -26,12 +26,7 @@ impl<const BUF_SIZE: usize> StaticMetadata<BUF_SIZE> {
     const ARTIST: usize = 1;
     const ALBUM: usize = 2;
 
-    async fn read_field<R: Read>(
-        &mut self,
-        field: usize,
-        size: usize,
-        inp: &mut R,
-    ) -> Result<usize, R::Error> {
+    async fn read_field<R: Read>(&mut self, field: usize, size: usize, inp: &mut R) -> Result<usize, R::Error> {
         let mut field_buf = [0u8; BUF_SIZE];
         let mut i = 0;
         let mut inp_buf = [0u8; 80];
@@ -43,9 +38,7 @@ impl<const BUF_SIZE: usize> StaticMetadata<BUF_SIZE> {
                 break;
             }
             remaining -= n;
-            let chars = Utf8Decoder::new(inp_buf.into_iter())
-                .map(|c| c.unwrap_or('�'))
-                .take_while(|&c| c != '\0');
+            let chars = Utf8Decoder::new(inp_buf.into_iter()).map(|c| c.unwrap_or('�')).take_while(|&c| c != '\0');
             for c in chars {
                 let n = c.len_utf8();
                 if n > field_buf[i..].len() {
@@ -76,8 +69,7 @@ impl<const BUF_SIZE: usize> StaticMetadata<BUF_SIZE> {
                 next.0 -= shift.unsigned_abs() as u16;
             }
         } else {
-            self.buf[start + old_size..min(BUF_SIZE, last_end + shift as usize)]
-                .rotate_right(shift as usize);
+            self.buf[start + old_size..min(BUF_SIZE, last_end + shift as usize)].rotate_right(shift as usize);
             for next in &mut self.fields[field + 1..] {
                 next.0 = min(BUF_SIZE as u16, next.0 + shift as u16);
                 next.1 = min(BUF_SIZE as u16 - next.0, next.1);
@@ -87,11 +79,10 @@ impl<const BUF_SIZE: usize> StaticMetadata<BUF_SIZE> {
         // trim potentially broken utf8 at the end
         if let Some(last_nonempty) = self.fields.iter_mut().rev().find(|f| f.1 > 0) {
             if last_nonempty.0 as usize + last_nonempty.1 as usize == BUF_SIZE {
-                let len: usize =
-                    Utf8Decoder::new(self.buf[last_nonempty.0 as usize..].iter().cloned())
-                        .flatten()
-                        .map(|c| c.len_utf8())
-                        .sum();
+                let len: usize = Utf8Decoder::new(self.buf[last_nonempty.0 as usize..].iter().cloned())
+                    .flatten()
+                    .map(|c| c.len_utf8())
+                    .sum();
                 last_nonempty.1 = len as u16;
                 let trimmed = last_nonempty.1 as usize - len;
                 for next in self.fields.iter_mut().rev().take_while(|f| f.1 == 0) {
@@ -139,18 +130,14 @@ impl<const BUF_SIZE: usize> Metadata for StaticMetadata<BUF_SIZE> {
 
 impl<const BUF_SIZE: usize> Default for StaticMetadata<BUF_SIZE> {
     fn default() -> Self {
-        StaticMetadata {
-            fields: [(0, 0); STATIC_METADATA_N_FIELDS],
-            buf: [0u8; BUF_SIZE],
-        }
+        StaticMetadata { fields: [(0, 0); STATIC_METADATA_N_FIELDS], buf: [0u8; BUF_SIZE] }
     }
 }
 
 impl<const BUF_SIZE: usize> PartialEq for StaticMetadata<BUF_SIZE> {
     fn eq(&self, rhs: &Self) -> bool {
         self.fields == rhs.fields
-            && self.buf[..self.fields.last().unwrap().1 as usize]
-                == rhs.buf[..rhs.fields.last().unwrap().1 as usize]
+            && self.buf[..self.fields.last().unwrap().1 as usize] == rhs.buf[..rhs.fields.last().unwrap().1 as usize]
     }
 }
 
