@@ -1,10 +1,12 @@
 [package]
 name = "phonoscule-cli"
+description = "A simple CLI music player based on Phonoscule"
 authors.workspace = true
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+clap = { version = "4.2", features = ["derive"] }
 crossterm = { version = "0.26", features = ["event-stream"] }
 futures = "0.3"
 pulse-simple = "1.0.1"
