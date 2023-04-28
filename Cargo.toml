@@ -9,7 +9,7 @@ version = "0.2.0"
 edition = "2021"
 
 [workspace.dependencies]
-log = { version = "0.4", features = ["max_level_debug", "release_max_level_info"] }
+log = { version = "0.4", features = ["max_level_trace", "release_max_level_debug"] }
 embedded-io = { version = "0.4", features = ["async"] }
 tokio = { version = "1.26", features = ["rt", "macros"] }
 simple_logger = "4.0"

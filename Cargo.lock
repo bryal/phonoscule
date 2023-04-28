@@ -2105,7 +2105,7 @@ dependencies = [
  "phonoscule",
  "pulse-simple",
  "ringbuf",
- "simple_logger",
+ "time",
  "tokio",
 ]
 

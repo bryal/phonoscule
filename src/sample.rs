@@ -51,12 +51,12 @@ impl<Sample, R> Source<Sample> for FormatReader<Sample, R>
 where
     R: Read,
 {
-    async fn read_samples(&mut self, mut out: &mut [Sample]) -> Option<usize> {
+    async fn read_samples(&mut self, out: &mut [Sample]) -> Option<usize> {
         let len_bytes = core::mem::size_of_val(out);
+        let mut out = unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, len_bytes) };
         let mut tot_read_bytes = 0;
         loop {
-            let out_bytes = unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, len_bytes) };
-            let nread = self.reader.read(out_bytes).await.ok()?;
+            let nread = self.reader.read(out).await.ok()?;
             tot_read_bytes += nread;
             if tot_read_bytes % size_of::<Sample>() == 0 {
                 return Some(tot_read_bytes / size_of::<Sample>());
@@ -116,7 +116,7 @@ impl<R> MultiReader<R> {
             Some(nread)
         }
         match self {
-            MultiReader::StereoPcmS16(ref mut r) => f(r, buf).await,
+            MultiReader::StereoPcmS16(r) => f(r, buf).await,
             MultiReader::StereoPcmS24(r) => f(r, buf).await,
         }
     }

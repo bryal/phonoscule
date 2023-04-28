@@ -44,7 +44,7 @@ where
             loop {
                 let chunk_id = FourCc::parse(&mut inp).await?;
                 let chunk_size = inp.read_u32_le().await.ok()? as usize;
-                log::debug!("chunk id: {}, size: {}", chunk_id.as_str(), chunk_size);
+                log::trace!("chunk id: {}, size: {}", chunk_id.as_str(), chunk_size);
                 {
                     match chunk_id.as_str() {
                         "fmt " => {
@@ -53,21 +53,25 @@ where
                             let n_channels = inp.read_u16_le().await.ok()?;
                             let blocks_per_sec = inp.read_u32_le().await.ok()?;
                             let avg_bytes_per_sec = inp.read_u32_le().await.ok()?;
-                            let _block_size = inp.read_u16_le().await.ok()?;
+                            let block_size = inp.read_u16_le().await.ok()?;
                             let bits_per_sample = inp.read_u16_le().await.ok()?;
                             let ext_size = inp.read_u16_le().await.ok();
                             let valid_bits_per_sample = inp.read_u16_le().await.ok();
                             let _speaker_position_mask = inp.read_u32_le().await.ok();
                             let sub_format_code = inp.read_u16_le().await.ok();
                             let mut guid_constant = [0u8; 14];
-                            let guid_constant =
-                                inp.read_exact(&mut guid_constant).await.ok().map(move |_| guid_constant);
-                            log::debug!(
-                                "fc: {}, ch: {}, blps: {}, avg: {}, bps: {}, es: {:?}, sf: {:?}, gc: {:?}",
+                            let guid_constant = inp
+                                .read_exact(&mut guid_constant)
+                                .await
+                                .ok()
+                                .map(move |_| guid_constant);
+                            log::trace!(
+                                "fc: {}, ch: {}, blps: {}, avg: {}, blsz: {}, bps: {}, es: {:?}, sf: {:?}, gc: {:?}",
                                 format_code,
                                 n_channels,
                                 blocks_per_sec,
                                 avg_bytes_per_sec,
+                                block_size,
                                 bits_per_sample,
                                 ext_size,
                                 sub_format_code,
@@ -78,7 +82,8 @@ where
                                 return None
                             }
                             let float = match (format_code, sub_format_code) {
-                                (WAVE_FORMAT_PCM, _) | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_PCM)) => false,
+                                (WAVE_FORMAT_PCM, _)
+                                | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_PCM)) => false,
                                 (WAVE_FORMAT_IEEE_FLOAT, _)
                                 | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_IEEE_FLOAT)) => true,
                                 (c, Some(s)) => {
@@ -91,7 +96,14 @@ where
                                 }
                             };
                             inp.skip_rest().await.ok()?;
-                            format = Some(Format { n_channels, float, bits_per_sample, size: 0, blocks_per_sec });
+                            format = Some(Format {
+                                n_channels,
+                                float,
+                                bits_per_sample,
+                                block_size,
+                                size: 0,
+                                blocks_per_sec,
+                            });
                         }
                         // The story with metadata in WAV files doesn't look great. There's the standard RIFF/LIST-INFO
                         // method, but most applications only support writing this, and not reading. Then there's ID3v2,
@@ -103,14 +115,14 @@ where
                             if tag.as_str() == "INFO" {
                                 parse_metadata(&mut metadata, &mut inp).await?
                             } else {
-                                log::debug!("ignored LIST chunk with tag {:?}", tag.as_str());
+                                log::trace!("ignored LIST chunk with tag {:?}", tag.as_str());
                             }
                             inp.skip_rest().await.ok()?;
                         }
                         "data" => break chunk_size,
                         id => {
                             let inp = (&mut inp).take_exact(chunk_size as u64);
-                            log::debug!("ignored chunk {:?}", id);
+                            log::trace!("ignored chunk {:?}", id);
                             inp.skip_rest().await.ok()?;
                         }
                     }
@@ -120,20 +132,40 @@ where
         };
         let mut format = format?;
         format.size = data_size as u64;
-        let samples = match (format.float, format.bits_per_sample, format.n_channels) {
-            (false, 16, 2) => Some(MultiReader::StereoPcmS16(FormatReader::new(inp))),
-            (false, 24, 2) => Some(MultiReader::StereoPcmS24(FormatReader::new(inp))),
-            (_, _, _) => {
+        let samples = match (
+            format.float,
+            format.bits_per_sample,
+            format.block_size,
+            format.n_channels,
+        ) {
+            (false, 16, 4, 2) => {
+                log::debug!("Format matches Stereo PCM S16");
+                Some(MultiReader::StereoPcmS16(FormatReader::new(inp)))
+            }
+            (false, 24, 6, 2) => {
+                log::debug!("Format matches Stereo PCM S24");
+                Some(MultiReader::StereoPcmS24(FormatReader::new(inp)))
+            }
+            (_, _, _, _) => {
                 log::error!(
-                    "Unsupported format: {} bit {}-channel {}",
+                    "Unsupported format: {} bit {}-channel {} (block size = {})",
                     format.bits_per_sample,
                     format.n_channels,
-                    if format.float { "float" } else { "signed/unsigned" }
+                    if format.float {
+                        "float"
+                    } else {
+                        "signed/unsigned"
+                    },
+                    format.block_size
                 );
                 None
             }
         }?;
-        Some(Wav { metadata, format, samples })
+        Some(Wav {
+            metadata,
+            format,
+            samples,
+        })
     }
 }
 
@@ -141,6 +173,7 @@ where
 pub struct Format {
     pub float: bool,
     pub bits_per_sample: u16,
+    pub block_size: u16,
     pub blocks_per_sec: u32,
     pub n_channels: u16,
     pub size: u64,
@@ -168,18 +201,24 @@ where
         let mut buf = [0; 4];
         inp.read_exact(&mut buf).await.ok()?;
         let chunk_size = u32::from_le_bytes(buf) as usize;
-        log::debug!("INFO subchunk id: {}, size: {}", chunk_id.as_str(), chunk_size);
+        log::trace!(
+            "INFO subchunk id: {}, size: {}",
+            chunk_id.as_str(),
+            chunk_size
+        );
         let nread = match chunk_id.as_str() {
             "INAM" => m.read_title(chunk_size, inp).await.ok()?,
             "IPRD" => m.read_album(chunk_size, inp).await.ok()?,
             "IART" => m.read_artist(chunk_size, inp).await.ok()?,
             id => {
-                log::debug!("ignored INFO subchunk {:?}", id);
+                log::trace!("ignored INFO subchunk {:?}", id);
                 0
             }
         };
         let padding_size = chunk_size & 1;
-        inp.skip(chunk_size as u64 + padding_size as u64 - nread as u64).await.ok()?;
+        inp.skip(chunk_size as u64 + padding_size as u64 - nread as u64)
+            .await
+            .ok()?;
     }
     Some(())
 }
@@ -191,7 +230,9 @@ impl FourCc {
     async fn parse<R: Read>(inp: &mut R) -> Option<Self> {
         let mut bs = [0; 4];
         inp.read_exact(&mut bs).await.ok()?;
-        bs.iter().all(|c| c.is_ascii() && !c.is_ascii_control()).then_some(Self(bs))
+        bs.iter()
+            .all(|c| c.is_ascii() && !c.is_ascii_control())
+            .then_some(Self(bs))
     }
 
     pub fn as_str(&self) -> &str {

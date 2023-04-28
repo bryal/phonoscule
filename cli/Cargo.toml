@@ -9,8 +9,8 @@ crossterm = { version = "0.26", features = ["event-stream"] }
 futures = "0.3"
 pulse-simple = "1.0.1"
 ringbuf = "0.3"
+time = { version = "0.3.16", features = ["formatting", "macros"] }
 phonoscule = { path = "../" }
 embedded-io   = { workspace = true, features = ["tokio"] }
 tokio         = { workspace = true, features = ["sync", "time", "io-util", "fs"] }
-simple_logger = { workspace = true, features = ["stderr"] }
-log           = { workspace = true }
+log           = { workspace = true, features = ["std"] }

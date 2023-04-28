@@ -1,17 +1,22 @@
 #![allow(incomplete_features)]
-#![feature(iter_next_chunk, async_fn_in_trait, maybe_uninit_uninit_array_transpose, maybe_uninit_slice)]
+#![feature(
+    iter_next_chunk,
+    async_fn_in_trait,
+    maybe_uninit_uninit_array_transpose,
+    maybe_uninit_slice
+)]
+
+mod logger;
 
 use core::{cmp::min, mem::MaybeUninit};
 use crossterm::{
-    cursor,
+    self as ct,
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind},
-    execute, queue, style,
-    terminal::{self, ClearType},
 };
 use embedded_io::adapters::FromTokio;
 use futures::StreamExt;
 use phonoscule::{io::*, metadata::*, plumbing::*, sample::*, wav::*};
-use std::{cell::Cell, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 use tokio::{fs::File, io::BufReader, sync::mpsc as async_mpsc, task::spawn, time::interval};
 
 const PLAYBACK_SAMPLE_RATE: u32 = 48000;
@@ -44,7 +49,10 @@ struct StaticVec<const N: usize, T> {
 
 impl<const N: usize, T> StaticVec<N, T> {
     fn from(buf: [T; N]) -> Self {
-        Self { len: N, buf: MaybeUninit::new(buf).transpose() }
+        Self {
+            len: N,
+            buf: MaybeUninit::new(buf).transpose(),
+        }
     }
 
     fn truncate(&mut self, len: usize) {
@@ -82,7 +90,9 @@ impl<const N: usize, Sample> SinkInput<Sample> for RecvSamples<N, Sample> {
     }
 }
 
-fn sample_channel<const N: usize, Sample>(nchunks: usize) -> (SendSamples<N, Sample>, RecvSamples<N, Sample>) {
+fn sample_channel<const N: usize, Sample>(
+    nchunks: usize,
+) -> (SendSamples<N, Sample>, RecvSamples<N, Sample>) {
     let (tx, rx) = async_mpsc::channel(nchunks);
     (SendSamples(tx), RecvSamples(rx))
 }
@@ -100,8 +110,12 @@ impl PulseSink {
 }
 impl Sink<Stereo<PcmS16Le>> for PulseSink {
     async fn write_samples(&mut self, samples: &[Stereo<PcmS16Le>]) -> Option<usize> {
-        let pulse_samples = unsafe { core::mem::transmute::<&[Stereo<PcmS16Le>], &[[i16; 2]]>(samples) };
-        assert_eq!(core::mem::size_of_val(samples), core::mem::size_of_val(pulse_samples));
+        let pulse_samples =
+            unsafe { core::mem::transmute::<&[Stereo<PcmS16Le>], &[[i16; 2]]>(samples) };
+        assert_eq!(
+            core::mem::size_of_val(samples),
+            core::mem::size_of_val(pulse_samples)
+        );
         self.0.write(pulse_samples);
         Some(samples.len())
     }
@@ -110,7 +124,8 @@ unsafe impl Send for PulseSink {}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    simple_logger::init().unwrap();
+    let (print_tx, mut print_rx) = tokio::sync::mpsc::channel::<String>(512);
+    logger::Logger::new(print_tx, vec![]).init().unwrap();
 
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<Cmd>(8);
     let (status_tx, mut status_rx) = tokio::sync::mpsc::channel::<Status>(4);
@@ -124,20 +139,23 @@ async fn main() {
     });
 
     let _join_player = spawn(async move {
-        let path = Path::new("../assets/Listless.wav");
-        let start_at = Cell::new(0);
-        loop {
-            let f = Skippable(FromTokio::new(BufReader::new(File::open(path).await.unwrap())));
+        let path = Path::new("../assets/Listless-s16.wav");
+        let mut start_at = 0;
+        'outer: loop {
+            log::debug!("opening file {:?}", path);
+            let f = Skippable(FromTokio::new(BufReader::new(
+                File::open(path).await.unwrap(),
+            )));
             let wav = Wav::<StaticMetadata, _>::parse(f).await.unwrap();
             let mut source = wav.samples;
-            let start_at_ = start_at.get();
-            let mut pos = source.fast_forward(start_at_).await.unwrap();
+            let mut pos = source.fast_forward(start_at).await.unwrap();
             let mut chan_from_source = ConnectSource::to_output(source, &mut audio_tx);
 
             let mut playing = true;
             let mut prev_status_pos = 0;
 
             loop {
+                start_at = 0;
                 let maybe_cmd = if !playing {
                     cmd_rx.recv().await
                 } else {
@@ -149,15 +167,17 @@ async fn main() {
                 };
                 match maybe_cmd {
                     Some(Cmd::PlayPause) => playing = !playing,
-                    Some(Cmd::Restart) => return,
+                    Some(Cmd::Restart) => continue 'outer,
                     Some(Cmd::SeekForward(dt)) => {
                         let n = (dt.as_secs_f64() * wav.format.sample_rate() as f64) as u64;
-                        start_at.set(pos + n);
+                        start_at = pos + n;
                         break;
                     }
                     Some(Cmd::SeekBackward(dt)) => {
-                        let i = pos.saturating_sub((dt.as_secs_f64() * wav.format.sample_rate() as f64) as u64);
-                        start_at.set(i);
+                        let i = pos.saturating_sub(
+                            (dt.as_secs_f64() * wav.format.sample_rate() as f64) as u64,
+                        );
+                        start_at = i;
                         break;
                     }
                     None => (),
@@ -168,10 +188,15 @@ async fn main() {
                     let progress_updates_per_sec = 16;
                     let progress_interval = PLAYBACK_SAMPLE_RATE as u64 / progress_updates_per_sec;
                     if pos < prev_status_pos || pos - prev_status_pos > progress_interval {
-                        let t_current = Duration::from_secs_f64(pos as f64 / wav.format.sample_rate() as f64);
-                        let t_end =
-                            Duration::from_secs_f64(wav.format.len_samples() as f64 / wav.format.sample_rate() as f64);
-                        status_tx.send(Status::Progress(t_current, t_end)).await.unwrap();
+                        let t_current =
+                            Duration::from_secs_f64(pos as f64 / wav.format.sample_rate() as f64);
+                        let t_end = Duration::from_secs_f64(
+                            wav.format.len_samples() as f64 / wav.format.sample_rate() as f64,
+                        );
+                        status_tx
+                            .send(Status::Progress(t_current, t_end))
+                            .await
+                            .unwrap();
                         prev_status_pos = pos;
                     }
                 }
@@ -180,11 +205,31 @@ async fn main() {
     });
 
     let mut w = std::io::stdout();
-    execute!(w, terminal::EnterAlternateScreen).unwrap();
-    terminal::enable_raw_mode().unwrap();
+    ct::terminal::enable_raw_mode().unwrap();
 
     let mut events = EventStream::new();
     let mut refresh = interval(Duration::from_millis(100));
+
+    let render_player = |w: &mut std::io::Stdout, t_current: Duration, t_end: Duration| {
+        ct::queue!(
+            w,
+            ct::style::ResetColor,
+            ct::terminal::Clear(ct::terminal::ClearType::CurrentLine),
+            ct::cursor::Hide,
+            ct::cursor::MoveToColumn(0)
+        )
+        .unwrap();
+        let (mins_current, secs_current) = (t_current.as_secs() / 60, t_current.as_secs() % 60);
+        let (mins_end, secs_end) = (t_end.as_secs() / 60, t_end.as_secs() % 60);
+        ct::queue!(
+            w,
+            ct::style::Print(format!(
+                "{mins_current:02}:{secs_current:02} / {mins_end:02}:{secs_end:02}"
+            ))
+        )
+        .unwrap();
+        std::io::Write::flush(w).unwrap();
+    };
 
     let (mut t_current, mut t_end) = (Duration::from_secs(0), Duration::from_secs(0));
     loop {
@@ -196,12 +241,12 @@ async fn main() {
                     (KeyCode::Char(' '), _) => cmd_tx.send(Cmd::PlayPause).await.unwrap(),
                     (KeyCode::Char('r'), _) => cmd_tx.send(Cmd::Restart).await.unwrap(),
                     (KeyCode::Char('q'), _) => {
-                        execute!(w, cursor::SetCursorStyle::DefaultUserShape).unwrap();
+                        ct::execute!(w, ct::cursor::SetCursorStyle::DefaultUserShape).unwrap();
                         break;
                     }
-                    (c, _) => log::debug!("ignored key: {c:?}"),
+                    (c, _) => log::trace!("ignored key: {c:?}"),
                 },
-                Some(Ok(event)) => log::debug!("ignored event: {:?}", event),
+                Some(Ok(event)) => log::trace!("ignored event: {:?}", event),
                 Some(Err(err)) => log::error!("crossterm read event error: {:?}", err),
                 None => break,
             },
@@ -211,34 +256,30 @@ async fn main() {
                     t_end = t_e
                 }
             },
-            _ = refresh.tick() => {
-                queue!(w, style::ResetColor, terminal::Clear(ClearType::All), cursor::Hide, cursor::MoveTo(1, 1)).unwrap();
-
-                for line in MENU.split('\n') {
-                    queue!(w, style::Print(line), cursor::MoveToNextLine(1)).unwrap();
+            // custom logger that sends messages to this channel, which are printed "above" player with line breaks corrected for raw mode
+            msg = print_rx.recv() => {
+                let msg = msg.as_deref().unwrap_or("print channel closed");
+                ct::queue!(
+                    w,
+                    ct::style::ResetColor,
+                    ct::terminal::Clear(ct::terminal::ClearType::CurrentLine),
+                    ct::cursor::Hide,
+                    ct::cursor::MoveToColumn(0)
+                )
+                    .unwrap();
+                for line in msg.lines() {
+                    ct::queue!(w, ct::style::Print(line), ct::style::Print("\n"), ct::cursor::MoveToColumn(0)).unwrap();
                 }
-                queue!(w, style::Print(""), cursor::MoveToNextLine(1)).unwrap();
-
-                let (mins_current, secs_current) = (t_current.as_secs() / 60, t_current.as_secs() % 60);
-                let (mins_end, secs_end) = (t_end.as_secs() / 60, t_end.as_secs() % 60);
-                queue!(w, style::Print(format!("{mins_current:02}:{secs_current:02} / {mins_end:02}:{secs_end:02}")), cursor::MoveToNextLine(1)).unwrap();
-
-                std::io::Write::flush(&mut w).unwrap();
-            }
+                render_player(&mut w, t_current, t_end)
+            },
+            _ = refresh.tick() => {
+                render_player(&mut w, t_current, t_end)
+            },
         }
     }
 
-    execute!(w, style::ResetColor, cursor::Show, terminal::LeaveAlternateScreen).ok();
-    terminal::disable_raw_mode().ok();
+    ct::execute!(w, ct::style::ResetColor, ct::cursor::Show).ok();
+    ct::terminal::disable_raw_mode().ok();
     // join_player.await.ok();
     // join_pulse.await.ok();
 }
-
-const MENU: &str = r#"Phonoscule CLI Demo
-Controls:
- - Q - quit (or return to this menu)
- - R - restart track
- - space - play/pause
- - left  - seek backward
- - right - seek forward
-"#;
