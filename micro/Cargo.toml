@@ -1,0 +1,22 @@
+[package]
+name = "phonoscule-micro"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = {version = "1", features = ["backtrace"]}
+embedded-hal = "=1.0.0-alpha.10"
+embedded-svc = "0.25"
+esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal", rev = "15a0630", features = ["edge-executor"] }
+esp-idf-svc = "0.46"
+esp-idf-sys = { version = "0.33.2", features = ["binstart"] }
+futures = { version = "0.3", default-features = false, features = [] }
+microcrisp = { git = "https://git.sr.ht/~jojo/microcrisp" }
+
+log           = { workspace = true, features = ["max_level_trace", "release_max_level_debug"] }
+simple_logger = { workspace = true }
+
+[build-dependencies]
+anyhow = "1"
+embuild = "0.31"

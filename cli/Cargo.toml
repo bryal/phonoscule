@@ -12,7 +12,7 @@ futures = "0.3"
 pulse-simple = "1.0.1"
 ringbuf = "0.3"
 time = { version = "0.3.16", features = ["formatting", "macros"] }
-phonoscule = { path = "../" }
+phonoscule = { path = "../phonoscule" }
 embedded-io   = { workspace = true, features = ["tokio"] }
 tokio         = { workspace = true, features = ["sync", "time", "io-util", "fs"] }
 log           = { workspace = true, features = ["std"] }

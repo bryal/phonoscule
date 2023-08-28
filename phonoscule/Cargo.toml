@@ -1,0 +1,15 @@
+[package]
+name = "phonoscule"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+utf8-decode = "1.0"
+embedded-io = { workspace = true }
+log         = { workspace = true }
+
+[dev-dependencies]
+embedded-io   = { workspace = true, features = ["tokio"] }
+tokio         = { workspace = true, features = ["io-util", "fs"] }
+simple_logger = { workspace = true }
