@@ -1,18 +1,38 @@
 #![allow(clippy::type_complexity, clippy::unit_arg)]
 
 use anyhow::Result;
-use esp_idf_hal::{delay::Delay, gpio::*, peripherals::Peripherals, task::executor};
+use esp_idf_hal::{
+    gpio::*,
+    ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver},
+    peripherals::Peripherals,
+    prelude::*,
+    task::{executor, watchdog},
+};
+use palette::{FromColor, Hsv, Srgb};
 use simple_logger::SimpleLogger;
+use std::time::{Duration, Instant};
+
+const TAP_TIMEOUT: Duration = Duration::from_millis(240);
+const GHOST_TAP_DELAY: Duration = Duration::from_millis(40);
+
+#[derive(Clone, Copy)]
+enum KeySt {
+    Pressed(Instant),
+    Released(Instant),
+    Free,
+}
+
+static mut ENCODER_BUTTON: KeySt = KeySt::Free;
 
 fn main() {
-    match main_() {
+    match executor::EspBlocker::new().block_on(main_()) {
         Ok(()) => log::info!("main returned Ok"),
         Err(e) => log::error!("main returned Err: {e}"),
     }
     restart()
 }
 
-fn main_() -> Result<()> {
+async fn main_() -> Result<()> {
     SimpleLogger::new().init().unwrap();
     esp_idf_sys::link_patches(); // hack to make sure that a few patches are linked into the final executable
 
@@ -21,6 +41,10 @@ fn main_() -> Result<()> {
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
 
+    let mut wdog_driver =
+        esp_idf_hal::task::watchdog::TWDTDriver::new(peripherals.twdt, &watchdog::config::Config::default())?;
+    let mut wdog = wdog_driver.watch_current_task()?;
+
     // let mut white_led = PinDriver::output(pins.gpio19)?;
     // white_led.set_low()?;
     let mut yellow_led = PinDriver::output(pins.gpio18)?;
@@ -28,25 +52,74 @@ fn main_() -> Result<()> {
 
     let mut encoder_button = PinDriver::input(pins.gpio1)?;
     encoder_button.set_pull(Pull::Up)?;
+    unsafe {
+        encoder_button.subscribe(|| press_encoder())?;
+    }
+    encoder_button.set_interrupt_type(InterruptType::NegEdge)?;
+    encoder_button.enable_interrupt()?;
 
-    executor::EspBlocker::new().block_on(main_loop(&mut yellow_led, &mut encoder_button))?;
+    let (red_led, green_led, blue_led) = (pins.gpio3, pins.gpio4, pins.gpio5);
+    let config = TimerConfig::default().frequency(10.kHz().into());
+    let timer0 = LedcTimerDriver::new(peripherals.ledc.timer0, &config)?;
+    let timer1 = LedcTimerDriver::new(peripherals.ledc.timer1, &config)?;
+    let timer2 = LedcTimerDriver::new(peripherals.ledc.timer2, &config)?;
+    let mut channel0 = LedcDriver::new(peripherals.ledc.channel0, &timer0, red_led)?;
+    let mut channel1 = LedcDriver::new(peripherals.ledc.channel1, &timer1, green_led)?;
+    let mut channel2 = LedcDriver::new(peripherals.ledc.channel2, &timer2, blue_led)?;
+    let max_duty0 = channel0.get_max_duty();
+    let max_duty1 = channel1.get_max_duty();
+    let max_duty2 = channel2.get_max_duty();
 
-    Ok(())
+    let mut t = Instant::now();
+    let dt_min = Duration::from_millis(33);
+    std::thread::sleep(dt_min);
+    let mut led_on = true;
+    let mut led_color = Hsv::new(0.0, 1.0, 0.3);
+    loop {
+        let dt = t.elapsed();
+        let dtf = dt.as_secs_f32();
+        t = Instant::now();
+
+        let (mut encoder_tapped, mut encoder_held) = (false, false);
+        match get_encoder_key_st() {
+            KeySt::Pressed(tp) if encoder_button.is_high() => {
+                if (t - tp) < TAP_TIMEOUT {
+                    encoder_tapped = true
+                }
+                set_encoder_key_st(KeySt::Released(t))
+            }
+            KeySt::Pressed(tp) if (t - tp) > TAP_TIMEOUT => encoder_held = true,
+            KeySt::Released(tr) if (t - tr) > GHOST_TAP_DELAY => set_encoder_key_st(KeySt::Free),
+            _ => (),
+        }
+
+        if encoder_tapped {
+            led_on ^= true;
+        }
+        if encoder_held {
+            led_color.hue += dtf * 50.0;
+        }
+
+        let color = if led_on { led_color } else { Hsv::new(0.0, 0.0, 0.0) };
+        let (r, g, b) = Srgb::from_color(color).into_components();
+        channel0.set_duty((max_duty0 as f32 * r) as u32)?;
+        channel1.set_duty((max_duty1 as f32 * g) as u32)?;
+        channel2.set_duty((max_duty2 as f32 * b) as u32)?;
+
+        wdog.feed()?;
+        std::thread::sleep(dt_min.saturating_sub(dt));
+    }
 }
 
-async fn main_loop(
-    yellow_led: &mut PinDriver<'_, impl OutputPin, Output>,
-    encoder_button: &mut PinDriver<'_, impl InputPin, Input>,
-) -> Result<()> {
-    let mut led_on_state = false;
-    loop {
-        encoder_button.wait_for_any_edge(false).await?;
-        led_on_state = encoder_button.is_high();
-        if led_on_state {
-            yellow_led.set_low()?;
-        } else {
-            yellow_led.set_high()?;
-        }
+fn get_encoder_key_st() -> KeySt {
+    unsafe { ENCODER_BUTTON }
+}
+fn set_encoder_key_st(st: KeySt) {
+    unsafe { ENCODER_BUTTON = st }
+}
+fn press_encoder() {
+    if let KeySt::Free = get_encoder_key_st() {
+        set_encoder_key_st(KeySt::Pressed(Instant::now()))
     }
 }
 

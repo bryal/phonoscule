@@ -13,6 +13,7 @@ esp-idf-svc = "0.46"
 esp-idf-sys = { version = "0.33.2", features = ["binstart"] }
 futures = { version = "0.3", default-features = false, features = [] }
 microcrisp = { git = "https://git.sr.ht/~jojo/microcrisp" }
+palette = "0.7"
 
 log           = { workspace = true, features = ["max_level_trace", "release_max_level_debug"] }
 simple_logger = { workspace = true }
