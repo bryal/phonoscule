@@ -10,10 +10,13 @@ use esp_idf_hal::{
 };
 use palette::{FromColor, Hsv, Srgb};
 use simple_logger::SimpleLogger;
+use std::mem::replace;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const INPUT_GHOST_COOLDOWN: Duration = Duration::from_millis(40);
+
 const TAP_TIMEOUT: Duration = Duration::from_millis(240);
-const GHOST_TAP_DELAY: Duration = Duration::from_millis(40);
 
 #[derive(Clone, Copy)]
 enum KeySt {
@@ -23,6 +26,19 @@ enum KeySt {
 }
 
 static mut ENCODER_BUTTON: KeySt = KeySt::Free;
+
+// State needed to decode the gray code of encoder with bouncing in the signals.
+// Same problem as
+// https://hackaday.com/2022/04/20/a-rotary-encoder-how-hard-can-it-be/
+// but different solution.
+struct EncoderSt {
+    edge_was_a: bool,
+    a_was_high: bool,
+    b_was_high: bool,
+    cw_updates: i8,
+}
+
+static mut ENCODER_ST: EncoderSt = EncoderSt { edge_was_a: true, a_was_high: true, b_was_high: true, cw_updates: 0 };
 
 fn main() {
     match executor::EspBlocker::new().block_on(main_()) {
@@ -55,8 +71,45 @@ async fn main_() -> Result<()> {
     unsafe {
         encoder_button.subscribe(|| press_encoder())?;
     }
-    encoder_button.set_interrupt_type(InterruptType::NegEdge)?;
+    encoder_button.set_interrupt_type(InterruptType::AnyEdge)?;
     encoder_button.enable_interrupt()?;
+
+    let encoder_a = Arc::new(Mutex::new(PinDriver::input(pins.gpio2)?));
+    let encoder_b = Arc::new(Mutex::new(PinDriver::input(pins.gpio6)?));
+    let encoder_a1 = encoder_a.clone();
+    let encoder_b1 = encoder_b.clone();
+    {
+        let mut encoder_a = encoder_a.lock().unwrap();
+        let mut encoder_b = encoder_b.lock().unwrap();
+        encoder_a.set_pull(Pull::Up)?;
+        encoder_b.set_pull(Pull::Up)?;
+        unsafe {
+            encoder_a.subscribe(move || {
+                let a_is_high = encoder_a1.lock().unwrap().is_high();
+
+                if !ENCODER_ST.edge_was_a && !ENCODER_ST.b_was_high && ENCODER_ST.a_was_high {
+                    ENCODER_ST.cw_updates = ENCODER_ST.cw_updates.saturating_sub(1);
+                }
+
+                ENCODER_ST.a_was_high = a_is_high;
+                ENCODER_ST.edge_was_a = true;
+            })?;
+            encoder_b.subscribe(move || {
+                let b_is_high = encoder_b1.lock().unwrap().is_high();
+
+                if ENCODER_ST.edge_was_a && !ENCODER_ST.a_was_high && ENCODER_ST.b_was_high {
+                    ENCODER_ST.cw_updates = ENCODER_ST.cw_updates.saturating_add(1);
+                }
+
+                ENCODER_ST.b_was_high = b_is_high;
+                ENCODER_ST.edge_was_a = false;
+            })?;
+        }
+        encoder_a.set_interrupt_type(InterruptType::AnyEdge)?;
+        encoder_b.set_interrupt_type(InterruptType::AnyEdge)?;
+        encoder_a.enable_interrupt()?;
+        encoder_b.enable_interrupt()?;
+    }
 
     let (red_led, green_led, blue_led) = (pins.gpio3, pins.gpio4, pins.gpio5);
     let config = TimerConfig::default().frequency(10.kHz().into());
@@ -89,9 +142,11 @@ async fn main_() -> Result<()> {
                 set_encoder_key_st(KeySt::Released(t))
             }
             KeySt::Pressed(tp) if (t - tp) > TAP_TIMEOUT => encoder_held = true,
-            KeySt::Released(tr) if (t - tr) > GHOST_TAP_DELAY => set_encoder_key_st(KeySt::Free),
+            KeySt::Released(tr) if (t - tr) > INPUT_GHOST_COOLDOWN => set_encoder_key_st(KeySt::Free),
             _ => (),
         }
+
+        let encoder_cw = unsafe { replace(&mut ENCODER_ST.cw_updates, 0) };
 
         if encoder_tapped {
             led_on ^= true;
@@ -99,8 +154,10 @@ async fn main_() -> Result<()> {
         if encoder_held {
             led_color.hue += dtf * 50.0;
         }
+        led_color.value = (led_color.value + encoder_cw as f32 * 0.1).clamp(0.0, 1.0);
 
-        let color = if led_on { led_color } else { Hsv::new(0.0, 0.0, 0.0) };
+        let mut color = if led_on { led_color } else { Hsv::new(0.0, 0.0, 0.0) };
+        color.value = color.value.powf(2.4);
         let (r, g, b) = Srgb::from_color(color).into_components();
         channel0.set_duty((max_duty0 as f32 * r) as u32)?;
         channel1.set_duty((max_duty1 as f32 * g) as u32)?;
