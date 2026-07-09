@@ -6,13 +6,12 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-clap = { version = "4.2", features = ["derive"] }
-crossterm = { version = "0.26", features = ["event-stream"] }
-futures = "0.3"
+clap = { version = "4.6", features = ["derive"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+futures = "0.3.32"
 pulse-simple = "1.0.1"
-ringbuf = "0.3"
-time = { version = "0.3.16", features = ["formatting", "macros"] }
+time = { version = "0.3.53", features = ["formatting", "macros"] }
 phonoscule = { path = "../phonoscule" }
-embedded-io   = { workspace = true, features = ["tokio"] }
-tokio         = { workspace = true, features = ["sync", "time", "io-util", "fs"] }
-log           = { workspace = true, features = ["std"] }
+embedded-io-adapters = { workspace = true }
+tokio                = { workspace = true, features = ["sync", "time", "io-util", "fs"] }
+log                  = { workspace = true, features = ["std"] }

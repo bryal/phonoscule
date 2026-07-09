@@ -7,4 +7,14 @@ edition.workspace = true
 [dependencies]
 phonoscule = { path = "../phonoscule" }
 pulse-simple = "1.0.1"
-bevy = { version = "*", default-features = false, features = ["bevy_asset", "bevy_scene", "bevy_winit", "render", "png", "wayland"] }
+bevy = { version = "0.19.0", default-features = false, features = [
+    "bevy_asset",
+    "bevy_scene",
+    "bevy_winit",
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_text",
+    "bevy_core_pipeline",
+    "png",
+    "wayland",
+] }

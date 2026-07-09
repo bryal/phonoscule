@@ -16,7 +16,7 @@ use crate::{
     metadata::*,
     sample::*,
 };
-use embedded_io::asynch::Read;
+use embedded_io_async::Read;
 
 pub struct Wav<Md, R> {
     pub metadata: Md,

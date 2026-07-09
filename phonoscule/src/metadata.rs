@@ -1,5 +1,5 @@
 use core::cmp::min;
-use embedded_io::asynch::Read;
+use embedded_io_async::Read;
 use utf8_decode::Decoder as Utf8Decoder;
 
 pub trait Metadata: Default {
