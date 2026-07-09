@@ -26,6 +26,11 @@ impl<T: Read> Read for Skippable<T> {
         self.0.read(buf).await
     }
 }
+impl<T: Seek> Seek for Skippable<T> {
+    async fn seek(&mut self, pos: SeekFrom) -> Result<u64, T::Error> {
+        self.0.seek(pos).await
+    }
+}
 impl<T: Seek> Skip for Skippable<T> {
     async fn skip(&mut self, nskip: u64) -> Result<u64, <T as ErrorType>::Error> {
         let start = self.0.stream_position().await?;

@@ -8,8 +8,9 @@
 //! - Channel mapping family 0 only, i.e. mono or stereo. Surround would need `opuscule`'s
 //!   multistream decoder.
 //! - A single logical bitstream; chained or multiplexed Ogg streams are not supported.
-//! - The total stream length is not known up front. That would require seeking to the last Ogg
-//!   page for its granule position, and we only require `Read`.
+//! - With [`OggOpus::parse`] the total stream length is not known up front ([`Format::len_samples`]
+//!   is `None`): the length lives in the granule position of the *last* Ogg page, and `parse` only
+//!   requires `Read`. Use [`OggOpus::parse_seekable`] to get it via a scan of the stream's tail.
 //! - Opus frames depend on decoder history, so [`FastForward`] decodes and discards rather than
 //!   skips.
 
@@ -19,7 +20,8 @@ use crate::{
     sample::{PcmS16Le, Stereo},
 };
 use core::cmp::min;
-use embedded_io_async::Read;
+use embedded_io::SeekFrom;
+use embedded_io_async::{Read, Seek};
 use ogg::reading::{BasePacketReader, OggPage, PageParser};
 use opuscule::{Channels, Decoder, SampleRate, Val, sample_to_i16};
 
@@ -39,6 +41,8 @@ pub struct Format {
     pub n_channels: u16,
     /// Encoder delay dropped from the front of the stream, in 48 kHz samples.
     pub pre_skip: u16,
+    /// Total number of samples in the stream, when known (see [`OggOpus::parse_seekable`]).
+    pub len_samples: Option<u64>,
 }
 
 impl Format {
@@ -60,10 +64,11 @@ where
         let tags = next_packet(&mut packets, &mut inp).await??;
         let mut metadata = Md::default();
         parse_opus_tags(&mut metadata, &tags.data);
-        let format = Format { n_channels: channels.count() as u16, pre_skip };
+        let format = Format { n_channels: channels.count() as u16, pre_skip, len_samples: None };
         let samples = OpusReader {
             packets,
             inp,
+            serial: head.stream_serial(),
             decoder: Decoder::new(SampleRate::Hz48000, channels),
             channels,
             frame: [0 as Val; MAX_FRAME * 2],
@@ -74,11 +79,81 @@ where
         };
         Some(OggOpus { metadata, format, samples })
     }
+
+    /// Like [`OggOpus::parse`], but additionally determines [`Format::len_samples`] by scanning
+    /// the tail of the stream for the last Ogg page and reading its granule position. Costs one
+    /// extra read of up to ~64 KiB plus three seeks. If the scan fails the stream still plays,
+    /// just with an unknown length.
+    pub async fn parse_seekable(inp: R) -> Option<Self>
+    where
+        R: Seek,
+    {
+        let mut this = Self::parse(inp).await?;
+        let samples = &mut this.samples;
+        match scan_len_samples(&mut samples.inp, samples.serial, this.format.pre_skip).await {
+            Some(len) => this.format.len_samples = Some(len),
+            None => log::warn!("could not determine the stream length from the last ogg page"),
+        }
+        Some(this)
+    }
+}
+
+/// Scans the tail of the stream for its last valid Ogg page and derives the total sample count
+/// from its granule position (RFC 7845 §4). Restores the stream position afterwards.
+async fn scan_len_samples<R: Read + Seek>(inp: &mut R, serial: u32, pre_skip: u16) -> Option<u64> {
+    // A page is at most 27 + 255 + 255 * 255 bytes, and the file's last page ends at the end of
+    // the stream, so it starts within this window.
+    const MAX_PAGE: u64 = (27 + 255 + 255 * 255) as u64;
+    let pos = inp.stream_position().await.ok()?;
+    let end = inp.seek(SeekFrom::End(0)).await.ok()?;
+    let tail_start = end.saturating_sub(MAX_PAGE);
+    inp.seek(SeekFrom::Start(tail_start)).await.ok()?;
+    let mut tail = vec![0u8; (end - tail_start) as usize];
+    let read_result = inp.read_exact(&mut tail).await;
+    // Rewind before anything else, so a scan failure leaves the reader usable.
+    inp.seek(SeekFrom::Start(pos)).await.ok()?;
+    read_result.ok()?;
+    last_granule(&tail, serial).map(|granule| granule.saturating_sub(pre_skip as u64))
+}
+
+/// Finds the last valid Ogg page of stream `serial` in `tail` and returns its granule position.
+fn last_granule(tail: &[u8], serial: u32) -> Option<u64> {
+    for i in (0..tail.len().saturating_sub(27)).rev() {
+        if &tail[i..i + 4] != b"OggS" {
+            continue;
+        }
+        match page_granule(&tail[i..], serial) {
+            // A granule of -1 means no packet ends on this page; keep looking at earlier pages.
+            Some(granule) if granule != u64::MAX => return Some(granule),
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Returns the granule position of the Ogg page at the start of `page`, or `None` if it isn't a
+/// complete, checksum-valid page belonging to stream `serial`. The `OggS` capture pattern can
+/// appear in packet payloads, so candidates must be validated this strictly.
+fn page_granule(page: &[u8], serial: u32) -> Option<u64> {
+    let header: [u8; 27] = page.get(..27)?.try_into().ok()?;
+    let page_serial = u32::from_le_bytes([header[14], header[15], header[16], header[17]]);
+    if page_serial != serial {
+        return None;
+    }
+    let granule = u64::from_le_bytes(header[6..14].try_into().ok()?);
+    let (mut parser, n_segments) = PageParser::new(header).ok()?;
+    let segments = page.get(27..27 + n_segments)?.to_vec();
+    let n_data = parser.parse_segments(segments);
+    let data = page.get(27 + n_segments..27 + n_segments + n_data)?.to_vec();
+    parser.parse_packet_data(data).ok()?; // verifies the checksum
+    Some(granule)
 }
 
 pub struct OpusReader<R> {
     packets: BasePacketReader,
     inp: R,
+    /// Serial number of the logical bitstream we are decoding.
+    serial: u32,
     decoder: Decoder,
     channels: Channels,
     /// The current decoded frame, interleaved.

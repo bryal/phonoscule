@@ -100,11 +100,11 @@ impl Track {
                 })
             }
             b"OggS" => {
-                let opus = OggOpus::<StaticMetadata, _>::parse(f).await?;
+                let opus = OggOpus::<StaticMetadata, _>::parse_seekable(f).await?;
                 Some(Track {
                     metadata: opus.metadata,
                     sample_rate: opus.format.sample_rate(),
-                    len_samples: None,
+                    len_samples: opus.format.len_samples,
                     samples: TrackSamples::Opus(Box::new(opus.samples)),
                 })
             }

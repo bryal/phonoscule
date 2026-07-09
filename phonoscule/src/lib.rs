@@ -57,11 +57,12 @@ mod test {
     async fn parse_an_opus_file() {
         init();
         let f = Skippable(FromTokio::new(BufReader::new(File::open("../assets/Listless.opus").await.unwrap())));
-        let opus = OggOpus::<StaticMetadata, _>::parse(f).await.unwrap();
+        let opus = OggOpus::<StaticMetadata, _>::parse_seekable(f).await.unwrap();
         assert_eq!(opus.metadata.title(), "Listless");
         assert_eq!(opus.metadata.album(), "Listless/Second Skin 2019 Single");
         assert_eq!(opus.metadata.artist(), "Siamese Twins");
         assert_eq!(opus.format.n_channels, 2);
+        let len = opus.format.len_samples.expect("tail scan should find the last page granule");
         let mut samples = opus.samples;
         let mut total: u64 = 0;
         loop {
@@ -72,8 +73,11 @@ mod test {
             }
             total += nread as u64;
         }
-        // The track is 2:46 at 48 kHz; leave some slack for pre-skip / end padding.
+        // The track is 2:46 at 48 kHz.
         let rate = opus.format.sample_rate() as u64;
         assert!(total > 160 * rate && total < 170 * rate, "unexpected total sample count {total}");
+        // We decode every frame in full while the granule-derived length excludes the final
+        // frame's end padding, so the decoded total may exceed it by less than one frame.
+        assert!(len <= total && total - len < 5760, "len_samples {len} vs decoded total {total}");
     }
 }
