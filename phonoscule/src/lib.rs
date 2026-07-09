@@ -1,5 +1,6 @@
-#![allow(incomplete_features)]
-#![feature(iter_next_chunk, let_chains, async_fn_in_trait)]
+// Same choice as `embedded-io-async`: plain `async fn` in public traits, leaving `Send`-ness of
+// the returned futures up to the implementor.
+#![allow(async_fn_in_trait)]
 
 pub mod io;
 pub mod metadata;
@@ -10,7 +11,7 @@ pub mod wav;
 #[cfg(test)]
 mod test {
     use super::{io::Skippable, metadata::*, plumbing::*, sample, wav::*};
-    use embedded_io::adapters::FromTokio;
+    use embedded_io_adapters::tokio_1::FromTokio;
     use std::sync::Once;
     use tokio::{fs::File, io::BufReader};
 
@@ -25,7 +26,7 @@ mod test {
     #[tokio::test(flavor = "current_thread")]
     async fn parse_a_wav_file() {
         init();
-        let f = Skippable(FromTokio::new(BufReader::new(File::open("assets/Listless.wav").await.unwrap())));
+        let f = Skippable(FromTokio::new(BufReader::new(File::open("../assets/Listless-s16.wav").await.unwrap())));
         let wav = Wav::<StaticMetadata, _>::parse(f).await.unwrap();
         assert_eq!(wav.metadata.title(), "Listless");
         assert_eq!(wav.metadata.album(), "Listless/Second Skin 2019 Single");

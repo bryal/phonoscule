@@ -1,6 +1,6 @@
 use crate::{io::*, plumbing::*};
 use core::{cmp::min, mem::size_of};
-use embedded_io::asynch::Read;
+use embedded_io_async::Read;
 
 #[derive(Copy, Clone, Default, Debug)]
 #[repr(C)]

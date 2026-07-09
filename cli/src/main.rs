@@ -1,15 +1,12 @@
-#![allow(incomplete_features)]
-#![feature(iter_next_chunk, async_fn_in_trait, maybe_uninit_uninit_array_transpose, maybe_uninit_slice)]
-
 mod logger;
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use core::{cmp::min, mem::MaybeUninit};
+use core::cmp::min;
 use crossterm::{
     self as ct,
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind},
 };
-use embedded_io::adapters::FromTokio;
+use embedded_io_adapters::tokio_1::FromTokio;
 use futures::StreamExt;
 use phonoscule::{io::*, metadata::*, plumbing::*, sample::*, wav::*};
 use std::{path::PathBuf, time::Duration};
@@ -44,12 +41,12 @@ enum Status {
 
 struct StaticVec<const N: usize, T> {
     len: usize,
-    buf: [MaybeUninit<T>; N],
+    buf: [T; N],
 }
 
 impl<const N: usize, T> StaticVec<N, T> {
     fn from(buf: [T; N]) -> Self {
-        Self { len: N, buf: MaybeUninit::new(buf).transpose() }
+        Self { len: N, buf }
     }
 
     fn truncate(&mut self, len: usize) {
@@ -57,7 +54,7 @@ impl<const N: usize, T> StaticVec<N, T> {
     }
 
     fn as_slice(&self) -> &[T] {
-        unsafe { MaybeUninit::slice_assume_init_ref(&self.buf[..self.len]) }
+        &self.buf[..self.len]
     }
 }
 

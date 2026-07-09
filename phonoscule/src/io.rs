@@ -1,27 +1,24 @@
 use core::cmp::min;
 use core::mem::ManuallyDrop;
-use embedded_io::{
-    asynch::{Read, Seek},
-    blocking::ReadExactError,
-    Io, SeekFrom,
-};
+use embedded_io::{ErrorType, ReadExactError, SeekFrom};
+use embedded_io_async::{Read, Seek};
 
 /// Like Seek, but forward from current only
-pub trait Skip: Io {
+pub trait Skip: ErrorType {
     /// Returns how many bytes were actually skipped.
     ///
     /// Skip beyond the end of the stream is allowed. The returned count is then strictly less than the specified
     /// `nbytes`.
-    async fn skip(&mut self, nbytes: u64) -> Result<u64, <Self as Io>::Error>;
+    async fn skip(&mut self, nbytes: u64) -> Result<u64, <Self as ErrorType>::Error>;
 }
 impl<T: Skip> Skip for &mut T {
-    async fn skip(&mut self, nbytes: u64) -> Result<u64, <T as Io>::Error> {
+    async fn skip(&mut self, nbytes: u64) -> Result<u64, <T as ErrorType>::Error> {
         T::skip(*self, nbytes).await
     }
 }
 
 pub struct Skippable<T>(pub T);
-impl<T: Io> Io for Skippable<T> {
+impl<T: ErrorType> ErrorType for Skippable<T> {
     type Error = T::Error;
 }
 impl<T: Read> Read for Skippable<T> {
@@ -29,8 +26,8 @@ impl<T: Read> Read for Skippable<T> {
         self.0.read(buf).await
     }
 }
-impl<T: Io + Seek> Skip for Skippable<T> {
-    async fn skip(&mut self, nskip: u64) -> Result<u64, <T as Io>::Error> {
+impl<T: Seek> Skip for Skippable<T> {
+    async fn skip(&mut self, nskip: u64) -> Result<u64, <T as ErrorType>::Error> {
         let start = self.0.stream_position().await?;
         let new = self.0.seek(SeekFrom::Current(nskip as i64)).await?;
         let nskipped = new - start;
@@ -39,11 +36,11 @@ impl<T: Io + Seek> Skip for Skippable<T> {
 }
 
 pub trait ReadExt: Read + Sized {
-    async fn read_u16_le(&mut self) -> Result<u16, ReadExactError<<Self as Io>::Error>> {
+    async fn read_u16_le(&mut self) -> Result<u16, ReadExactError<<Self as ErrorType>::Error>> {
         let mut buf = [0u8; 2];
         self.read_exact(&mut buf).await.map(|_| u16::from_le_bytes(buf))
     }
-    async fn read_u32_le(&mut self) -> Result<u32, ReadExactError<<Self as Io>::Error>> {
+    async fn read_u32_le(&mut self) -> Result<u32, ReadExactError<<Self as ErrorType>::Error>> {
         let mut buf = [0u8; 4];
         self.read_exact(&mut buf).await.map(|_| u32::from_le_bytes(buf))
     }
@@ -75,7 +72,7 @@ impl<R: Read + Skip> TakeExact<R> {
         reader.skip(self.count).await
     }
 }
-impl<R: Io> Io for TakeExact<R> {
+impl<R: ErrorType> ErrorType for TakeExact<R> {
     type Error = R::Error;
 }
 impl<R: Read> Read for TakeExact<R> {
@@ -91,7 +88,7 @@ impl<R: Read> Read for TakeExact<R> {
     }
 }
 impl<R: Skip> Skip for TakeExact<R> {
-    async fn skip(&mut self, nskip: u64) -> Result<u64, <Self as Io>::Error> {
+    async fn skip(&mut self, nskip: u64) -> Result<u64, <Self as ErrorType>::Error> {
         let nskipped = self.reader.skip(min(nskip, self.count)).await?;
         assert!(self.count >= nskipped);
         self.count -= nskipped;
@@ -122,7 +119,7 @@ impl<R: Read + Skip> Take<R> {
         self.reader.skip(self.count).await
     }
 }
-impl<R: Io> Io for Take<R> {
+impl<R: ErrorType> ErrorType for Take<R> {
     type Error = R::Error;
 }
 impl<R: Read> Read for Take<R> {
@@ -138,7 +135,7 @@ impl<R: Read> Read for Take<R> {
     }
 }
 impl<R: Skip> Skip for Take<R> {
-    async fn skip(&mut self, nskip: u64) -> Result<u64, <Self as Io>::Error> {
+    async fn skip(&mut self, nskip: u64) -> Result<u64, <Self as ErrorType>::Error> {
         let nskipped = self.reader.skip(min(nskip, self.count)).await?;
         assert!(self.count >= nskipped);
         self.count -= nskipped;

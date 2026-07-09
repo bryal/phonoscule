@@ -65,14 +65,14 @@ fn main() {
         // Only run the app when there is user input. This will significantly reduce CPU/GPU use.
         .insert_resource(WinitSettings::desktop_app())
         .insert_resource(MusicPlayer::new())
-        .add_startup_system(setup)
-        .add_system(button_system)
+        .add_systems(Startup, setup)
+        .add_systems(Update, button_system)
         .run();
 }
 
-const NORMAL_BUTTON: Color = Color::rgb(0.15, 0.15, 0.15);
-const HOVERED_BUTTON: Color = Color::rgb(0.25, 0.25, 0.25);
-const PRESSED_BUTTON: Color = Color::rgb(0.35, 0.75, 0.35);
+const NORMAL_BUTTON: Color = Color::srgb(0.15, 0.15, 0.15);
+const HOVERED_BUTTON: Color = Color::srgb(0.25, 0.25, 0.25);
+const PRESSED_BUTTON: Color = Color::srgb(0.35, 0.75, 0.35);
 
 fn button_system(
     mut interaction_query: Query<(&Interaction, &mut BackgroundColor, &Children), (Changed<Interaction>, With<Button>)>,
@@ -82,17 +82,17 @@ fn button_system(
     for (interaction, mut color, children) in &mut interaction_query {
         let mut text = text_query.get_mut(children[0]).unwrap();
         match *interaction {
-            Interaction::Clicked => {
-                text.sections[0].value = ">.<".to_string();
+            Interaction::Pressed => {
+                text.0 = ">.<".to_string();
                 *color = PRESSED_BUTTON.into();
                 mplayer.toggle_play_pause()
             }
             Interaction::Hovered => {
-                text.sections[0].value = ":O".to_string();
+                text.0 = ":O".to_string();
                 *color = HOVERED_BUTTON.into();
             }
             Interaction::None => {
-                text.sections[0].value = "|>  ||".to_string();
+                text.0 = "|>  ||".to_string();
                 *color = NORMAL_BUTTON.into();
             }
         }
@@ -101,11 +101,13 @@ fn button_system(
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // ui camera
-    commands.spawn(Camera2dBundle::default());
+    commands.spawn(Camera2d);
     commands
-        .spawn(ButtonBundle {
-            style: Style {
-                size: Size::new(Val::Px(150.0), Val::Px(65.0)),
+        .spawn((
+            Button,
+            Node {
+                width: Val::Px(150.0),
+                height: Val::Px(65.0),
                 // center button
                 margin: UiRect::all(Val::Auto),
                 // horizontally center child text
@@ -114,17 +116,17 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 align_items: AlignItems::Center,
                 ..default()
             },
-            background_color: NORMAL_BUTTON.into(),
-            ..default()
-        })
+            BackgroundColor(NORMAL_BUTTON),
+        ))
         .with_children(|parent| {
-            parent.spawn(TextBundle::from_section(
-                "Button",
-                TextStyle {
-                    font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                    font_size: 40.0,
-                    color: Color::rgb(0.9, 0.9, 0.9),
+            parent.spawn((
+                Text::new("Button"),
+                TextFont {
+                    font: FontSource::Handle(asset_server.load("fonts/FiraSans-Bold.ttf")),
+                    font_size: FontSize::Px(40.0),
+                    ..default()
                 },
+                TextColor(Color::srgb(0.9, 0.9, 0.9)),
             ));
         });
 }
