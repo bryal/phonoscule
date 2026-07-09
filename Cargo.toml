@@ -11,8 +11,8 @@ edition = "2024"
 log = { version = "0.4.33", features = ["max_level_trace", "release_max_level_debug"] }
 embedded-io = "0.7.1"
 embedded-io-async = "0.7.0"
-embedded-io-adapters = { version = "0.7.0", features = ["tokio-1"] }
-tokio = { version = "1.52", features = ["rt", "macros"] }
+embedded-io-adapters = { version = "0.7.0", features = ["futures-03"] }
+smol = "2.0"
 simple_logger = "5.2"
 
 [profile.release.package.phonoscule-cli]

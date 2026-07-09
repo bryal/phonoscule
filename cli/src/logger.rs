@@ -1,4 +1,4 @@
-//! A custom logger that sends the message formatted with color & timestamp on a [`tokio::sync::mpsc::channel`] channel
+//! A custom logger that sends the message formatted with color & timestamp on a [`smol::channel`] channel
 //! instead of immediately it printing anywhere.
 //!
 //! Based on `simple_logger` by Sam Clements / @borntyping on Github.
@@ -7,19 +7,19 @@ use crossterm::style::Stylize;
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use std::str::FromStr;
 use time::{format_description::FormatItem, OffsetDateTime};
-use tokio::sync::mpsc as async_mpsc;
+use smol::channel;
 
 const TIMESTAMP_FORMAT_UTC: &[FormatItem] =
     time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
 
 pub struct Logger {
-    tx: async_mpsc::Sender<String>,
+    tx: channel::Sender<String>,
     default_level: LevelFilter,
     module_levels: Vec<(String, LevelFilter)>,
 }
 
 impl Logger {
-    pub fn new(tx: async_mpsc::Sender<String>, module_levels: Vec<(String, LevelFilter)>) -> Self {
+    pub fn new(tx: channel::Sender<String>, module_levels: Vec<(String, LevelFilter)>) -> Self {
         Self {
             tx,
             default_level: std::env::var("RUST_LOG")
@@ -72,7 +72,7 @@ impl Log for Logger {
             let timestamp = format!("{} ", OffsetDateTime::now_utc().format(TIMESTAMP_FORMAT_UTC).unwrap());
             let message = format!("{}{} [{}] {}", timestamp, level_string, target, record.args());
             if let Err(message) = self.tx.try_send(message) {
-                eprintln!("{}", message)
+                eprintln!("{}", message.into_inner())
             }
         }
     }

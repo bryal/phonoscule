@@ -13,5 +13,5 @@ pulse-simple = "1.0.1"
 time = { version = "0.3.53", features = ["formatting", "macros"] }
 phonoscule = { path = "../phonoscule" }
 embedded-io-adapters = { workspace = true }
-tokio                = { workspace = true, features = ["sync", "time", "io-util", "fs"] }
+smol                 = { workspace = true }
 log                  = { workspace = true, features = ["std"] }

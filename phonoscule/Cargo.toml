@@ -15,5 +15,5 @@ log               = { workspace = true }
 
 [dev-dependencies]
 embedded-io-adapters = { workspace = true }
-tokio                = { workspace = true, features = ["io-util", "fs"] }
+smol                 = { workspace = true }
 simple_logger        = { workspace = true }

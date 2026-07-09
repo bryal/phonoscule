@@ -6,8 +6,8 @@ use crossterm::{
     self as ct,
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind},
 };
-use embedded_io_adapters::tokio_1::FromTokio;
-use futures::StreamExt;
+use embedded_io_adapters::futures_03::FromFutures;
+use futures::{FutureExt, StreamExt};
 use phonoscule::{
     io::*,
     metadata::*,
@@ -20,12 +20,10 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tokio::{
+use smol::{
+    Timer, channel,
     fs::File,
     io::{AsyncReadExt, BufReader},
-    sync::mpsc as async_mpsc,
-    task::spawn,
-    time::interval,
 };
 
 const PLAYBACK_SAMPLE_RATE: u32 = 48000;
@@ -50,7 +48,7 @@ enum Status {
     Finished,
 }
 
-type FileReader = Skippable<FromTokio<BufReader<File>>>;
+type FileReader = Skippable<FromFutures<BufReader<File>>>;
 
 enum TrackSamples {
     Wav(MultiReader<Take<FileReader>>),
@@ -88,7 +86,7 @@ impl Track {
     async fn open(path: &Path) -> Option<Track> {
         let mut magic = [0u8; 4];
         File::open(path).await.ok()?.read_exact(&mut magic).await.ok()?;
-        let f = Skippable(FromTokio::new(BufReader::new(File::open(path).await.ok()?)));
+        let f = Skippable(FromFutures::new(BufReader::new(File::open(path).await.ok()?)));
         match &magic {
             b"RIFF" => {
                 let wav = Wav::<StaticMetadata, _>::parse(f).await?;
@@ -141,7 +139,7 @@ impl<const N: usize, T> StaticVec<N, T> {
     }
 }
 
-struct SendSamples<const N: usize, Sample>(async_mpsc::Sender<StaticVec<N, Sample>>);
+struct SendSamples<const N: usize, Sample>(channel::Sender<StaticVec<N, Sample>>);
 
 impl<const N: usize, Sample> SourceOutput<Sample> for SendSamples<N, Sample>
 where
@@ -157,18 +155,18 @@ where
     }
 }
 
-struct RecvSamples<const N: usize, Sample>(async_mpsc::Receiver<StaticVec<N, Sample>>);
+struct RecvSamples<const N: usize, Sample>(channel::Receiver<StaticVec<N, Sample>>);
 
 impl<const N: usize, Sample> SinkInput<Sample> for RecvSamples<N, Sample> {
     async fn write_samples_to<S: Sink<Sample>>(&mut self, sink: &mut S) -> Option<u64> {
-        let samples = self.0.recv().await?;
+        let samples = self.0.recv().await.ok()?;
         let n = sink.write_samples(samples.as_slice()).await?;
         Some(n as u64)
     }
 }
 
 fn sample_channel<const N: usize, Sample>(nchunks: usize) -> (SendSamples<N, Sample>, RecvSamples<N, Sample>) {
-    let (tx, rx) = async_mpsc::channel(nchunks);
+    let (tx, rx) = channel::bounded(nchunks);
     (SendSamples(tx), RecvSamples(rx))
 }
 
@@ -203,9 +201,12 @@ struct CliArgs {
     files: Vec<PathBuf>,
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    let (print_tx, mut print_rx) = tokio::sync::mpsc::channel::<String>(512);
+fn main() {
+    smol::block_on(main_())
+}
+
+async fn main_() {
+    let (print_tx, print_rx) = channel::bounded::<String>(512);
     logger::Logger::new(print_tx, vec![]).init().unwrap();
 
     let args = CliArgs::from_arg_matches(
@@ -216,18 +217,19 @@ async fn main() {
     .unwrap();
     let playlist = args.files;
 
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<Cmd>(8);
-    let (status_tx, mut status_rx) = tokio::sync::mpsc::channel::<Status>(4);
+    let (cmd_tx, cmd_rx) = channel::bounded::<Cmd>(8);
+    let (status_tx, status_rx) = channel::bounded::<Status>(4);
     let (mut audio_tx, audio_rx) = sample_channel::<512, OutSample>(1);
 
-    let _join_pulse = tokio::task::spawn(async {
+    // The tasks are cancelled when these handles drop at the end of main.
+    let _join_pulse = smol::spawn(async {
         let pulse_sink = PulseSink::new();
         let mut chan_to_sink = ConnectSink::from_input(audio_rx, pulse_sink);
         while chan_to_sink.push().await.is_some() {}
         log::warn!("pulse sink closing")
     });
 
-    let _join_player = spawn(async move {
+    let _join_player = smol::spawn(async move {
         let mut pls_ix = 0usize;
         let mut start_at = 0;
         'pls_entry: while let Some(path) = playlist.get(pls_ix) {
@@ -257,11 +259,11 @@ async fn main() {
             loop {
                 start_at = 0;
                 let maybe_cmd = if !playing {
-                    cmd_rx.recv().await
+                    cmd_rx.recv().await.ok()
                 } else {
                     match cmd_rx.try_recv() {
                         Ok(cmd) => Some(cmd),
-                        Err(async_mpsc::error::TryRecvError::Empty) => None,
+                        Err(channel::TryRecvError::Empty) => None,
                         Err(err) => panic!("{}", err),
                     }
                 };
@@ -312,8 +314,8 @@ async fn main() {
     let mut w = std::io::stdout();
     ct::terminal::enable_raw_mode().unwrap();
 
-    let mut events = EventStream::new();
-    let mut refresh = interval(Duration::from_millis(100));
+    let mut events = EventStream::new().fuse();
+    let mut refresh = StreamExt::fuse(Timer::interval(Duration::from_millis(100)));
 
     fn clear_player(w: &mut std::io::Stdout) {
         ct::queue!(
@@ -354,7 +356,7 @@ async fn main() {
     let (mut t_current, mut t_end) = (Duration::from_secs(0), None::<Duration>);
     let mut track = "<nothing playing>".to_string();
     loop {
-        tokio::select! {
+        futures::select! {
             maybe_event = events.next() => match maybe_event {
                 Some(Ok(Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers, state: _ }))) => match (code, modifiers) {
                     (KeyCode::Left, _) => cmd_tx.send(Cmd::SeekBackward(Duration::from_secs(5))).await.unwrap(),
@@ -373,28 +375,29 @@ async fn main() {
                 Some(Err(err)) => log::error!("crossterm read event error: {:?}", err),
                 None => break,
             },
-            status = status_rx.recv() => match status {
-                None => {
+            status = status_rx.recv().fuse() => match status {
+                Err(_) => {
                     log::error!("status channel droppet");
                     break
                 }
-                Some(Status::Track(t)) => {
+                Ok(Status::Track(t)) => {
                     track = t;
                     t_current = Duration::from_secs(0);
                     t_end = None;
                 }
-                Some(Status::Progress(t_c, t_e)) => {
+                Ok(Status::Progress(t_c, t_e)) => {
                     t_current = t_c;
                     t_end = t_e
                 }
-                Some(Status::Finished) => {
+                Ok(Status::Finished) => {
                     clear_player(&mut w);
                     println(&mut w, "Finished playing all tracks in playlist");
                     break
                 }
             },
             // custom logger that sends messages to this channel, which are printed "above" player with line breaks corrected for raw mode
-            msg = print_rx.recv() => {
+            msg = print_rx.recv().fuse() => {
+                let msg = msg.ok();
                 let msg = msg.as_deref().unwrap_or("print channel closed");
                 clear_player(&mut w);
                 for line in msg.lines() {
@@ -402,7 +405,7 @@ async fn main() {
                 }
                 render_player(&mut w, &track, t_current, t_end)
             },
-            _ = refresh.tick() => {
+            _ = refresh.next() => {
                 render_player(&mut w, &track, t_current, t_end)
             },
         }
