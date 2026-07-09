@@ -3335,6 +3335,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogg"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdab8dcd8d4052eaacaf8fb07a3ccd9a6e26efadb42878a413c68fc4af1dee2b"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3345,6 +3354,11 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "opuscule"
+version = "0.2.0-dev"
+source = "git+https://codeberg.org/jojo-laplace/opuscule?rev=baeb2b21eae752c898ba9638a6c91b1b3f71ee31#baeb2b21eae752c898ba9638a6c91b1b3f71ee31"
 
 [[package]]
 name = "orbclient"
@@ -3444,6 +3458,8 @@ dependencies = [
  "embedded-io-adapters",
  "embedded-io-async",
  "log",
+ "ogg",
+ "opuscule",
  "simple_logger",
  "tokio",
  "utf8-decode",

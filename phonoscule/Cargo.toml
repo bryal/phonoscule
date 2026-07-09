@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# rev is latest as of its commit date 2026-07-05
+opuscule = { git = "https://codeberg.org/jojo-laplace/opuscule", rev = "baeb2b21eae752c898ba9638a6c91b1b3f71ee31" }
+ogg = "0.9.2"
 utf8-decode = "2.0"
 embedded-io       = { workspace = true }
 embedded-io-async = { workspace = true }
