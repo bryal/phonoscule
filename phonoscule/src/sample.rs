@@ -6,6 +6,12 @@ use embedded_io_async::Read;
 #[repr(C)]
 pub struct PcmS16Le([u8; 2]);
 
+impl PcmS16Le {
+    pub fn new(v: i16) -> Self {
+        Self(v.to_le_bytes())
+    }
+}
+
 #[derive(Copy, Clone, Default, Debug)]
 #[repr(C)]
 pub struct PcmS24Le([u8; 3]);
@@ -16,6 +22,12 @@ pub struct PcmS24Le([u8; 3]);
 pub struct Stereo<Sample> {
     left: Sample,
     right: Sample,
+}
+
+impl<Sample> Stereo<Sample> {
+    pub fn new(left: Sample, right: Sample) -> Self {
+        Self { left, right }
+    }
 }
 
 pub struct FormatReader<Sample, R> {

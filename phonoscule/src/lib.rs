@@ -4,13 +4,14 @@
 
 pub mod io;
 pub mod metadata;
+pub mod opus;
 pub mod plumbing;
 pub mod sample;
 pub mod wav;
 
 #[cfg(test)]
 mod test {
-    use super::{io::Skippable, metadata::*, plumbing::*, sample, wav::*};
+    use super::{io::Skippable, metadata::*, opus::OggOpus, plumbing::*, sample, wav::*};
     use embedded_io_adapters::tokio_1::FromTokio;
     use std::sync::Once;
     use tokio::{fs::File, io::BufReader};
@@ -50,5 +51,29 @@ mod test {
                 nleft -= nread as u64;
             }
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parse_an_opus_file() {
+        init();
+        let f = Skippable(FromTokio::new(BufReader::new(File::open("../assets/Listless.opus").await.unwrap())));
+        let opus = OggOpus::<StaticMetadata, _>::parse(f).await.unwrap();
+        assert_eq!(opus.metadata.title(), "Listless");
+        assert_eq!(opus.metadata.album(), "Listless/Second Skin 2019 Single");
+        assert_eq!(opus.metadata.artist(), "Siamese Twins");
+        assert_eq!(opus.format.n_channels, 2);
+        let mut samples = opus.samples;
+        let mut total: u64 = 0;
+        loop {
+            let mut buf = [Default::default(); 512];
+            let nread = Source::<sample::Stereo<sample::PcmS16Le>>::read_samples(&mut samples, &mut buf).await.unwrap();
+            if nread == 0 {
+                break;
+            }
+            total += nread as u64;
+        }
+        // The track is 2:46 at 48 kHz; leave some slack for pre-skip / end padding.
+        let rate = opus.format.sample_rate() as u64;
+        assert!(total > 160 * rate && total < 170 * rate, "unexpected total sample count {total}");
     }
 }

@@ -8,9 +8,25 @@ use crossterm::{
 };
 use embedded_io_adapters::tokio_1::FromTokio;
 use futures::StreamExt;
-use phonoscule::{io::*, metadata::*, plumbing::*, sample::*, wav::*};
-use std::{path::PathBuf, time::Duration};
-use tokio::{fs::File, io::BufReader, sync::mpsc as async_mpsc, task::spawn, time::interval};
+use phonoscule::{
+    io::*,
+    metadata::*,
+    opus::{OggOpus, OpusReader},
+    plumbing::*,
+    sample::*,
+    wav::*,
+};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, BufReader},
+    sync::mpsc as async_mpsc,
+    task::spawn,
+    time::interval,
+};
 
 const PLAYBACK_SAMPLE_RATE: u32 = 48000;
 
@@ -29,8 +45,75 @@ enum Cmd {
 #[derive(Debug)]
 enum Status {
     Track(String),
-    Progress(Duration, Duration),
+    /// Current position and, if known, the total length of the track.
+    Progress(Duration, Option<Duration>),
     Finished,
+}
+
+type FileReader = Skippable<FromTokio<BufReader<File>>>;
+
+enum TrackSamples {
+    Wav(MultiReader<Take<FileReader>>),
+    // Boxed: the opus reader is large (decoder state + a decoded-frame buffer).
+    Opus(Box<OpusReader<FileReader>>),
+}
+
+impl Source<OutSample> for TrackSamples {
+    async fn read_samples(&mut self, buf: &mut [OutSample]) -> Option<usize> {
+        match self {
+            TrackSamples::Wav(s) => s.read_samples(buf).await,
+            TrackSamples::Opus(s) => s.read_samples(buf).await,
+        }
+    }
+}
+
+impl FastForward for TrackSamples {
+    async fn fast_forward(&mut self, nsamples: u64) -> Option<u64> {
+        match self {
+            TrackSamples::Wav(s) => s.fast_forward(nsamples).await,
+            TrackSamples::Opus(s) => s.fast_forward(nsamples).await,
+        }
+    }
+}
+
+struct Track {
+    metadata: StaticMetadata,
+    sample_rate: u32,
+    /// Total number of samples, when the container states it up front (WAV does, Ogg doesn't).
+    len_samples: Option<u64>,
+    samples: TrackSamples,
+}
+
+impl Track {
+    async fn open(path: &Path) -> Option<Track> {
+        let mut magic = [0u8; 4];
+        File::open(path).await.ok()?.read_exact(&mut magic).await.ok()?;
+        let f = Skippable(FromTokio::new(BufReader::new(File::open(path).await.ok()?)));
+        match &magic {
+            b"RIFF" => {
+                let wav = Wav::<StaticMetadata, _>::parse(f).await?;
+                Some(Track {
+                    metadata: wav.metadata,
+                    sample_rate: wav.format.sample_rate(),
+                    len_samples: Some(wav.format.len_samples()),
+                    samples: TrackSamples::Wav(wav.samples),
+                })
+            }
+            b"OggS" => {
+                let opus = OggOpus::<StaticMetadata, _>::parse(f).await?;
+                Some(Track {
+                    metadata: opus.metadata,
+                    sample_rate: opus.format.sample_rate(),
+                    len_samples: None,
+                    samples: TrackSamples::Opus(Box::new(opus.samples)),
+                })
+            }
+            _ => {
+                log::error!("{path:?} has an unrecognized format (neither RIFF/WAVE nor Ogg)");
+                None
+            }
+        }
+    }
 }
 
 // something like this when feature "seek" or "cache" or "std" or whatever?
@@ -149,16 +232,22 @@ async fn main() {
         let mut start_at = 0;
         'pls_entry: while let Some(path) = playlist.get(pls_ix) {
             log::debug!("opening file {:?}", path);
-            let f = Skippable(FromTokio::new(BufReader::new(File::open(path).await.unwrap())));
-            let wav = Wav::<StaticMetadata, _>::parse(f).await.unwrap();
+            let Some(track) = Track::open(path).await else {
+                log::error!("failed to open {path:?}, skipping");
+                pls_ix += 1;
+                start_at = 0;
+                continue 'pls_entry;
+            };
             status_tx
-                .send(Status::Track(match wav.metadata.title() {
+                .send(Status::Track(match track.metadata.title() {
                     "" => path.to_string_lossy().to_string(),
                     name => name.to_string(),
                 }))
                 .await
                 .expect("status channel should be open");
-            let mut source = wav.samples;
+            let sample_rate = track.sample_rate;
+            let t_end = track.len_samples.map(|n| Duration::from_secs_f64(n as f64 / sample_rate as f64));
+            let mut source = track.samples;
             let mut pos = source.fast_forward(start_at).await.unwrap();
             let mut chan_from_source = ConnectSource::to_output(source, &mut audio_tx);
 
@@ -180,12 +269,12 @@ async fn main() {
                     Some(Cmd::PlayPause) => playing = !playing,
                     Some(Cmd::Restart) => continue 'pls_entry,
                     Some(Cmd::SeekForward(dt)) => {
-                        let n = (dt.as_secs_f64() * wav.format.sample_rate() as f64) as u64;
+                        let n = (dt.as_secs_f64() * sample_rate as f64) as u64;
                         start_at = pos + n;
                         break;
                     }
                     Some(Cmd::SeekBackward(dt)) => {
-                        let i = pos.saturating_sub((dt.as_secs_f64() * wav.format.sample_rate() as f64) as u64);
+                        let i = pos.saturating_sub((dt.as_secs_f64() * sample_rate as f64) as u64);
                         start_at = i;
                         break;
                     }
@@ -210,9 +299,7 @@ async fn main() {
                     let progress_updates_per_sec = 16;
                     let progress_interval = PLAYBACK_SAMPLE_RATE as u64 / progress_updates_per_sec;
                     if pos < prev_status_pos || pos - prev_status_pos > progress_interval {
-                        let t_current = Duration::from_secs_f64(pos as f64 / wav.format.sample_rate() as f64);
-                        let t_end =
-                            Duration::from_secs_f64(wav.format.len_samples() as f64 / wav.format.sample_rate() as f64);
+                        let t_current = Duration::from_secs_f64(pos as f64 / sample_rate as f64);
                         status_tx.send(Status::Progress(t_current, t_end)).await.unwrap();
                         prev_status_pos = pos;
                     }
@@ -243,22 +330,28 @@ async fn main() {
     fn println(w: &mut std::io::Stdout, line: impl std::fmt::Display) {
         ct::queue!(w, ct::style::Print(line), ct::style::Print("\n"), ct::cursor::MoveToColumn(0)).unwrap();
     }
-    fn render_player(w: &mut std::io::Stdout, track: &str, t_current: Duration, t_end: Duration) {
+    fn render_player(w: &mut std::io::Stdout, track: &str, t_current: Duration, t_end: Option<Duration>) {
         clear_player(w);
         let (mins_current, secs_current) = (t_current.as_secs() / 60, t_current.as_secs() % 60);
-        let (mins_end, secs_end) = (t_end.as_secs() / 60, t_end.as_secs() % 60);
+        let time = match t_end {
+            Some(t_end) => {
+                let (mins_end, secs_end) = (t_end.as_secs() / 60, t_end.as_secs() % 60);
+                format!("{mins_current:02}:{secs_current:02} / {mins_end:02}:{secs_end:02}")
+            }
+            None => format!("{mins_current:02}:{secs_current:02}"),
+        };
         ct::queue!(
             w,
             ct::style::Print(track),
             ct::style::Print("\n"),
             ct::cursor::MoveToColumn(0),
-            ct::style::Print(format!("{mins_current:02}:{secs_current:02} / {mins_end:02}:{secs_end:02}"))
+            ct::style::Print(time)
         )
         .unwrap();
         std::io::Write::flush(w).unwrap();
     }
 
-    let (mut t_current, mut t_end) = (Duration::from_secs(0), Duration::from_secs(0));
+    let (mut t_current, mut t_end) = (Duration::from_secs(0), None::<Duration>);
     let mut track = "<nothing playing>".to_string();
     loop {
         tokio::select! {
@@ -287,6 +380,8 @@ async fn main() {
                 }
                 Some(Status::Track(t)) => {
                     track = t;
+                    t_current = Duration::from_secs(0);
+                    t_end = None;
                 }
                 Some(Status::Progress(t_c, t_e)) => {
                     t_current = t_c;
