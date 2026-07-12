@@ -103,6 +103,18 @@ fn tag_parsing(c: &mut Criterion) {
         })
     });
 
+    // Headers-only parsing: what a library scanner should use.
+    c.bench_function("opus_tags_headers_only", |b| {
+        b.iter(|| {
+            smol::block_on(async {
+                let mut inp = &opus[..];
+                let parsed = phonoscule::opus::Headers::<StaticMetadata>::parse(&mut inp).await.unwrap();
+                assert_eq!(parsed.metadata.title(), "Some Title");
+                black_box(parsed.metadata)
+            })
+        })
+    });
+
     c.bench_function("wav_tags", |b| {
         b.iter(|| {
             smol::block_on(async {

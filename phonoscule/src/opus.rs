@@ -51,30 +51,49 @@ impl Format {
     }
 }
 
+/// The parsed Ogg Opus headers: metadata and format, plus what's needed to continue into
+/// decoding. Parsing only this is much cheaper than a full [`OggOpus::parse`] (no decoder state,
+/// no frame buffer), which matters when scanning a library for tags.
+pub struct Headers<Md> {
+    pub metadata: Md,
+    pub format: Format,
+    channels: Channels,
+    serial: u32,
+    packets: BasePacketReader,
+}
+
+impl<Md: Metadata> Headers<Md> {
+    pub async fn parse<R: Read>(inp: &mut R) -> Option<Self> {
+        let mut packets = BasePacketReader::new();
+        // The first two packets of an Ogg Opus stream are the headers: OpusHead, then OpusTags.
+        let head = next_packet(&mut packets, inp).await??;
+        let (channels, pre_skip) = parse_opus_head(&head.data)?;
+        let tags = next_packet(&mut packets, inp).await??;
+        let mut metadata = Md::default();
+        parse_opus_tags(&mut metadata, &tags.data);
+        let format = Format { n_channels: channels.count() as u16, pre_skip, len_samples: None };
+        Some(Headers { metadata, format, channels, serial: head.stream_serial(), packets })
+    }
+}
+
 impl<Md, R> OggOpus<Md, R>
 where
     Md: Metadata,
     R: Read,
 {
     pub async fn parse(mut inp: R) -> Option<Self> {
-        let mut packets = BasePacketReader::new();
-        // The first two packets of an Ogg Opus stream are the headers: OpusHead, then OpusTags.
-        let head = next_packet(&mut packets, &mut inp).await??;
-        let (channels, pre_skip) = parse_opus_head(&head.data)?;
-        let tags = next_packet(&mut packets, &mut inp).await??;
-        let mut metadata = Md::default();
-        parse_opus_tags(&mut metadata, &tags.data);
-        let format = Format { n_channels: channels.count() as u16, pre_skip, len_samples: None };
+        let headers = Headers::parse(&mut inp).await?;
+        let Headers { metadata, format, channels, serial, packets } = headers;
         let samples = OpusReader {
             packets,
             inp,
-            serial: head.stream_serial(),
+            serial,
             decoder: Decoder::new(SampleRate::Hz48000, channels),
             channels,
             frame: [0 as Val; MAX_FRAME * 2],
             frame_len: 0,
             frame_pos: 0,
-            pre_skip: pre_skip as usize,
+            pre_skip: format.pre_skip as usize,
             ended: false,
         };
         Some(OggOpus { metadata, format, samples })
