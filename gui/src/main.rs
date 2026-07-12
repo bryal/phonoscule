@@ -3,10 +3,12 @@
 //! Two views: a library browser (play or queue whole albums) and an iPod-style Cover Flow of the
 //! play queue with a seekable playback bar.
 
+mod conf;
 mod coverflow;
 mod library;
 mod player;
 
+use conf::Conf;
 use coverflow::cover_flow;
 use futures::StreamExt;
 use iced::widget::{button, column, container, image, row, scrollable, slider, text};
@@ -14,16 +16,23 @@ use iced::{Center, Element, Fill, Subscription, Task, Theme};
 use library::Album;
 use smol::channel;
 use std::cmp::min;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-fn main() -> iced::Result {
+fn main() -> anyhow::Result<()> {
     simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).env().init().unwrap();
-    iced::application(boot, update, view)
+
+    let mut args = std::env::args().skip(1);
+    let arg_conf_path = args.next().map(PathBuf::from);
+    anyhow::ensure!(args.next().is_none(), "expected at most one argument: a path to a config file");
+    let conf = smol::block_on(Conf::load(conf::locate(arg_conf_path)))?;
+
+    iced::application(boot(conf), update, view)
         .title("Phonoscule")
         .subscription(subscription)
         .theme(theme)
-        .run()
+        .run()?;
+    Ok(())
 }
 
 fn theme(_app: &App) -> Theme {
@@ -47,7 +56,7 @@ struct QueueItem {
 
 struct App {
     engine: player::Engine,
-    music_dir: PathBuf,
+    conf: Conf,
     scanning: bool,
     albums: Vec<Album>,
     view: View,
@@ -79,27 +88,26 @@ enum Msg {
     Frame(Instant),
 }
 
-fn boot() -> (App, Task<Msg>) {
-    let music_dir = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(&std::env::var("HOME").unwrap_or_default()).join("Music"));
-    let app = App {
-        engine: player::start(),
-        music_dir: music_dir.clone(),
-        scanning: true,
-        albums: vec![],
-        view: View::Library,
-        queue: vec![],
-        current: 0,
-        playing: false,
-        pos: Duration::ZERO,
-        len: None,
-        seek_drag: None,
-        anim_pos: 0.0,
-        last_frame: Instant::now(),
-    };
-    (app, Task::perform(library::scan(music_dir), Msg::Scanned))
+fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
+    move || {
+        let app = App {
+            engine: player::start(),
+            conf: conf.clone(),
+            scanning: true,
+            albums: vec![],
+            view: View::Library,
+            queue: vec![],
+            current: 0,
+            playing: false,
+            pos: Duration::ZERO,
+            len: None,
+            seek_drag: None,
+            anim_pos: 0.0,
+            last_frame: Instant::now(),
+        };
+        let scan = Task::perform(library::scan(conf.music_dir.clone()), Msg::Scanned);
+        (app, scan)
+    }
 }
 
 impl App {
@@ -225,10 +233,10 @@ fn view(app: &App) -> Element<'_, Msg> {
 
 fn library_view(app: &App) -> Element<'_, Msg> {
     if app.scanning {
-        return container(text(format!("Scanning {:?}…", app.music_dir))).center(Fill).into();
+        return container(text(format!("Scanning {:?}…", app.conf.music_dir))).center(Fill).into();
     }
     if app.albums.is_empty() {
-        return container(text(format!("No albums found under {:?}", app.music_dir))).center(Fill).into();
+        return container(text(format!("No albums found under {:?}", app.conf.music_dir))).center(Fill).into();
     }
     const COLS: usize = 4;
     let mut grid = column![].spacing(24).padding(16);

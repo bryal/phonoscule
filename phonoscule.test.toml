@@ -1,0 +1,5 @@
+# Test config: point the GUI at the small in-repo mock library (untracked; see TestLibrary/).
+# Relative paths are resolved against this file's directory. Use with e.g.:
+#   PHONOSCULE_CONFIG=phonoscule.test.toml cargo run -p phonoscule-gui
+# or let .dir-locals.el set the environment when working from emacs.
+music-dir = "./TestLibrary/"
