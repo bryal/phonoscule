@@ -19,3 +19,11 @@ smol                 = { workspace = true }
 embedded-io-adapters = { workspace = true }
 log                  = { workspace = true, features = ["std"] }
 simple_logger        = { workspace = true }
+
+[dev-dependencies]
+criterion = "0.8"
+ogg = "0.9.2"
+
+[[bench]]
+name = "scan"
+harness = false

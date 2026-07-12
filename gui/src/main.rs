@@ -3,10 +3,7 @@
 //! Two views: a library browser (play or queue whole albums) and an iPod-style Cover Flow of the
 //! play queue with a seekable playback bar.
 
-mod conf;
-mod coverflow;
-mod library;
-mod player;
+use phonoscule_gui::{conf, coverflow, library, player};
 
 use conf::Conf;
 use coverflow::cover_flow;

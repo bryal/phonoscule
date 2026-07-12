@@ -17,3 +17,8 @@ log               = { workspace = true }
 embedded-io-adapters = { workspace = true }
 smol                 = { workspace = true }
 simple_logger        = { workspace = true }
+criterion            = "0.8"
+
+[[bench]]
+name = "parse"
+harness = false
