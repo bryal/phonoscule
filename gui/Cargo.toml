@@ -7,14 +7,12 @@ edition.workspace = true
 [dependencies]
 phonoscule = { path = "../phonoscule" }
 pulse-simple = "1.0.1"
-bevy = { version = "0.19.0", default-features = false, features = [
-    "bevy_asset",
-    "bevy_scene",
-    "bevy_winit",
-    "bevy_ui",
-    "bevy_ui_render",
-    "bevy_text",
-    "bevy_core_pipeline",
-    "png",
-    "wayland",
-] }
+iced = { version = "0.14.0", features = ["image", "smol", "advanced"] }
+image = "0.25.10"
+glam = "0.33.2"
+bytemuck = { version = "1.24", features = ["derive"] }
+futures = "0.3.32"
+smol                 = { workspace = true }
+embedded-io-adapters = { workspace = true }
+log                  = { workspace = true, features = ["std"] }
+simple_logger        = { workspace = true }
