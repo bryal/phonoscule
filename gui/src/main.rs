@@ -122,6 +122,29 @@ impl App {
     }
 }
 
+/// The queue's contiguous runs of tracks from the same album, as ranges into the queue. The
+/// Cover Flow shows one cover per run rather than one per track.
+fn album_runs(queue: &[QueueItem]) -> Vec<std::ops::Range<usize>> {
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for (ix, item) in queue.iter().enumerate() {
+        match runs.last_mut() {
+            Some(run) if queue[run.start].album_id == item.album_id => run.end = ix + 1,
+            _ => runs.push(ix..ix + 1),
+        }
+    }
+    runs
+}
+
+/// The index of the run containing the given track index.
+fn run_of(runs: &[std::ops::Range<usize>], track: usize) -> usize {
+    runs.iter().position(|run| run.contains(&track)).unwrap_or(0)
+}
+
+/// The Cover Flow target position for the currently playing track.
+fn flow_target(app: &App) -> f32 {
+    run_of(&album_runs(&app.queue), app.current) as f32
+}
+
 fn queue_items(album: &Album) -> Vec<QueueItem> {
     album
         .tracks
@@ -187,10 +210,11 @@ fn update(app: &mut App, msg: Msg) {
         Msg::Next => app.send(player::Cmd::Next),
         Msg::Prev => app.send(player::Cmd::Prev),
         Msg::CoverClicked(ix) => {
-            if ix == app.current {
+            let runs = album_runs(&app.queue);
+            if ix == run_of(&runs, app.current) {
                 app.send(player::Cmd::TogglePlayPause);
-            } else {
-                app.send(player::Cmd::JumpTo(ix));
+            } else if let Some(run) = runs.get(ix) {
+                app.send(player::Cmd::JumpTo(run.start));
             }
         }
         Msg::SeekChanged(frac) => app.seek_drag = Some(frac),
@@ -204,8 +228,8 @@ fn update(app: &mut App, msg: Msg) {
         Msg::Frame(now) => {
             let dt = (now - app.last_frame).as_secs_f32().min(0.1);
             app.last_frame = now;
-            let target = app.current as f32;
-            // Exponential ease towards the current track.
+            let target = flow_target(app);
+            // Exponential ease towards the current album run.
             app.anim_pos += (target - app.anim_pos) * (1.0 - (-10.0 * dt).exp());
             if (target - app.anim_pos).abs() < 0.002 {
                 app.anim_pos = target;
@@ -224,7 +248,7 @@ fn subscription(app: &App) -> Subscription<Msg> {
     let events =
         Subscription::run_with(EventsRx(app.engine.events.clone()), |rx| rx.0.clone().map(Msg::Player));
 
-    let animating = app.view == View::NowPlaying && app.anim_pos != app.current as f32;
+    let animating = app.view == View::NowPlaying && app.anim_pos != flow_target(app);
     let frames = if animating {
         iced::time::every(Duration::from_millis(16)).map(Msg::Frame)
     } else {
@@ -303,7 +327,8 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     }
     let current = &app.queue[min(app.current, app.queue.len() - 1)];
 
-    let covers = app.queue.iter().map(|item| item.cover.clone()).collect();
+    let covers =
+        album_runs(&app.queue).iter().map(|run| app.queue[run.start].cover.clone()).collect();
     let flow = cover_flow(covers, app.anim_pos, Msg::CoverClicked);
 
     let shown_pos = match (app.seek_drag, app.len) {
