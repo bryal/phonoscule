@@ -184,9 +184,21 @@ async fn player_task(
             };
             match maybe_cmd {
                 Some(Cmd::Seek(t)) => {
-                    // Restart the current track, fast-forwarding to the target.
-                    start_at = (t.as_secs_f64() * sample_rate as f64) as u64;
-                    continue 'next_track;
+                    let target = (t.as_secs_f64() * sample_rate as f64) as u64;
+                    match chan_from_source.source_mut().seek_samples(target).await {
+                        Some(new_pos) => {
+                            pos = new_pos;
+                            prev_status_pos = pos;
+                            if events.send(Event::Progress(t_of(pos))).await.is_err() {
+                                return;
+                            }
+                        }
+                        None => {
+                            // Restart the current track, fast-forwarding to the target.
+                            start_at = target;
+                            continue 'next_track;
+                        }
+                    }
                 }
                 Some(Cmd::Prev) if pos > 3 * sample_rate as u64 => {
                     // Like most players: an early "previous" goes to the previous track (handled
@@ -252,6 +264,18 @@ impl FastForward for TrackSamples {
         match self {
             TrackSamples::Wav(s) => s.fast_forward(nsamples).await,
             TrackSamples::Opus(s) => s.fast_forward(nsamples).await,
+        }
+    }
+}
+
+impl TrackSamples {
+    /// Seeks within the open track when the format supports it. `None` means the caller should
+    /// fall back to reopening the track and skipping forward (which for wav is itself cheap:
+    /// skipping is a plain file seek there).
+    async fn seek_samples(&mut self, target: u64) -> Option<u64> {
+        match self {
+            TrackSamples::Wav(_) => None,
+            TrackSamples::Opus(s) => s.seek_samples(target).await,
         }
     }
 }

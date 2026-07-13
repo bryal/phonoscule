@@ -29,6 +29,8 @@ use opuscule::{Channels, Decoder, SampleRate, Val, sample_to_i16};
 pub const SAMPLE_RATE: u32 = 48_000;
 /// Largest decodable frame: 120 ms at 48 kHz, per channel.
 const MAX_FRAME: usize = 5760;
+/// An Ogg page is at most this many bytes (header + segment table + maximal body).
+const MAX_PAGE_SIZE: u64 = 27 + 255 + 255 * 255;
 
 pub struct OggOpus<Md, R> {
     pub metadata: Md,
@@ -88,12 +90,13 @@ where
             packets,
             inp,
             serial,
-            decoder: Decoder::new(SampleRate::Hz48000, channels),
+            decoder: Box::new(Decoder::new(SampleRate::Hz48000, channels)),
             channels,
-            frame: [0 as Val; MAX_FRAME * 2],
+            frame: Box::new([0 as Val; MAX_FRAME * 2]),
             frame_len: 0,
             frame_pos: 0,
             pre_skip: format.pre_skip as usize,
+            total_pre_skip: format.pre_skip as u64,
             ended: false,
         };
         Some(OggOpus { metadata, format, samples })
@@ -120,12 +123,10 @@ where
 /// Scans the tail of the stream for its last valid Ogg page and derives the total sample count
 /// from its granule position (RFC 7845 §4). Restores the stream position afterwards.
 async fn scan_len_samples<R: Read + Seek>(inp: &mut R, serial: u32, pre_skip: u16) -> Option<u64> {
-    // A page is at most 27 + 255 + 255 * 255 bytes, and the file's last page ends at the end of
-    // the stream, so it starts within this window.
-    const MAX_PAGE: u64 = (27 + 255 + 255 * 255) as u64;
     let pos = inp.stream_position().await.ok()?;
     let end = inp.seek(SeekFrom::End(0)).await.ok()?;
-    let tail_start = end.saturating_sub(MAX_PAGE);
+    // The file's last page ends at the end of the stream, so it starts within this window.
+    let tail_start = end.saturating_sub(MAX_PAGE_SIZE);
     inp.seek(SeekFrom::Start(tail_start)).await.ok()?;
     let mut tail = vec![0u8; (end - tail_start) as usize];
     let read_result = inp.read_exact(&mut tail).await;
@@ -173,17 +174,153 @@ pub struct OpusReader<R> {
     inp: R,
     /// Serial number of the logical bitstream we are decoding.
     serial: u32,
-    decoder: Decoder,
+    // The decoder and frame buffer are boxed to keep `OpusReader` itself small: it moves through
+    // async fns whose futures would otherwise embed multiple ~70 KiB copies of it -- enough to
+    // overflow a default 2 MiB thread stack in debug builds.
+    decoder: Box<Decoder>,
     channels: Channels,
     /// The current decoded frame, interleaved.
-    frame: [Val; MAX_FRAME * 2],
+    frame: Box<[Val; MAX_FRAME * 2]>,
     /// Length of the current frame, in values (samples * channels).
     frame_len: usize,
     /// Read cursor into `frame`, in values.
     frame_pos: usize,
     /// Remaining encoder delay to drop from the front of the stream, in samples.
     pre_skip: usize,
+    /// The stream's full encoder delay (granule positions include it).
+    total_pre_skip: u64,
     ended: bool,
+}
+
+impl<R: Read + Seek> OpusReader<R> {
+    /// Seeks to an absolute sample position (the unit of [`Format::len_samples`] and of the
+    /// sample counts this reader outputs), by bisecting over the granule positions of the Ogg
+    /// pages and then decoding at least 80 ms of pre-roll before the target so the (predictive)
+    /// decoder converges, as RFC 7845 §4.4 recommends.
+    ///
+    /// Returns the position actually landed on: `target`, unless the stream ends earlier or the
+    /// container has a gap right at the target. On `None`, the reader may be left mid-stream and
+    /// should be discarded.
+    pub async fn seek_samples(&mut self, target: u64) -> Option<u64> {
+        /// 80 ms at 48 kHz.
+        const PREROLL: u64 = 3840;
+        let target_granule = target + self.total_pre_skip;
+        let search_granule = target_granule.saturating_sub(PREROLL);
+
+        // Bisect over byte offsets for the latest page with granule <= search_granule; "the
+        // granule of the first audio page after an offset" is non-decreasing in the offset.
+        let end = self.inp.seek(SeekFrom::End(0)).await.ok()?;
+        let (mut lo, mut hi) = (0, end);
+        while hi.saturating_sub(lo) > 2 * MAX_PAGE_SIZE {
+            let mid = lo + (hi - lo) / 2;
+            match probe_page(&mut self.inp, mid, self.serial).await {
+                Some((_, granule)) if granule <= search_granule => lo = mid,
+                _ => hi = mid,
+            }
+        }
+
+        let (page_offset, landing_granule) = match probe_page(&mut self.inp, lo, self.serial).await {
+            Some((offset, granule)) if granule <= search_granule => (offset, granule),
+            // The target lies within the first pages of the stream (or probing failed entirely):
+            // decoding from the very start is just as cheap.
+            _ => {
+                self.restart().await?;
+                return self.fast_forward(target).await;
+            }
+        };
+
+        // Start over demuxing & decoding from the landing page.
+        self.inp.seek(SeekFrom::Start(page_offset)).await.ok()?;
+        self.packets = BasePacketReader::new();
+        self.packets.update_after_seek();
+        *self.decoder = Decoder::new(SampleRate::Hz48000, self.channels);
+        self.frame_len = 0;
+        self.frame_pos = 0;
+        self.pre_skip = 0;
+        self.ended = false;
+
+        // Decode up to the target, discarding output: this is the pre-roll. The position is only
+        // known exactly where a page ends (its granule); in between, decoded samples are counted.
+        // Packets of the landing page itself have no known position yet (`None`), but they all
+        // end at or before its granule <= search_granule, so discarding them entirely is right.
+        let ch = self.channels.count();
+        let mut pos: Option<u64> = None;
+        loop {
+            let packet = match next_packet(&mut self.packets, &mut self.inp).await? {
+                Some(packet) => packet,
+                None => {
+                    // The target is at or past the end of the stream.
+                    self.ended = true;
+                    return Some(pos.unwrap_or(landing_granule).saturating_sub(self.total_pre_skip));
+                }
+            };
+            let nsamples = match self.decoder.decode(Some(&packet.data), &mut self.frame[..], false) {
+                Ok(n) => n,
+                Err(e) => {
+                    log::error!("opus decode error while seeking: {e:?}");
+                    return None;
+                }
+            };
+            pos = match (pos, packet.last_in_page(), packet.absgp_page()) {
+                (_, true, granule) if granule != u64::MAX => Some(granule),
+                (Some(p), _, _) => Some(p + nsamples as u64),
+                (None, _, _) => None,
+            };
+            if let Some(p) = pos
+                && p > target_granule
+            {
+                // The target is inside this frame: keep its tail.
+                let frame_start = p - nsamples as u64;
+                let actual = frame_start.max(target_granule);
+                self.frame_len = nsamples * ch;
+                self.frame_pos = (actual - frame_start) as usize * ch;
+                return Some(actual.saturating_sub(self.total_pre_skip));
+            }
+        }
+    }
+
+    /// Rewinds to the start of the audio, resetting all decoding state.
+    async fn restart(&mut self) -> Option<()> {
+        self.inp.seek(SeekFrom::Start(0)).await.ok()?;
+        self.packets = BasePacketReader::new();
+        *self.decoder = Decoder::new(SampleRate::Hz48000, self.channels);
+        self.frame_len = 0;
+        self.frame_pos = 0;
+        self.pre_skip = self.total_pre_skip as usize;
+        self.ended = false;
+        // Skip the two header packets (OpusHead, OpusTags).
+        next_packet(&mut self.packets, &mut self.inp).await??;
+        next_packet(&mut self.packets, &mut self.inp).await??;
+        Some(())
+    }
+}
+
+/// Finds the first complete, checksum-valid audio page of stream `serial` at or after `offset`:
+/// returns its byte offset and granule position. Header pages (granule 0) and pages on which no
+/// packet ends (granule -1) are skipped. Scans a window big enough for several maximum-size
+/// pages; a stream position past the last page yields `None`.
+async fn probe_page<R: Read + Seek>(inp: &mut R, offset: u64, serial: u32) -> Option<(u64, u64)> {
+    inp.seek(SeekFrom::Start(offset)).await.ok()?;
+    let mut buf = vec![0u8; 3 * MAX_PAGE_SIZE as usize];
+    let mut len = 0;
+    while len < buf.len() {
+        match inp.read(&mut buf[len..]).await {
+            Ok(0) => break,
+            Ok(n) => len += n,
+            Err(_) => return None,
+        }
+    }
+    let buf = &buf[..len];
+    for i in 0..buf.len().saturating_sub(27) {
+        if &buf[i..i + 4] == b"OggS"
+            && let Some(granule) = page_granule(&buf[i..], serial)
+            && granule != 0
+            && granule != u64::MAX
+        {
+            return Some((offset + i as u64, granule));
+        }
+    }
+    None
 }
 
 impl<R: Read> OpusReader<R> {
@@ -200,7 +337,7 @@ impl<R: Read> OpusReader<R> {
                     return Some(false);
                 }
             };
-            let nsamples = match self.decoder.decode(Some(&packet.data), &mut self.frame, false) {
+            let nsamples = match self.decoder.decode(Some(&packet.data), &mut self.frame[..], false) {
                 Ok(n) => n,
                 Err(e) => {
                     log::error!("opus decode error: {e:?}");

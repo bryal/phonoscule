@@ -74,6 +74,18 @@ impl FastForward for TrackSamples {
     }
 }
 
+impl TrackSamples {
+    /// Seeks within the open track when the format supports it. `None` means the caller should
+    /// fall back to reopening the track and skipping forward (which for wav is itself cheap:
+    /// skipping is a plain file seek there).
+    async fn seek_samples(&mut self, target: u64) -> Option<u64> {
+        match self {
+            TrackSamples::Wav(_) => None,
+            TrackSamples::Opus(s) => s.seek_samples(target).await,
+        }
+    }
+}
+
 struct Track {
     metadata: StaticMetadata,
     sample_rate: u32,
@@ -271,14 +283,24 @@ async fn main_() {
                     Some(Cmd::PlayPause) => playing = !playing,
                     Some(Cmd::Restart) => continue 'pls_entry,
                     Some(Cmd::SeekForward(dt)) => {
-                        let n = (dt.as_secs_f64() * sample_rate as f64) as u64;
-                        start_at = pos + n;
-                        break;
+                        let target = pos + (dt.as_secs_f64() * sample_rate as f64) as u64;
+                        match chan_from_source.source_mut().seek_samples(target).await {
+                            Some(new_pos) => pos = new_pos,
+                            None => {
+                                start_at = target;
+                                break;
+                            }
+                        }
                     }
                     Some(Cmd::SeekBackward(dt)) => {
-                        let i = pos.saturating_sub((dt.as_secs_f64() * sample_rate as f64) as u64);
-                        start_at = i;
-                        break;
+                        let target = pos.saturating_sub((dt.as_secs_f64() * sample_rate as f64) as u64);
+                        match chan_from_source.source_mut().seek_samples(target).await {
+                            Some(new_pos) => pos = new_pos,
+                            None => {
+                                start_at = target;
+                                break;
+                            }
+                        }
                     }
                     Some(Cmd::Prev) => {
                         pls_ix = pls_ix.saturating_sub(1);

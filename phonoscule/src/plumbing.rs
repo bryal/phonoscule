@@ -45,6 +45,11 @@ impl<I, O> ConnectSource<I, O> {
         Self { source, out }
     }
 
+    /// Access the source, e.g. to seek it between pulls.
+    pub fn source_mut(&mut self) -> &mut I {
+        &mut self.source
+    }
+
     pub async fn pull<Sample>(&mut self) -> Option<u64>
     where
         I: Source<Sample>,
