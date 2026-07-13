@@ -15,8 +15,13 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-/// How far to each side (in item units) covers are still laid out & drawn.
-const VISIBLE_RANGE: f32 = 7.0;
+/// Distance from the center (in item units) where covers start fading out...
+const FADE_START: f32 = 1.0;
+/// ...and where they reach full transparency.
+const FADE_END: f32 = 7.5;
+/// How far to each side covers are still laid out & drawn: just past the fade, so a cover never
+/// pops in or out visibly.
+const VISIBLE_RANGE: f32 = FADE_END + 0.5;
 /// Where the tilted side stacks start, in world units from the center. Covers are 1.0 wide, and
 /// the side covers sit further back (see [`SIDE_Z`]), so this is small enough that the nearest
 /// side covers tuck slightly under the center cover, like the iPod did.
@@ -84,11 +89,12 @@ impl<Message> shader::Program<Message> for CoverFlow<Message> {
             }
             let model = model(d);
             let brightness = 1.0 - 0.4 * d.abs().min(1.0);
+            let fade = fade(d);
             let first = instances.len() as u32;
             // Reflection: the same quad translated one unit down in local space; the mirroring
             // happens in the fragment shader.
-            instances.push(Instance::new(model * Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)), 1.0, brightness));
-            instances.push(Instance::new(model, 0.0, brightness));
+            instances.push(Instance::new(model * Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)), 1.0, brightness, fade));
+            instances.push(Instance::new(model, 0.0, brightness, fade));
             draws.push(Draw { texture: id, instances: first..first + 2 });
         }
         Flow { view_proj, instances, draws, uploads }
@@ -128,6 +134,9 @@ impl<Message> CoverFlow<Message> {
         let mut candidates = self.visible().collect::<Vec<_>>();
         candidates.sort_by(|(_, d0), (_, d1)| d0.abs().total_cmp(&d1.abs()));
         for (ix, d) in candidates {
+            if fade(d) < 0.1 {
+                continue; // all but invisible: don't let it swallow clicks
+            }
             let inv_model = model(d).inverse();
             let o = inv_model.transform_point3(origin);
             let dl = inv_model.transform_vector3(dir);
@@ -154,6 +163,13 @@ fn view_proj(aspect: f32) -> Mat4 {
     proj * view
 }
 
+/// How visible a cover at offset `d` is: 1.0 up to [`FADE_START`], smoothly falling to 0.0 at
+/// [`FADE_END`].
+fn fade(d: f32) -> f32 {
+    let t = ((FADE_END - d.abs()) / (FADE_END - FADE_START)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t) // smoothstep
+}
+
 /// The pose of a cover at fractional offset `d` from the carousel position.
 fn model(d: f32) -> Mat4 {
     // Within |d| < 1 the cover swings between the front-facing center pose and the tilted side
@@ -173,13 +189,13 @@ fn model(d: f32) -> Mat4 {
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Instance {
     model: [f32; 16],
-    /// x: 1.0 for the reflection instance, y: brightness, zw: padding.
+    /// x: 1.0 for the reflection instance, y: brightness, z: fade (alpha), w: padding.
     misc: [f32; 4],
 }
 
 impl Instance {
-    fn new(model: Mat4, reflection: f32, brightness: f32) -> Self {
-        Self { model: model.to_cols_array(), misc: [reflection, brightness, 0.0, 0.0] }
+    fn new(model: Mat4, reflection: f32, brightness: f32, fade: f32) -> Self {
+        Self { model: model.to_cols_array(), misc: [reflection, brightness, fade, 0.0] }
     }
 }
 
