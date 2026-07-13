@@ -141,9 +141,15 @@ async fn player_task(
             }
             loop {
                 let Ok(cmd) = cmd_rx.recv().await else { return };
-                if apply_cmd(cmd, &mut queue, &mut ix, &mut start_at, &mut playing) {
+                let jump = apply_cmd(cmd, &mut queue, &mut ix, &mut start_at, &mut playing);
+                // Tracks may just have been appended, and/or play was pressed: leave the idle
+                // state once there is something at the current index to play.
+                if jump || (playing && queue.get(ix).is_some()) {
                     continue 'next_track;
                 }
+                // No autoplay surprises: don't let e.g. a play press on an empty queue linger
+                // and start playback whenever tracks eventually arrive.
+                playing = false;
             }
         };
 
