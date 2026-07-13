@@ -385,13 +385,22 @@ fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
     for ix in run {
         let item = &app.queue[ix];
         let playing = ix == app.current;
-        let label = text(&item.title).size(16).style(move |theme: &Theme| text::Style {
+        let front = text(&item.title).size(16).style(move |theme: &Theme| text::Style {
             color: Some(if playing {
                 theme.palette().primary
             } else {
-                iced::Color { a: 0.55, ..iced::Color::WHITE }
+                iced::Color { a: 0.6, ..iced::Color::WHITE }
             }),
         });
+        // Faked drop shadow: the same text in translucent black, offset one pixel down-right,
+        // layered underneath. Keeps the translucent text legible over bright covers.
+        let shadow = text(&item.title)
+            .size(16)
+            .style(|_theme| text::Style { color: Some(iced::Color { a: 0.7, ..iced::Color::BLACK }) });
+        let label = stack![
+            container(shadow).padding(iced::Padding { top: 1.0, left: 1.0, right: 0.0, bottom: 0.0 }),
+            container(front).padding(iced::Padding { top: 0.0, left: 0.0, right: 1.0, bottom: 1.0 }),
+        ];
         list = list.push(button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)));
     }
     let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
