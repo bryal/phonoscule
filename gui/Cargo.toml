@@ -20,6 +20,8 @@ embedded-io-adapters = { workspace = true }
 embedded-io-async    = { workspace = true }
 log                  = { workspace = true, features = ["std"] }
 simple_logger        = { workspace = true }
+url = "2.5.8"
+souvlaki = "0.8.3"
 
 [dev-dependencies]
 criterion = "0.8"

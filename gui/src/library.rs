@@ -47,6 +47,8 @@ pub struct TrackInfo {
 #[derive(Clone)]
 pub struct CoverArt {
     pub id: u64,
+    /// The (absolute) image file this was decoded from, e.g. for pointing other programs at it.
+    pub file: Arc<PathBuf>,
     pub size: (u32, u32),
     pub rgba: Arc<Vec<u8>>,
     pub handle: iced::widget::image::Handle,
@@ -54,7 +56,7 @@ pub struct CoverArt {
 
 impl fmt::Debug for CoverArt {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("CoverArt").field("id", &self.id).field("size", &self.size).finish()
+        f.debug_struct("CoverArt").field("id", &self.id).field("file", &self.file).field("size", &self.size).finish()
     }
 }
 
@@ -151,9 +153,9 @@ async fn drive(root: PathBuf, tx: channel::Sender<ScanEvent>) {
         );
         let mut n_covers = 0u64;
         while let Some((ids, cover)) = covers.next().await {
-            let Some((size, rgba)) = cover else { continue };
+            let Some((file, size, rgba)) = cover else { continue };
             let handle = iced::widget::image::Handle::from_rgba(size.0, size.1, rgba.clone());
-            let art = CoverArt { id: n_covers, size, rgba: Arc::new(rgba), handle };
+            let art = CoverArt { id: n_covers, file: Arc::new(file), size, rgba: Arc::new(rgba), handle };
             n_covers += 1;
             if tx.send(ScanEvent::Cover { albums: ids, art }).await.is_err() {
                 return;
@@ -226,8 +228,8 @@ async fn read_tags(path: &Path) -> Option<StaticMetadata> {
 
 /// Finds and decodes the cover image of a directory, downscaled to [`COVER_SIZE`]. The decode
 /// runs on the blocking thread pool, so calls can proceed in parallel regardless of executor
-/// threads.
-async fn load_cover_in_dir(dir: &Path) -> Option<((u32, u32), Vec<u8>)> {
+/// threads. Also returns the absolute path of the image file.
+async fn load_cover_in_dir(dir: &Path) -> Option<(PathBuf, (u32, u32), Vec<u8>)> {
     const STEMS: [&str; 4] = ["cover", "folder", "front", "albumart"];
     const EXTS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
     let mut file = None;
@@ -241,14 +243,19 @@ async fn load_cover_in_dir(dir: &Path) -> Option<((u32, u32), Vec<u8>)> {
             break;
         }
     }
-    let file = file?;
+    // Absolute, so consumers (e.g. the MPRIS art URL) don't depend on our working directory.
+    let file = smol::fs::canonicalize(file?).await.ok()?;
     smol::unblock(move || {
-        let img = image::open(&file)
-            .inspect_err(|e| log::warn!("could not decode cover {file:?}: {e}"))
-            .ok()?;
+        let img = match image::open(&file) {
+            Ok(img) => img,
+            Err(e) => {
+                log::warn!("could not decode cover {file:?}: {e}");
+                return None;
+            }
+        };
         let rgba = img.resize_to_fill(COVER_SIZE, COVER_SIZE, image::imageops::FilterType::Triangle).into_rgba8();
         let size = rgba.dimensions();
-        Some((size, rgba.into_raw()))
+        Some((file, size, rgba.into_raw()))
     })
     .await
 }
