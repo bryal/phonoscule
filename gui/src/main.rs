@@ -8,7 +8,7 @@ use phonoscule_gui::{conf, coverflow, library, player};
 use conf::Conf;
 use coverflow::cover_flow;
 use futures::StreamExt;
-use iced::widget::{button, column, container, image, row, scrollable, slider, text};
+use iced::widget::{button, column, container, image, row, scrollable, slider, stack, text};
 use iced::{Center, Element, Fill, Subscription, Task, Theme};
 use library::Album;
 use smol::channel;
@@ -86,6 +86,7 @@ enum Msg {
     Next,
     Prev,
     CoverClicked(usize),
+    TrackClicked(usize),
     SeekChanged(f32),
     SeekReleased,
     Frame(Instant),
@@ -217,6 +218,7 @@ fn update(app: &mut App, msg: Msg) {
                 app.send(player::Cmd::JumpTo(run.start));
             }
         }
+        Msg::TrackClicked(ix) => app.send(player::Cmd::JumpTo(ix)),
         Msg::SeekChanged(frac) => app.seek_drag = Some(frac),
         Msg::SeekReleased => {
             if let (Some(frac), Some(len)) = (app.seek_drag.take(), app.len) {
@@ -359,7 +361,7 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     .spacing(24)
     .align_y(Center);
 
-    column![
+    let body = column![
         flow,
         text(&current.title).size(20),
         text(format!("{} — {}", current.artist, current.album)).size(14).style(text::secondary),
@@ -368,8 +370,35 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     ]
     .spacing(10)
     .padding(16)
-    .align_x(Center)
-    .into()
+    .align_x(Center);
+
+    stack![body, container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(24)].into()
+}
+
+/// The current album run's track list: a semi-transparent overlay with the playing track
+/// highlighted; clicking a track jumps playback there.
+fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
+    let runs = album_runs(&app.queue);
+    let run = runs.get(run_of(&runs, app.current)).cloned().unwrap_or(0..0);
+    let mut list = column![].spacing(2);
+    for ix in run {
+        let item = &app.queue[ix];
+        let label = text(&item.title).size(13);
+        let label = if ix == app.current {
+            label.style(|theme: &Theme| text::Style { color: Some(theme.palette().primary) })
+        } else {
+            label
+        };
+        list = list.push(button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)));
+    }
+    container(list)
+        .padding(8)
+        .style(|_theme| container::Style {
+            background: Some(iced::Background::Color(iced::Color { a: 0.75, ..iced::Color::BLACK })),
+            border: iced::border::rounded(8),
+            ..container::Style::default()
+        })
+        .into()
 }
 
 fn fmt_time(t: Duration) -> String {
