@@ -28,8 +28,13 @@ fn main() -> anyhow::Result<()> {
         .title("Phonoscule")
         .subscription(subscription)
         .theme(theme)
+        .style(style)
         .run()?;
     Ok(())
+}
+
+fn style(_app: &App, theme: &Theme) -> iced::theme::Style {
+    iced::theme::Style { background_color: iced::Color::BLACK, text_color: theme.palette().text }
 }
 
 fn theme(_app: &App) -> Theme {

@@ -17,8 +17,10 @@ use std::sync::Arc;
 
 /// How far to each side (in item units) covers are still laid out & drawn.
 const VISIBLE_RANGE: f32 = 7.0;
-/// Where the tilted side stacks start, in world units from the center.
-const SIDE_X: f32 = 1.1;
+/// Where the tilted side stacks start, in world units from the center. Covers are 1.0 wide, and
+/// the side covers sit further back (see [`SIDE_Z`]), so this is small enough that the nearest
+/// side covers tuck slightly under the center cover, like the iPod did.
+const SIDE_X: f32 = 0.75;
 /// Spacing between covers within a side stack.
 const STEP_X: f32 = 0.22;
 /// How far side covers recede from the camera.
