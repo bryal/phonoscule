@@ -45,6 +45,7 @@ enum View {
 #[derive(Debug, Clone)]
 struct QueueItem {
     path: PathBuf,
+    album_id: u64,
     title: String,
     artist: String,
     album: String,
@@ -71,7 +72,7 @@ struct App {
 
 #[derive(Debug, Clone)]
 enum Msg {
-    Scanned(Vec<Album>),
+    Library(library::ScanEvent),
     Show(View),
     PlayAlbum(usize),
     QueueAlbum(usize),
@@ -102,7 +103,7 @@ fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             anim_pos: 0.0,
             last_frame: Instant::now(),
         };
-        let scan = Task::perform(library::scan(conf.music_dir.clone()), Msg::Scanned);
+        let scan = Task::run(library::scan(conf.music_dir.clone()), Msg::Library);
         (app, scan)
     }
 }
@@ -122,6 +123,7 @@ fn queue_items(album: &Album) -> Vec<QueueItem> {
         .iter()
         .map(|t| QueueItem {
             path: t.path.clone(),
+            album_id: album.id,
             title: t.title.clone(),
             artist: album.artist.clone(),
             album: album.title.clone(),
@@ -132,10 +134,22 @@ fn queue_items(album: &Album) -> Vec<QueueItem> {
 
 fn update(app: &mut App, msg: Msg) {
     match msg {
-        Msg::Scanned(albums) => {
-            app.albums = albums;
-            app.scanning = false;
+        Msg::Library(library::ScanEvent::Album(album)) => {
+            // Keep the browser sorted; scan order is nondeterministic (directories complete
+            // in parallel).
+            let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
+            let ix = app.albums.partition_point(|a| key(a) <= key(&album));
+            app.albums.insert(ix, album);
         }
+        Msg::Library(library::ScanEvent::Cover { albums, art }) => {
+            for album in app.albums.iter_mut().filter(|a| albums.contains(&a.id)) {
+                album.cover = Some(art.clone());
+            }
+            for item in app.queue.iter_mut().filter(|i| albums.contains(&i.album_id)) {
+                item.cover = Some(art.clone());
+            }
+        }
+        Msg::Library(library::ScanEvent::Done) => app.scanning = false,
         Msg::Show(v) => app.view = v,
         Msg::PlayAlbum(ix) => {
             let items = queue_items(&app.albums[ix]);
@@ -229,14 +243,15 @@ fn view(app: &App) -> Element<'_, Msg> {
 }
 
 fn library_view(app: &App) -> Element<'_, Msg> {
-    if app.scanning {
-        return container(text(format!("Scanning {:?}…", app.conf.music_dir))).center(Fill).into();
-    }
     if app.albums.is_empty() {
-        return container(text(format!("No albums found under {:?}", app.conf.music_dir))).center(Fill).into();
+        let status = if app.scanning { "Scanning" } else { "No albums found under" };
+        return container(text(format!("{status} {:?}…", app.conf.music_dir))).center(Fill).into();
     }
     const COLS: usize = 4;
     let mut grid = column![].spacing(24).padding(16);
+    if app.scanning {
+        grid = grid.push(text(format!("Scanning {:?}…", app.conf.music_dir)).size(12).style(text::secondary));
+    }
     for (row_ix, albums) in app.albums.chunks(COLS).enumerate() {
         let mut r = row![].spacing(16);
         for (col_ix, album) in albums.iter().enumerate() {

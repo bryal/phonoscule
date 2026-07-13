@@ -17,6 +17,7 @@ shellexpand = "3.1"
 futures = "0.3.32"
 smol                 = { workspace = true }
 embedded-io-adapters = { workspace = true }
+embedded-io-async    = { workspace = true }
 log                  = { workspace = true, features = ["std"] }
 simple_logger        = { workspace = true }
 

@@ -7,7 +7,8 @@
 //! promote them to a shared dev crate if they grow).
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use phonoscule_gui::library;
+use futures::StreamExt;
+use phonoscule_gui::library::{self, Album, ScanEvent};
 use std::path::PathBuf;
 
 const N_ALBUMS: usize = 10;
@@ -121,6 +122,26 @@ fn corpus(with_covers: bool) -> PathBuf {
     root
 }
 
+/// Runs a scan to completion, applying the streamed events like the GUI would.
+fn drain(root: PathBuf) -> Vec<Album> {
+    smol::block_on(async {
+        let mut albums: Vec<Album> = Vec::new();
+        let mut stream = std::pin::pin!(library::scan(root));
+        while let Some(event) = stream.next().await {
+            match event {
+                ScanEvent::Album(album) => albums.push(album),
+                ScanEvent::Cover { albums: ids, art } => {
+                    for album in albums.iter_mut().filter(|a| ids.contains(&a.id)) {
+                        album.cover = Some(art.clone());
+                    }
+                }
+                ScanEvent::Done => break,
+            }
+        }
+        albums
+    })
+}
+
 fn scan(c: &mut Criterion) {
     let mut group = c.benchmark_group("scan");
     group.sample_size(10);
@@ -128,7 +149,7 @@ fn scan(c: &mut Criterion) {
     let tags = corpus(false);
     group.bench_function("tags_only", |b| {
         b.iter(|| {
-            let albums = smol::block_on(library::scan(tags.clone()));
+            let albums = drain(tags.clone());
             assert_eq!(albums.len(), N_ALBUMS);
             albums
         })
@@ -137,7 +158,7 @@ fn scan(c: &mut Criterion) {
     let covers = corpus(true);
     group.bench_function("with_covers", |b| {
         b.iter(|| {
-            let albums = smol::block_on(library::scan(covers.clone()));
+            let albums = drain(covers.clone());
             assert_eq!(albums.len(), N_ALBUMS);
             assert!(albums.iter().all(|a| a.cover.is_some()));
             albums

@@ -3115,6 +3115,7 @@ dependencies = [
  "bytemuck",
  "criterion",
  "embedded-io-adapters",
+ "embedded-io-async",
  "futures",
  "glam 0.33.2",
  "iced",
