@@ -25,6 +25,9 @@ const SIDE_X: f32 = 0.75;
 const STEP_X: f32 = 0.22;
 /// How far side covers recede from the camera.
 const SIDE_Z: f32 = -0.8;
+/// How much deeper each further cover in a side stack sits, so covers appear progressively
+/// smaller (and their spacing tighter) the farther they are from the center.
+const STEP_Z: f32 = -0.12;
 /// Tilt of the side covers, in radians.
 const TILT: f32 = 1.1;
 /// Texture cache key used for items without cover art.
@@ -158,7 +161,7 @@ fn model(d: f32) -> Mat4 {
     let swing = d.clamp(-1.0, 1.0);
     let slide = d - swing;
     let x = swing * SIDE_X + slide * STEP_X;
-    let z = swing.abs() * SIDE_Z;
+    let z = swing.abs() * SIDE_Z + slide.abs() * STEP_Z;
     let rot_y = -swing * TILT;
     let scale = 1.0 - 0.1 * swing.abs();
     Mat4::from_translation(Vec3::new(x, 0.0, z))
