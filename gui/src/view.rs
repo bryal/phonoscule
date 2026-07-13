@@ -1,0 +1,184 @@
+//! Rendering the model: the library browser and the now-playing (Cover Flow) views.
+
+use crate::model::{App, ScanState, View, album_runs, run_of};
+use crate::update::Msg;
+use iced::widget::{button, column, container, image, row, scrollable, slider, stack, text};
+use iced::{Center, Element, Fill, Theme};
+use phonoscule_gui::coverflow::cover_flow;
+use phonoscule_gui::library::Album;
+use phonoscule_gui::player;
+use std::cmp::min;
+use std::time::Duration;
+
+pub fn theme(_app: &App) -> Theme {
+    Theme::Dark
+}
+
+pub fn style(_app: &App, theme: &Theme) -> iced::theme::Style {
+    iced::theme::Style { background_color: iced::Color::BLACK, text_color: theme.palette().text }
+}
+
+pub fn view(app: &App) -> Element<'_, Msg> {
+    let tab = |label, target| {
+        let b = button(text(label).size(14)).on_press(Msg::Show(target));
+        if app.view == target { b } else { b.style(button::secondary) }
+    };
+    let top = row![tab("Library", View::Library), tab("Now Playing", View::NowPlaying)].spacing(8).padding(8);
+    let body = match app.view {
+        View::Library => library_view(app),
+        View::NowPlaying => now_playing_view(app),
+    };
+    column![top, body].into()
+}
+
+fn library_view(app: &App) -> Element<'_, Msg> {
+    if app.albums.is_empty() {
+        let status = match app.scan {
+            ScanState::Scanning => "Scanning",
+            ScanState::Complete => "No albums found under",
+        };
+        return container(text(format!("{status} {:?}…", app.conf.music_dir))).center(Fill).into();
+    }
+    const COLS: usize = 4;
+    let mut grid = column![].spacing(24).padding(16);
+    match app.scan {
+        ScanState::Scanning => {
+            grid = grid.push(text(format!("Scanning {:?}…", app.conf.music_dir)).size(12).style(text::secondary));
+        }
+        ScanState::Complete => (),
+    }
+    for (row_ix, albums) in app.albums.chunks(COLS).enumerate() {
+        let mut r = row![].spacing(16);
+        for (col_ix, album) in albums.iter().enumerate() {
+            r = r.push(album_card(row_ix * COLS + col_ix, album));
+        }
+        grid = grid.push(r);
+    }
+    scrollable(grid).height(Fill).into()
+}
+
+fn album_card(ix: usize, album: &Album) -> Element<'_, Msg> {
+    const SIDE: f32 = 168.0;
+    let cover: Element<'_, Msg> = match &album.cover {
+        Some(c) => image(c.handle.clone())
+            .width(SIDE)
+            .height(SIDE)
+            .content_fit(iced::ContentFit::Cover)
+            .into(),
+        None => container(text(&album.title).size(16).center())
+            .width(SIDE)
+            .height(SIDE)
+            .center(SIDE)
+            .style(container::rounded_box)
+            .into(),
+    };
+    column![
+        button(cover).padding(0).style(button::text).on_press(Msg::PlayAlbum(ix)),
+        text(&album.title).size(14),
+        text(&album.artist).size(12).style(text::secondary),
+        row![
+            button(text("Play").size(12)).on_press(Msg::PlayAlbum(ix)),
+            button(text("Queue").size(12)).style(button::secondary).on_press(Msg::QueueAlbum(ix)),
+        ]
+        .spacing(8),
+    ]
+    .spacing(4)
+    .width(SIDE)
+    .into()
+}
+
+fn now_playing_view(app: &App) -> Element<'_, Msg> {
+    if app.queue.is_empty() {
+        return container(text("Play or queue an album from the library")).center(Fill).into();
+    }
+    let current = &app.queue[min(app.current, app.queue.len() - 1)];
+
+    let covers =
+        album_runs(&app.queue).iter().map(|run| app.queue[run.start].cover.clone()).collect();
+    let flow = cover_flow(covers, app.anim_pos, Msg::CoverClicked);
+
+    let shown_pos = match (app.seek_drag, app.len) {
+        (Some(frac), Some(len)) => len.mul_f32(frac.clamp(0.0, 1.0)),
+        _ => app.pos,
+    };
+    let frac = match (app.seek_drag, app.len) {
+        (Some(frac), _) => frac,
+        (None, Some(len)) if !len.is_zero() => (app.pos.as_secs_f32() / len.as_secs_f32()).clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    let seek_bar = row![
+        text(fmt_time(shown_pos)).size(12),
+        slider(0.0..=1.0f32, frac, Msg::SeekChanged)
+            .step(0.001_f32)
+            .on_release(Msg::SeekReleased)
+            .width(Fill),
+        text(app.len.map(fmt_time).unwrap_or_else(|| "--:--".into())).size(12),
+    ]
+    .spacing(12)
+    .align_y(Center);
+
+    let controls = row![
+        button(text("⏮").size(18)).style(button::text).on_press(Msg::Prev),
+        button(
+            text(match app.play_state {
+                player::PlayState::Playing => "⏸",
+                player::PlayState::Paused => "▶",
+            })
+            .size(24),
+        )
+        .style(button::text)
+        .on_press(Msg::Toggle),
+        button(text("⏭").size(18)).style(button::text).on_press(Msg::Next),
+    ]
+    .spacing(24)
+    .align_y(Center);
+
+    let body = column![
+        flow,
+        text(&current.title).size(20),
+        text(format!("{} — {}", current.artist, current.album)).size(14).style(text::secondary),
+        seek_bar,
+        controls,
+    ]
+    .spacing(10)
+    .padding(16)
+    .align_x(Center);
+
+    stack![body, container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(24)].into()
+}
+
+/// The current album run's track list, overlaid in translucent text with the playing track
+/// highlighted; clicking a track jumps playback there. Scrolls (without a visible scrollbar)
+/// when an album has more tracks than fit.
+fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
+    let runs = album_runs(&app.queue);
+    let run = runs.get(run_of(&runs, app.current)).cloned().unwrap_or(0..0);
+    let mut list = column![].spacing(2);
+    for ix in run {
+        let item = &app.queue[ix];
+        let playing = ix == app.current;
+        let front = text(&item.title).size(16).style(move |theme: &Theme| text::Style {
+            color: Some(if playing {
+                theme.palette().primary
+            } else {
+                iced::Color { a: 0.6, ..iced::Color::WHITE }
+            }),
+        });
+        // Faked drop shadow: the same text in translucent black, offset one pixel down-right,
+        // layered underneath. Keeps the translucent text legible over bright covers.
+        let shadow = text(&item.title)
+            .size(16)
+            .style(|_theme| text::Style { color: Some(iced::Color { a: 0.7, ..iced::Color::BLACK }) });
+        let label = stack![
+            container(shadow).padding(iced::Padding { top: 1.0, left: 1.0, right: 0.0, bottom: 0.0 }),
+            container(front).padding(iced::Padding { top: 0.0, left: 0.0, right: 1.0, bottom: 1.0 }),
+        ];
+        list = list.push(button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)));
+    }
+    let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
+    scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar)).into()
+}
+
+fn fmt_time(t: Duration) -> String {
+    format!("{:02}:{:02}", t.as_secs() / 60, t.as_secs() % 60)
+}
