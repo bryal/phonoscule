@@ -47,8 +47,23 @@ pub enum Cmd {
 pub enum Event {
     TrackStarted { ix: usize, len: Option<Duration> },
     Progress(Duration),
-    Playing(bool),
+    PlayState(PlayState),
     QueueEnded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayState {
+    Playing,
+    Paused,
+}
+
+impl PlayState {
+    pub fn toggled(self) -> Self {
+        match self {
+            PlayState::Playing => PlayState::Paused,
+            PlayState::Paused => PlayState::Playing,
+        }
+    }
 }
 
 /// Handle to the running engine. Dropping it stops both tasks.
@@ -85,71 +100,81 @@ async fn player_task(
     let mut queue: Vec<PathBuf> = vec![];
     let mut ix = 0usize;
     let mut start_at: u64 = 0; // samples into the track to start from
-    let mut playing = false;
+    let mut play_state = PlayState::Paused;
 
-    // Applies the commands that make sense in every state. Returns true if the current track (if
-    // any) must be abandoned and the outer loop restarted.
+    /// What the player loop must do after a command has been applied.
+    #[must_use]
+    enum AfterCmd {
+        /// Abandon the current track (if any) and (re)open at the current queue index.
+        Reopen,
+        /// Carry on in the current state.
+        Continue,
+    }
+
+    // Applies the commands that make sense in every state.
     fn apply_cmd(
         cmd: Cmd,
         queue: &mut Vec<PathBuf>,
         ix: &mut usize,
         start_at: &mut u64,
-        playing: &mut bool,
-    ) -> bool {
+        play_state: &mut PlayState,
+    ) -> AfterCmd {
         match cmd {
             Cmd::SetQueue { tracks, start } => {
                 *queue = tracks;
                 *ix = min(start, queue.len());
                 *start_at = 0;
-                *playing = true;
-                true
+                *play_state = PlayState::Playing;
+                AfterCmd::Reopen
             }
             Cmd::Append { tracks } => {
                 queue.extend(tracks);
-                false
+                AfterCmd::Continue
             }
             Cmd::JumpTo(i) => {
                 *ix = i;
                 *start_at = 0;
-                *playing = true;
-                true
+                *play_state = PlayState::Playing;
+                AfterCmd::Reopen
             }
             Cmd::Next => {
                 *ix += 1;
                 *start_at = 0;
-                true
+                AfterCmd::Reopen
             }
             Cmd::Prev => {
                 *ix = ix.saturating_sub(1);
                 *start_at = 0;
-                true
+                AfterCmd::Reopen
             }
             Cmd::TogglePlayPause => {
-                *playing = !*playing;
-                false
+                *play_state = play_state.toggled();
+                AfterCmd::Continue
             }
-            Cmd::Seek(_) => false, // meaningless without a playing track
+            Cmd::Seek(_) => AfterCmd::Continue, // meaningless without an open track
         }
     }
 
     'next_track: loop {
         // Idle when there is nothing (left) to play.
         let Some(path) = queue.get(ix).cloned() else {
-            playing = false;
+            play_state = PlayState::Paused;
             if events.send(Event::QueueEnded).await.is_err() {
                 return;
             }
             loop {
                 let Ok(cmd) = cmd_rx.recv().await else { return };
-                let jump = apply_cmd(cmd, &mut queue, &mut ix, &mut start_at, &mut playing);
-                // Tracks may just have been appended, and/or play was pressed: leave the idle
-                // state once there is something at the current index to play.
-                if jump || (playing && queue.get(ix).is_some()) {
-                    continue 'next_track;
+                match apply_cmd(cmd, &mut queue, &mut ix, &mut start_at, &mut play_state) {
+                    AfterCmd::Reopen => continue 'next_track,
+                    AfterCmd::Continue => match (play_state, queue.get(ix)) {
+                        // Tracks appended and play pressed, in either order: start playing.
+                        (PlayState::Playing, Some(_)) => continue 'next_track,
+                        // No autoplay surprises: a play press on an empty queue must not
+                        // linger and start playback whenever tracks eventually arrive.
+                        (PlayState::Playing, None) => play_state = PlayState::Paused,
+                        (PlayState::Paused, _) => (),
+                    },
                 }
-                // No autoplay surprises: don't let e.g. a play press on an empty queue linger
-                // and start playback whenever tracks eventually arrive.
-                playing = false;
             }
         };
 
@@ -166,7 +191,7 @@ async fn player_task(
         if events.send(Event::TrackStarted { ix, len: t_end }).await.is_err() {
             return;
         }
-        let _ = events.send(Event::Playing(playing)).await;
+        let _ = events.send(Event::PlayState(play_state)).await;
 
         let mut source = track.samples;
         let mut pos = source.fast_forward(start_at).await.unwrap_or(0);
@@ -176,17 +201,17 @@ async fn player_task(
         let mut chan_from_source = ConnectSource::to_output(source, &mut audio_tx);
 
         loop {
-            let maybe_cmd = if !playing {
-                match cmd_rx.recv().await {
+            let maybe_cmd = match play_state {
+                // Paused: nothing to do but wait for the next command.
+                PlayState::Paused => match cmd_rx.recv().await {
                     Ok(cmd) => Some(cmd),
                     Err(_) => return,
-                }
-            } else {
-                match cmd_rx.try_recv() {
+                },
+                PlayState::Playing => match cmd_rx.try_recv() {
                     Ok(cmd) => Some(cmd),
                     Err(channel::TryRecvError::Empty) => None,
                     Err(channel::TryRecvError::Closed) => return,
-                }
+                },
             };
             match maybe_cmd {
                 Some(Cmd::Seek(t)) => {
@@ -213,36 +238,40 @@ async fn player_task(
                     continue 'next_track;
                 }
                 Some(cmd) => {
-                    let toggled = matches!(cmd, Cmd::TogglePlayPause);
-                    if apply_cmd(cmd, &mut queue, &mut ix, &mut start_at, &mut playing) {
-                        continue 'next_track;
-                    }
-                    if toggled {
-                        let _ = events.send(Event::Playing(playing)).await;
+                    let before = play_state;
+                    match apply_cmd(cmd, &mut queue, &mut ix, &mut start_at, &mut play_state) {
+                        AfterCmd::Reopen => continue 'next_track,
+                        AfterCmd::Continue => {
+                            if play_state != before {
+                                let _ = events.send(Event::PlayState(play_state)).await;
+                            }
+                        }
                     }
                 }
                 None => (),
             }
-            if playing {
-                let Some(n) = chan_from_source.pull().await else {
-                    log::error!("error while decoding {path:?}, skipping to next track");
-                    ix += 1;
-                    continue 'next_track;
-                };
-                if n == 0 {
-                    ix += 1;
-                    continue 'next_track;
-                }
-                pos += n;
+            match play_state {
+                PlayState::Paused => continue,
+                PlayState::Playing => (),
+            }
+            let Some(n) = chan_from_source.pull().await else {
+                log::error!("error while decoding {path:?}, skipping to next track");
+                ix += 1;
+                continue 'next_track;
+            };
+            if n == 0 {
+                ix += 1;
+                continue 'next_track;
+            }
+            pos += n;
 
-                let progress_updates_per_sec = 16;
-                let progress_interval = sample_rate as u64 / progress_updates_per_sec;
-                if pos < prev_status_pos || pos - prev_status_pos > progress_interval {
-                    if events.send(Event::Progress(t_of(pos))).await.is_err() {
-                        return;
-                    }
-                    prev_status_pos = pos;
+            let progress_updates_per_sec = 16;
+            let progress_interval = sample_rate as u64 / progress_updates_per_sec;
+            if pos < prev_status_pos || pos - prev_status_pos > progress_interval {
+                if events.send(Event::Progress(t_of(pos))).await.is_err() {
+                    return;
                 }
+                prev_status_pos = pos;
             }
         }
     }

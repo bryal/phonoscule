@@ -68,9 +68,15 @@ impl<Md: Metadata> Headers<Md> {
     pub async fn parse<R: Read>(inp: &mut R) -> Option<Self> {
         let mut packets = BasePacketReader::new();
         // The first two packets of an Ogg Opus stream are the headers: OpusHead, then OpusTags.
-        let head = next_packet(&mut packets, inp).await??;
+        let PacketRead::Packet(head) = next_packet(&mut packets, inp).await? else {
+            log::error!("stream ended before the OpusHead header");
+            return None;
+        };
         let (channels, pre_skip) = parse_opus_head(&head.data)?;
-        let tags = next_packet(&mut packets, inp).await??;
+        let PacketRead::Packet(tags) = next_packet(&mut packets, inp).await? else {
+            log::error!("stream ended before the OpusTags header");
+            return None;
+        };
         let mut metadata = Md::default();
         parse_opus_tags(&mut metadata, &tags.data);
         let format = Format { n_channels: channels.count() as u16, pre_skip, len_samples: None };
@@ -97,7 +103,6 @@ where
             frame_pos: 0,
             pre_skip: format.pre_skip as usize,
             total_pre_skip: format.pre_skip as u64,
-            ended: false,
         };
         Some(OggOpus { metadata, format, samples })
     }
@@ -189,7 +194,25 @@ pub struct OpusReader<R> {
     pre_skip: usize,
     /// The stream's full encoder delay (granule positions include it).
     total_pre_skip: u64,
-    ended: bool,
+}
+
+/// A successfully read packet, or the clean end of the stream. An outer `Option`'s `None` means
+/// error (already logged), keeping `?` available for error paths.
+enum PacketRead {
+    Packet(ogg::Packet),
+    EndOfStream,
+}
+
+/// Like [`PacketRead`], for whole Ogg pages.
+enum PageRead {
+    Page(OggPage),
+    EndOfStream,
+}
+
+/// What [`OpusReader::next_frame`] left in `frame`.
+enum NextFrame {
+    Decoded,
+    EndOfStream,
 }
 
 impl<R: Read + Seek> OpusReader<R> {
@@ -237,7 +260,6 @@ impl<R: Read + Seek> OpusReader<R> {
         self.frame_len = 0;
         self.frame_pos = 0;
         self.pre_skip = 0;
-        self.ended = false;
 
         // Decode up to the target, discarding output: this is the pre-roll. The position is only
         // known exactly where a page ends (its granule); in between, decoded samples are counted.
@@ -247,10 +269,9 @@ impl<R: Read + Seek> OpusReader<R> {
         let mut pos: Option<u64> = None;
         loop {
             let packet = match next_packet(&mut self.packets, &mut self.inp).await? {
-                Some(packet) => packet,
-                None => {
+                PacketRead::Packet(packet) => packet,
+                PacketRead::EndOfStream => {
                     // The target is at or past the end of the stream.
-                    self.ended = true;
                     return Some(pos.unwrap_or(landing_granule).saturating_sub(self.total_pre_skip));
                 }
             };
@@ -287,10 +308,13 @@ impl<R: Read + Seek> OpusReader<R> {
         self.frame_len = 0;
         self.frame_pos = 0;
         self.pre_skip = self.total_pre_skip as usize;
-        self.ended = false;
         // Skip the two header packets (OpusHead, OpusTags).
-        next_packet(&mut self.packets, &mut self.inp).await??;
-        next_packet(&mut self.packets, &mut self.inp).await??;
+        for header in ["OpusHead", "OpusTags"] {
+            let PacketRead::Packet(_) = next_packet(&mut self.packets, &mut self.inp).await? else {
+                log::error!("stream ended before the {header} header");
+                return None;
+            };
+        }
         Some(())
     }
 }
@@ -324,18 +348,14 @@ async fn probe_page<R: Read + Seek>(inp: &mut R, offset: u64, serial: u32) -> Op
 }
 
 impl<R: Read> OpusReader<R> {
-    /// Decodes the next packet into `frame`. Returns `Some(false)` at the end of the stream.
-    async fn next_frame(&mut self) -> Option<bool> {
+    /// Decodes the next packet into `frame`, dropping any remaining pre-skip.
+    async fn next_frame(&mut self) -> Option<NextFrame> {
         loop {
-            if self.ended {
-                return Some(false);
-            }
             let packet = match next_packet(&mut self.packets, &mut self.inp).await? {
-                Some(packet) => packet,
-                None => {
-                    self.ended = true;
-                    return Some(false);
-                }
+                PacketRead::Packet(packet) => packet,
+                // Reaching the end is not latched anywhere: reads at the end of the stream are
+                // idempotent, so a later call just reports the end again.
+                PacketRead::EndOfStream => return Some(NextFrame::EndOfStream),
             };
             let nsamples = match self.decoder.decode(Some(&packet.data), &mut self.frame[..], false) {
                 Ok(n) => n,
@@ -353,7 +373,7 @@ impl<R: Read> OpusReader<R> {
                 self.pre_skip -= nskip;
             }
             if self.frame_pos < self.frame_len {
-                return Some(true);
+                return Some(NextFrame::Decoded);
             }
         }
     }
@@ -361,8 +381,11 @@ impl<R: Read> OpusReader<R> {
 
 impl<R: Read> Source<Stereo<PcmS16Le>> for OpusReader<R> {
     async fn read_samples(&mut self, buf: &mut [Stereo<PcmS16Le>]) -> Option<usize> {
-        if self.frame_pos >= self.frame_len && !self.next_frame().await? {
-            return Some(0);
+        if self.frame_pos >= self.frame_len {
+            match self.next_frame().await? {
+                NextFrame::Decoded => (),
+                NextFrame::EndOfStream => return Some(0),
+            }
         }
         let ch = self.channels.count();
         let avail = (self.frame_len - self.frame_pos) / ch;
@@ -387,40 +410,42 @@ impl<R: Read> FastForward for OpusReader<R> {
                 let ntake = min(avail, remaining);
                 self.frame_pos += ntake as usize * ch;
                 remaining -= ntake;
-            } else if !self.next_frame().await? {
-                break;
+            } else {
+                match self.next_frame().await? {
+                    NextFrame::Decoded => (),
+                    NextFrame::EndOfStream => break,
+                }
             }
         }
         Some(nsamples - remaining)
     }
 }
 
-/// Reads the next packet, pulling Ogg pages from `inp` as needed.
-///
-/// Returns `None` on error (logged), `Some(None)` at a clean end of stream.
-async fn next_packet<R: Read>(packets: &mut BasePacketReader, inp: &mut R) -> Option<Option<ogg::Packet>> {
+/// Reads the next packet, pulling Ogg pages from `inp` as needed. `None` is an error (logged).
+async fn next_packet<R: Read>(packets: &mut BasePacketReader, inp: &mut R) -> Option<PacketRead> {
     loop {
         if let Some(packet) = packets.read_packet() {
-            return Some(Some(packet));
+            return Some(PacketRead::Packet(packet));
         }
-        let page = match read_page(inp).await? {
-            Some(page) => page,
-            None => return Some(None),
-        };
-        if let Err(e) = packets.push_page(page) {
-            log::error!("bad ogg page: {e}");
-            return None;
+        match read_page(inp).await? {
+            PageRead::Page(page) => {
+                if let Err(e) = packets.push_page(page) {
+                    log::error!("bad ogg page: {e}");
+                    return None;
+                }
+            }
+            PageRead::EndOfStream => return Some(PacketRead::EndOfStream),
         }
     }
 }
 
-/// Reads one Ogg page. Returns `None` on error (logged), `Some(None)` at a clean end of stream.
-async fn read_page<R: Read>(inp: &mut R) -> Option<Option<OggPage>> {
+/// Reads one Ogg page. `None` is an error (logged).
+async fn read_page<R: Read>(inp: &mut R) -> Option<PageRead> {
     let mut header = [0u8; 27];
     let mut nread = 0;
     while nread < header.len() {
         match inp.read(&mut header[nread..]).await {
-            Ok(0) if nread == 0 => return Some(None), // end of stream between two pages
+            Ok(0) if nread == 0 => return Some(PageRead::EndOfStream), // between two pages
             Ok(0) => {
                 log::error!("unexpected end of stream inside an ogg page header");
                 return None;
@@ -445,7 +470,7 @@ async fn read_page<R: Read>(inp: &mut R) -> Option<Option<OggPage>> {
     let mut data = vec![0u8; n_data];
     read_exact_logged(inp, &mut data).await?;
     match parser.parse_packet_data(data) {
-        Ok(page) => Some(Some(page)),
+        Ok(page) => Some(PageRead::Page(page)),
         Err(e) => {
             log::error!("bad ogg page: {e}");
             None

@@ -57,15 +57,21 @@ struct QueueItem {
     cover: Option<library::CoverArt>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanState {
+    Scanning,
+    Complete,
+}
+
 struct App {
     engine: player::Engine,
     conf: Conf,
-    scanning: bool,
+    scan: ScanState,
     albums: Vec<Album>,
     view: View,
     queue: Vec<QueueItem>,
     current: usize,
-    playing: bool,
+    play_state: player::PlayState,
     pos: Duration,
     len: Option<Duration>,
     /// Seek-bar fraction while the user is dragging it.
@@ -97,12 +103,12 @@ fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
         let app = App {
             engine: player::start(),
             conf: conf.clone(),
-            scanning: true,
+            scan: ScanState::Scanning,
             albums: vec![],
             view: View::Library,
             queue: vec![],
             current: 0,
-            playing: false,
+            play_state: player::PlayState::Paused,
             pos: Duration::ZERO,
             len: None,
             seek_drag: None,
@@ -178,7 +184,7 @@ fn update(app: &mut App, msg: Msg) {
                 item.cover = Some(art.clone());
             }
         }
-        Msg::Library(library::ScanEvent::Done) => app.scanning = false,
+        Msg::Library(library::ScanEvent::Done) => app.scan = ScanState::Complete,
         Msg::Show(v) => app.view = v,
         Msg::PlayAlbum(ix) => {
             let items = queue_items(&app.albums[ix]);
@@ -204,8 +210,8 @@ fn update(app: &mut App, msg: Msg) {
                     app.pos = t;
                 }
             }
-            player::Event::Playing(playing) => app.playing = playing,
-            player::Event::QueueEnded => app.playing = false,
+            player::Event::PlayState(state) => app.play_state = state,
+            player::Event::QueueEnded => app.play_state = player::PlayState::Paused,
         },
         Msg::Toggle => app.send(player::Cmd::TogglePlayPause),
         Msg::Next => app.send(player::Cmd::Next),
@@ -275,13 +281,19 @@ fn view(app: &App) -> Element<'_, Msg> {
 
 fn library_view(app: &App) -> Element<'_, Msg> {
     if app.albums.is_empty() {
-        let status = if app.scanning { "Scanning" } else { "No albums found under" };
+        let status = match app.scan {
+            ScanState::Scanning => "Scanning",
+            ScanState::Complete => "No albums found under",
+        };
         return container(text(format!("{status} {:?}…", app.conf.music_dir))).center(Fill).into();
     }
     const COLS: usize = 4;
     let mut grid = column![].spacing(24).padding(16);
-    if app.scanning {
-        grid = grid.push(text(format!("Scanning {:?}…", app.conf.music_dir)).size(12).style(text::secondary));
+    match app.scan {
+        ScanState::Scanning => {
+            grid = grid.push(text(format!("Scanning {:?}…", app.conf.music_dir)).size(12).style(text::secondary));
+        }
+        ScanState::Complete => (),
     }
     for (row_ix, albums) in app.albums.chunks(COLS).enumerate() {
         let mut r = row![].spacing(16);
@@ -355,7 +367,15 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
 
     let controls = row![
         button(text("⏮").size(18)).style(button::text).on_press(Msg::Prev),
-        button(text(if app.playing { "⏸" } else { "▶" }).size(24)).style(button::text).on_press(Msg::Toggle),
+        button(
+            text(match app.play_state {
+                player::PlayState::Playing => "⏸",
+                player::PlayState::Paused => "▶",
+            })
+            .size(24),
+        )
+        .style(button::text)
+        .on_press(Msg::Toggle),
         button(text("⏭").size(18)).style(button::text).on_press(Msg::Next),
     ]
     .spacing(24)

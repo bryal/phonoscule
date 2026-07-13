@@ -30,6 +30,21 @@ const PLAYBACK_SAMPLE_RATE: u32 = 48000;
 
 type OutSample = Stereo<PcmS16Le>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayState {
+    Playing,
+    Paused,
+}
+
+impl PlayState {
+    fn toggled(self) -> Self {
+        match self {
+            PlayState::Playing => PlayState::Paused,
+            PlayState::Paused => PlayState::Playing,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum Cmd {
     PlayPause,
@@ -265,22 +280,22 @@ async fn main_() {
             let mut pos = source.fast_forward(start_at).await.unwrap();
             let mut chan_from_source = ConnectSource::to_output(source, &mut audio_tx);
 
-            let mut playing = true;
+            let mut play_state = PlayState::Playing;
             let mut prev_status_pos = 0;
 
             loop {
                 start_at = 0;
-                let maybe_cmd = if !playing {
-                    cmd_rx.recv().await.ok()
-                } else {
-                    match cmd_rx.try_recv() {
+                let maybe_cmd = match play_state {
+                    // Paused: nothing to do but wait for the next command.
+                    PlayState::Paused => cmd_rx.recv().await.ok(),
+                    PlayState::Playing => match cmd_rx.try_recv() {
                         Ok(cmd) => Some(cmd),
                         Err(channel::TryRecvError::Empty) => None,
                         Err(err) => panic!("{}", err),
-                    }
+                    },
                 };
                 match maybe_cmd {
-                    Some(Cmd::PlayPause) => playing = !playing,
+                    Some(Cmd::PlayPause) => play_state = play_state.toggled(),
                     Some(Cmd::Restart) => continue 'pls_entry,
                     Some(Cmd::SeekForward(dt)) => {
                         let target = pos + (dt.as_secs_f64() * sample_rate as f64) as u64;
@@ -312,21 +327,23 @@ async fn main_() {
                     }
                     None => (),
                 }
-                if playing {
-                    let n = chan_from_source.pull().await.unwrap();
-                    if n == 0 {
-                        pls_ix += 1;
-                        continue 'pls_entry;
-                    }
-                    pos += n;
+                match play_state {
+                    PlayState::Paused => continue,
+                    PlayState::Playing => (),
+                }
+                let n = chan_from_source.pull().await.unwrap();
+                if n == 0 {
+                    pls_ix += 1;
+                    continue 'pls_entry;
+                }
+                pos += n;
 
-                    let progress_updates_per_sec = 16;
-                    let progress_interval = PLAYBACK_SAMPLE_RATE as u64 / progress_updates_per_sec;
-                    if pos < prev_status_pos || pos - prev_status_pos > progress_interval {
-                        let t_current = Duration::from_secs_f64(pos as f64 / sample_rate as f64);
-                        status_tx.send(Status::Progress(t_current, t_end)).await.unwrap();
-                        prev_status_pos = pos;
-                    }
+                let progress_updates_per_sec = 16;
+                let progress_interval = PLAYBACK_SAMPLE_RATE as u64 / progress_updates_per_sec;
+                if pos < prev_status_pos || pos - prev_status_pos > progress_interval {
+                    let t_current = Duration::from_secs_f64(pos as f64 / sample_rate as f64);
+                    status_tx.send(Status::Progress(t_current, t_end)).await.unwrap();
+                    prev_status_pos = pos;
                 }
             }
         }
