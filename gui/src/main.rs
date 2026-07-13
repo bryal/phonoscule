@@ -375,30 +375,27 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     stack![body, container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(24)].into()
 }
 
-/// The current album run's track list: a semi-transparent overlay with the playing track
-/// highlighted; clicking a track jumps playback there.
+/// The current album run's track list, overlaid in translucent text with the playing track
+/// highlighted; clicking a track jumps playback there. Scrolls (without a visible scrollbar)
+/// when an album has more tracks than fit.
 fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
     let runs = album_runs(&app.queue);
     let run = runs.get(run_of(&runs, app.current)).cloned().unwrap_or(0..0);
     let mut list = column![].spacing(2);
     for ix in run {
         let item = &app.queue[ix];
-        let label = text(&item.title).size(13);
-        let label = if ix == app.current {
-            label.style(|theme: &Theme| text::Style { color: Some(theme.palette().primary) })
-        } else {
-            label
-        };
+        let playing = ix == app.current;
+        let label = text(&item.title).size(16).style(move |theme: &Theme| text::Style {
+            color: Some(if playing {
+                theme.palette().primary
+            } else {
+                iced::Color { a: 0.55, ..iced::Color::WHITE }
+            }),
+        });
         list = list.push(button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)));
     }
-    container(list)
-        .padding(8)
-        .style(|_theme| container::Style {
-            background: Some(iced::Background::Color(iced::Color { a: 0.75, ..iced::Color::BLACK })),
-            border: iced::border::rounded(8),
-            ..container::Style::default()
-        })
-        .into()
+    let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
+    scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar)).into()
 }
 
 fn fmt_time(t: Duration) -> String {
