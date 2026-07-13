@@ -11,10 +11,14 @@ pub struct Media {
 }
 
 pub fn start() -> Media {
+    start_named("Phonoscule", "phonoscule")
+}
+
+fn start_named(display_name: &str, dbus_name: &str) -> Media {
     let (tx, rx) = channel::unbounded();
     let controls = MediaControls::new(PlatformConfig {
-        display_name: "Phonoscule",
-        dbus_name: "phonoscule",
+        display_name,
+        dbus_name,
         // Only used on Windows, where the media controls need a window handle; plumbing one out
         // of iced is a problem for the day this runs there.
         hwnd: None,
@@ -70,11 +74,14 @@ mod test {
     /// or no busctl, e.g. headless environments.
     #[test]
     fn mpris_roundtrip() {
-        const MPRIS: &str = "org.mpris.MediaPlayer2.phonoscule";
         const PATH: &str = "/org/mpris/MediaPlayer2";
         const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
+        // A unique bus name: colliding with a really running phonoscule would silently address
+        // all the busctl calls below at it (and toggle the user's playback!).
+        let dbus_name = format!("phonoscule_test_{}", std::process::id());
+        let mpris = format!("org.mpris.MediaPlayer2.{dbus_name}");
 
-        let mut media = start();
+        let mut media = start_named("Phonoscule roundtrip test", &dbus_name);
         if !media.active() {
             eprintln!("skipping: no media integration in this environment");
             return;
@@ -86,7 +93,7 @@ mod test {
 
         // What we pushed is visible on the bus...
         let status = Command::new("busctl")
-            .args(["--user", "get-property", MPRIS, PATH, PLAYER, "PlaybackStatus"])
+            .args(["--user", "get-property", &mpris, PATH, PLAYER, "PlaybackStatus"])
             .output();
         let Ok(status) = status else {
             eprintln!("skipping: no busctl in this environment");
@@ -94,13 +101,13 @@ mod test {
         };
         assert!(String::from_utf8_lossy(&status.stdout).contains("Playing"), "{status:?}");
         let metadata = Command::new("busctl")
-            .args(["--user", "get-property", MPRIS, PATH, PLAYER, "Metadata"])
+            .args(["--user", "get-property", &mpris, PATH, PLAYER, "Metadata"])
             .output()
             .unwrap();
         assert!(String::from_utf8_lossy(&metadata.stdout).contains("Roundtrip Test"), "{metadata:?}");
 
         // ...and a control call from the outside arrives as an event.
-        let call = Command::new("busctl").args(["--user", "call", MPRIS, PATH, PLAYER, "PlayPause"]).status().unwrap();
+        let call = Command::new("busctl").args(["--user", "call", &mpris, PATH, PLAYER, "PlayPause"]).status().unwrap();
         assert!(call.success());
         let event = smol::block_on(smol::future::or(
             async { media.events.recv().await.ok() },
