@@ -115,8 +115,8 @@ fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
     let cover = hover(button(cover).padding(0).style(button::text).on_press(Msg::PlayAlbum(ix)), bubbles);
     column![
         cover,
-        text(&album.title).size(14),
-        text(&album.artist).size(12).style(text::secondary),
+        text(&album.title).size(15),
+        text(&album.artist).size(13).style(text::secondary),
     ]
     .spacing(4)
     .width(side)
@@ -166,12 +166,12 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
         _ => 0.0,
     };
     let seek_bar = row![
-        text(fmt_time(shown_pos)).size(12),
+        text(fmt_time(shown_pos)).size(13),
         slider(0.0..=1.0f32, frac, Msg::SeekChanged)
             .step(0.001_f32)
             .on_release(Msg::SeekReleased)
             .width(Fill),
-        text(app.len.map(fmt_time).unwrap_or_else(|| "--:--".into())).size(12),
+        text(app.len.map(fmt_time).unwrap_or_else(|| "--:--".into())).size(13),
     ]
     .spacing(12)
     .align_y(Center);
