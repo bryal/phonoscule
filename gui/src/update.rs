@@ -124,11 +124,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             MediaControlEvent::Previous => app.send(player::Cmd::Prev),
             MediaControlEvent::Seek(direction) => media_seek(app, direction, Duration::from_secs(5)),
             MediaControlEvent::SeekBy(direction, dt) => media_seek(app, direction, dt),
-            MediaControlEvent::SetPosition(MediaPosition(t)) => {
-                app.pos = t;
-                app.send(player::Cmd::Seek(t));
-                push_media_playback(app);
-            }
+            MediaControlEvent::SetPosition(MediaPosition(t)) => app.send(player::Cmd::Seek(t)),
             // No volume control (yet): playback follows the system volume.
             MediaControlEvent::SetVolume(_) => (),
             MediaControlEvent::OpenUri(_) => (),
@@ -152,9 +148,10 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::SeekReleased => {
             if let (Some(frac), Some(len)) = (app.seek_drag.take(), app.len) {
                 let t = len.mul_f32(frac.clamp(0.0, 1.0));
-                app.pos = t;
+                // No optimistic position update: the player reports its position right after
+                // seeking (stale in-flight reports can't yank the bar around this way, at the
+                // price of the bar resting at the old position for the seek's few ms).
                 app.send(player::Cmd::Seek(t));
-                push_media_playback(app);
             }
         }
         Msg::Frame(now) => {
@@ -225,7 +222,5 @@ fn media_seek(app: &mut App, direction: SeekDirection, dt: Duration) {
         SeekDirection::Forward => app.pos.saturating_add(dt),
         SeekDirection::Backward => app.pos.saturating_sub(dt),
     };
-    app.pos = target;
     app.send(player::Cmd::Seek(target));
-    push_media_playback(app);
 }
