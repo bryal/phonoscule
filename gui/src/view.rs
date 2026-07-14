@@ -39,8 +39,70 @@ pub fn view(app: &App) -> Element<'_, Msg> {
         View::Library => library_view(app),
         View::NowPlaying => now_playing_view(app),
     };
+    let mut content = column![top, body];
+    // The player accompanies every view (once something is queued).
+    if let Some(bar) = player_bar(app) {
+        content = content.push(bar);
+    }
     // Everything renders over the backdrop glow.
-    stack![background::background(app.glow), column![top, body]].into()
+    stack![background::background(app.glow), content].into()
+}
+
+/// The playing track's title & artist, the seek bar, and the playback controls.
+fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
+    let current = app.queue.get(min(app.current, app.queue.len().checked_sub(1)?))?;
+
+    // Deliberately no visual feedback while holding/dragging the slider (the grabbing mouse
+    // cursor is the only hint): the bar always shows the actual playback position, so the
+    // moments around a seek (position reports racing the seek command) have nothing to flash
+    // back and forth. The bar simply jumps once when the player reports the new position.
+    let frac = match app.len {
+        Some(len) if !len.is_zero() => (app.pos.as_secs_f32() / len.as_secs_f32()).clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    let seek_bar = row![
+        text(fmt_time(app.pos)).size(13),
+        slider(0.0..=1.0f32, frac, Msg::SeekChanged)
+            .step(0.001_f32)
+            .on_release(Msg::SeekReleased)
+            .width(Fill),
+        text(app.len.map(fmt_time).unwrap_or_else(|| "--:--".into())).size(13),
+    ]
+    .spacing(12)
+    .align_y(Center);
+
+    let controls = row![
+        button(text(FA_BACKWARD_STEP).font(font_awesome_solid()).size(18)).style(button::text).on_press(Msg::Prev),
+        button(
+            text(match app.play_state {
+                player::PlayState::Playing => FA_PAUSE,
+                player::PlayState::Paused => FA_PLAY,
+            })
+            .font(font_awesome_solid())
+            .size(24)
+            .width(30)
+            .center(),
+        )
+        .style(button::text)
+        .on_press(Msg::Toggle),
+        button(text(FA_FORWARD_STEP).font(font_awesome_solid()).size(18)).style(button::text).on_press(Msg::Next),
+    ]
+    .spacing(24)
+    .align_y(Center);
+
+    Some(
+        column![
+            text(&current.title).size(20),
+            text(format!("{} — {}", current.artist, current.album)).size(14).style(text::secondary),
+            seek_bar,
+            controls,
+        ]
+        .spacing(10)
+        .padding(16)
+        .align_x(Center)
+        .width(Fill)
+        .into(),
+    )
 }
 
 fn library_view(app: &App) -> Element<'_, Msg> {
@@ -152,63 +214,12 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     if app.queue.is_empty() {
         return container(text("Play or queue an album from the library")).center(Fill).into();
     }
-    let current = &app.queue[min(app.current, app.queue.len() - 1)];
-
     let covers =
         album_runs(&app.queue).iter().map(|run| app.queue[run.start].cover.clone()).collect();
     // The reflections' floor fade must match the rendered backdrop.
     let flow = cover_flow(covers, app.anim_pos, app.glow, Msg::CoverClicked);
 
-    // Deliberately no visual feedback while holding/dragging the slider (the grabbing mouse
-    // cursor is the only hint): the bar always shows the actual playback position, so the
-    // moments around a seek (position reports racing the seek command) have nothing to flash
-    // back and forth. The bar simply jumps once when the player reports the new position.
-    let frac = match app.len {
-        Some(len) if !len.is_zero() => (app.pos.as_secs_f32() / len.as_secs_f32()).clamp(0.0, 1.0),
-        _ => 0.0,
-    };
-    let seek_bar = row![
-        text(fmt_time(app.pos)).size(13),
-        slider(0.0..=1.0f32, frac, Msg::SeekChanged)
-            .step(0.001_f32)
-            .on_release(Msg::SeekReleased)
-            .width(Fill),
-        text(app.len.map(fmt_time).unwrap_or_else(|| "--:--".into())).size(13),
-    ]
-    .spacing(12)
-    .align_y(Center);
-
-    let controls = row![
-        button(text(FA_BACKWARD_STEP).font(font_awesome_solid()).size(18)).style(button::text).on_press(Msg::Prev),
-        button(
-            text(match app.play_state {
-                player::PlayState::Playing => FA_PAUSE,
-                player::PlayState::Paused => FA_PLAY,
-            })
-            .font(font_awesome_solid())
-            .size(24)
-            .width(30)
-            .center(),
-        )
-        .style(button::text)
-        .on_press(Msg::Toggle),
-        button(text(FA_FORWARD_STEP).font(font_awesome_solid()).size(18)).style(button::text).on_press(Msg::Next),
-    ]
-    .spacing(24)
-    .align_y(Center);
-
-    let body = column![
-        flow,
-        text(&current.title).size(20),
-        text(format!("{} — {}", current.artist, current.album)).size(14).style(text::secondary),
-        seek_bar,
-        controls,
-    ]
-    .spacing(10)
-    .padding(16)
-    .align_x(Center);
-
-    stack![body, container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(24)].into()
+    stack![flow, container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(24)].into()
 }
 
 /// The current album run's track list, overlaid in translucent text with the playing track
