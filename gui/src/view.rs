@@ -102,7 +102,7 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     .align_x(Center)
     .width(Fill);
     let panel = container(bar).style(|_theme| container::Style {
-        background: Some(iced::Background::Color(iced::Color { a: 0.55, ..iced::Color::BLACK })),
+        background: Some(iced::Background::Color(iced::Color { a: 0.75, ..iced::Color::BLACK })),
         ..container::Style::default()
     });
     Some(panel.into())
@@ -148,7 +148,10 @@ fn library_view(app: &App) -> Element<'_, Msg> {
                 let status = shadowed_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, |_| {
                     iced::Color { a: 0.6, ..iced::Color::WHITE }
                 });
-                stack![grid, container(status).center_x(Fill).align_bottom(Fill).padding(12)].into()
+                // Sits just above the player bar (when there is one).
+                let padding =
+                    iced::Padding { top: 12.0, right: 12.0, bottom: bottom_padding.max(12.0), left: 12.0 };
+                stack![grid, container(status).center_x(Fill).align_bottom(Fill).padding(padding)].into()
             }
             ScanState::Complete => grid.into(),
         }
