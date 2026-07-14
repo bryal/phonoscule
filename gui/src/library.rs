@@ -402,8 +402,10 @@ pub fn accent_color(rgba: &[u8]) -> iced::Color {
         let max = r.max(g).max(b);
         let min = r.min(g).min(b);
         let saturation = if max > 0.0 { (max - min) / max } else { 0.0 };
-        // The small floor keeps grayscale art from ending in a tie of zeroes.
-        n as f32 * (0.05 + saturation * saturation * max)
+        // Distinctness must dominate size: saturation counts cubed, and the population floor is
+        // only a tiebreaker so that grayscale art degrades to its most common shade -- any
+        // bigger and a large mass of near-white/gray outweighs smaller vivid regions.
+        n as f32 * (0.01 + saturation.powi(3) * max)
     };
     let best = buckets.iter().max_by(|a, b| score(a).total_cmp(&score(b)));
     match best {
@@ -530,6 +532,23 @@ mod test {
         }
         let accent = accent_color(&rgba);
         assert!(accent.r > 0.5 && accent.g < 0.2 && accent.b < 0.2, "{accent:?}");
+    }
+
+    #[test]
+    fn accent_ignores_a_dominant_bright_near_neutral() {
+        // Mostly bright, slightly warm near-white (like skin filling a cover), with a modest
+        // amount of vivid red spread over a few different shades: the red must still win.
+        let mut rgba = Vec::new();
+        for i in 0..10_000 {
+            match i % 20 {
+                0 => rgba.extend([204u8, 24, 24, 255]),
+                1 => rgba.extend([232u8, 40, 32, 255]),
+                2 => rgba.extend([176u8, 16, 40, 255]),
+                _ => rgba.extend([235u8, 225, 218, 255]),
+            }
+        }
+        let accent = accent_color(&rgba);
+        assert!(accent.r > 0.5 && accent.g < 0.3 && accent.b < 0.3, "{accent:?}");
     }
 
     #[test]
