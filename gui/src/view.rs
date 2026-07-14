@@ -90,10 +90,19 @@ fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
             .style(container::rounded_box)
             .into(),
     };
-    // Action bubbles in the cover's top-right corner, shown only while hovering the cover.
-    let bubbles = container(row![bubble("▶", Msg::PlayAlbum(ix)), bubble("+", Msg::QueueAlbum(ix))].spacing(6))
-        .align_right(Fill)
-        .padding(8);
+    // Action bubbles along the cover's right edge, shown only while hovering the cover.
+    let play = text("▶").size(13).center();
+    let enqueue = text("+").size(19).font(iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT }).center();
+    let bubbles = container(
+        column![
+            // Nudged right: a right-pointing triangle looks left-leaning when geometrically centered.
+            bubble(container(play).center(Fill).padding(iced::Padding { left: 2.0, ..iced::Padding::ZERO }), Msg::PlayAlbum(ix)),
+            bubble(container(enqueue).center(Fill), Msg::QueueAlbum(ix)),
+        ]
+        .spacing(6),
+    )
+    .align_right(Fill)
+    .padding(8);
     let cover = hover(button(cover).padding(0).style(button::text).on_press(Msg::PlayAlbum(ix)), bubbles);
     column![
         cover,
@@ -106,9 +115,9 @@ fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
 }
 
 /// A small round action button, floating over content.
-fn bubble(symbol: &str, msg: Msg) -> Element<'_, Msg> {
+fn bubble(label: impl Into<Element<'static, Msg>>, msg: Msg) -> Element<'static, Msg> {
     const DIAMETER: f32 = 30.0;
-    button(text(symbol).size(14).width(Fill).height(Fill).center())
+    button(label)
         .width(DIAMETER)
         .height(DIAMETER)
         .padding(0)
