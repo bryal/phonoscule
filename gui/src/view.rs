@@ -41,12 +41,6 @@ fn library_view(app: &App) -> Element<'_, Msg> {
     }
     const COLS: usize = 4;
     let mut grid = column![].spacing(24).padding(16);
-    match app.scan {
-        ScanState::Scanning => {
-            grid = grid.push(text(format!("Scanning {:?}…", app.conf.music_dir)).size(12).style(text::secondary));
-        }
-        ScanState::Complete => (),
-    }
     for (row_ix, albums) in app.albums.chunks(COLS).enumerate() {
         let mut r = row![].spacing(16);
         for (col_ix, album) in albums.iter().enumerate() {
@@ -54,7 +48,18 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         }
         grid = grid.push(r);
     }
-    scrollable(grid).height(Fill).into()
+    let grid = scrollable(grid).height(Fill);
+    match app.scan {
+        // The scan status floats over the grid rather than claiming layout space; rescans (the
+        // watcher, the periodic poll) must not shift the albums around.
+        ScanState::Scanning => {
+            let status = shadowed_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, |_| {
+                iced::Color { a: 0.6, ..iced::Color::WHITE }
+            });
+            stack![grid, container(status).center_x(Fill).align_bottom(Fill).padding(12)].into()
+        }
+        ScanState::Complete => grid.into(),
+    }
 }
 
 fn album_card(ix: usize, album: &Album) -> Element<'_, Msg> {
@@ -157,26 +162,32 @@ fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
     for ix in run {
         let item = &app.queue[ix];
         let playing = ix == app.current;
-        let front = text(&item.title).size(16).style(move |theme: &Theme| text::Style {
-            color: Some(if playing {
-                theme.palette().primary
-            } else {
-                iced::Color { a: 0.6, ..iced::Color::WHITE }
-            }),
+        let label = shadowed_text(&item.title, 16.0, move |theme| {
+            if playing { theme.palette().primary } else { iced::Color { a: 0.6, ..iced::Color::WHITE } }
         });
-        // Faked drop shadow: the same text in translucent black, offset one pixel down-right,
-        // layered underneath. Keeps the translucent text legible over bright covers.
-        let shadow = text(&item.title)
-            .size(16)
-            .style(|_theme| text::Style { color: Some(iced::Color { a: 0.7, ..iced::Color::BLACK }) });
-        let label = stack![
-            container(shadow).padding(iced::Padding { top: 1.0, left: 1.0, right: 0.0, bottom: 0.0 }),
-            container(front).padding(iced::Padding { top: 0.0, left: 0.0, right: 1.0, bottom: 1.0 }),
-        ];
         list = list.push(button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)));
     }
     let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
     scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar)).into()
+}
+
+/// Translucent text with a faked drop shadow -- the same text in translucent black, offset one
+/// pixel down-right, layered underneath -- so text floating over busy content stays legible.
+fn shadowed_text<'a>(
+    content: impl iced::widget::text::IntoFragment<'a> + Clone,
+    size: f32,
+    color: impl Fn(&Theme) -> iced::Color + 'a,
+) -> Element<'a, Msg> {
+    let front = text(content.clone())
+        .size(size)
+        .style(move |theme: &Theme| text::Style { color: Some(color(theme)) });
+    let shadow =
+        text(content).size(size).style(|_theme| text::Style { color: Some(iced::Color { a: 0.7, ..iced::Color::BLACK }) });
+    stack![
+        container(shadow).padding(iced::Padding { top: 1.0, left: 1.0, right: 0.0, bottom: 0.0 }),
+        container(front).padding(iced::Padding { top: 0.0, left: 0.0, right: 1.0, bottom: 1.0 }),
+    ]
+    .into()
 }
 
 fn fmt_time(t: Duration) -> String {
