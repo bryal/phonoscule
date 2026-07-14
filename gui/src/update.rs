@@ -1,6 +1,7 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{App, ScanState, View, album_runs, flow_target, queue_items, run_of};
+use iced::Task;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::player;
 use souvlaki::{MediaControlEvent, MediaMetadata, MediaPlayback, MediaPosition, SeekDirection};
@@ -9,6 +10,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone)]
 pub enum Msg {
     Library(library::ScanEvent),
+    /// Time to poll the music directory for changes.
+    Rescan,
     Show(View),
     PlayAlbum(usize),
     QueueAlbum(usize),
@@ -24,9 +27,18 @@ pub enum Msg {
     Frame(Instant),
 }
 
-pub fn update(app: &mut App, msg: Msg) {
+pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
     match msg {
-        Msg::Library(library::ScanEvent::Album(album)) => {
+        Msg::Library(library::ScanEvent::Album(mut album)) => {
+            // Re-scans re-report albums we already have: upsert by the stable id, keeping the
+            // already-loaded cover art when the cover is unchanged (the scanner skips
+            // re-decoding and re-sending it).
+            if let Some(ix) = app.albums.iter().position(|a| a.id == album.id) {
+                let old = app.albums.remove(ix);
+                if old.cover_id == album.cover_id {
+                    album.cover = old.cover;
+                }
+            }
             // Keep the browser sorted; scan order is nondeterministic (directories complete
             // in parallel).
             let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
@@ -45,7 +57,19 @@ pub fn update(app: &mut App, msg: Msg) {
                 push_media_metadata(app);
             }
         }
-        Msg::Library(library::ScanEvent::Done) => app.scan = ScanState::Complete,
+        Msg::Library(library::ScanEvent::Done { album_ids }) => {
+            let ids: std::collections::HashSet<u64> = album_ids.into_iter().collect();
+            app.albums.retain(|album| ids.contains(&album.id));
+            app.scan = ScanState::Complete;
+        }
+        Msg::Rescan => match app.scan {
+            // The running scan will pick changes up anyway.
+            ScanState::Scanning => (),
+            ScanState::Complete => {
+                app.scan = ScanState::Scanning;
+                return Task::run(library::scan(rescan_options(app)), Msg::Library);
+            }
+        },
         Msg::Show(v) => app.view = v,
         Msg::PlayAlbum(ix) => {
             let items = queue_items(&app.albums[ix]);
@@ -143,6 +167,16 @@ pub fn update(app: &mut App, msg: Msg) {
                 app.anim_pos = target;
             }
         }
+    }
+    Task::none()
+}
+
+/// Options for a periodic re-scan: skip re-decoding all the cover art we already hold.
+fn rescan_options(app: &App) -> library::ScanOptions {
+    library::ScanOptions {
+        root: app.conf.music_dir.clone(),
+        known_covers: app.albums.iter().filter_map(|a| a.cover.as_ref().map(|c| c.id)).collect(),
+        cache_file: library::default_cache_file(),
     }
 }
 

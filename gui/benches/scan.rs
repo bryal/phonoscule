@@ -122,11 +122,14 @@ fn corpus(with_covers: bool) -> PathBuf {
     root
 }
 
-/// Runs a scan to completion, applying the streamed events like the GUI would.
+/// Runs a scan to completion, applying the streamed events like the GUI would. Caching is
+/// disabled: this measures the full scanning work, reproducibly.
 fn drain(root: PathBuf) -> Vec<Album> {
     smol::block_on(async {
+        let options =
+            library::ScanOptions { root, known_covers: Default::default(), cache_file: None };
         let mut albums: Vec<Album> = Vec::new();
-        let mut stream = std::pin::pin!(library::scan(root));
+        let mut stream = std::pin::pin!(library::scan(options));
         while let Some(event) = stream.next().await {
             match event {
                 ScanEvent::Album(album) => albums.push(album),
@@ -135,7 +138,7 @@ fn drain(root: PathBuf) -> Vec<Album> {
                         album.cover = Some(art.clone());
                     }
                 }
-                ScanEvent::Done => break,
+                ScanEvent::Done { .. } => break,
             }
         }
         albums

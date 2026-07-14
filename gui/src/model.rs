@@ -71,7 +71,12 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             anim_pos: 0.0,
             last_frame: Instant::now(),
         };
-        let scan = Task::run(library::scan(conf.music_dir.clone()), Msg::Library);
+        let options = library::ScanOptions {
+            root: conf.music_dir.clone(),
+            known_covers: Default::default(),
+            cache_file: library::default_cache_file(),
+        };
+        let scan = Task::run(library::scan(options), Msg::Library);
         (app, scan)
     }
 }

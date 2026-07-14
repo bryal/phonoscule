@@ -3346,6 +3346,8 @@ dependencies = [
  "ogg",
  "phonoscule",
  "pulse-simple",
+ "serde",
+ "serde_json",
  "shellexpand",
  "simple_logger",
  "smol",
