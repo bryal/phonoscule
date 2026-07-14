@@ -4,7 +4,7 @@ use crate::update::Msg;
 use iced::Task;
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
-use phonoscule_gui::{media, player};
+use phonoscule_gui::{media, player, watcher};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,7 @@ pub struct QueueItem {
 pub struct App {
     pub engine: player::Engine,
     pub media: media::Media,
+    pub watcher: watcher::Watcher,
     /// The playback position last pushed to [`media`]: pushes are throttled to ~1/s, since each
     /// becomes a D-Bus signal.
     pub media_pos: Duration,
@@ -57,6 +58,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
         let app = App {
             engine: player::start(),
             media: media::start(),
+            watcher: watcher::start(&conf.music_dir),
             media_pos: Duration::ZERO,
             conf: conf.clone(),
             scan: ScanState::Scanning,

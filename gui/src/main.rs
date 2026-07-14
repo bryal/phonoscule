@@ -47,13 +47,15 @@ fn channel_subscription<T: Send + 'static>(tag: &'static str, rx: channel::Recei
     Subscription::run_with(Tagged(tag, rx), |tagged| tagged.1.clone())
 }
 
-/// How often the music directory is polled for changes. Unchanged files are never re-read (the
-/// tag cache is validated by stat data), so a quiet poll costs directory listings and stats.
+/// How often the music directory is polled for changes, as the fallback behind the filesystem
+/// watcher. Unchanged files are never re-read (the tag cache is validated by stat data), so a
+/// quiet poll costs directory listings and stats.
 const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 
 fn subscription(app: &App) -> Subscription<Msg> {
     let player = channel_subscription("player-events", app.engine.events.clone()).map(Msg::Player);
     let media = channel_subscription("media-events", app.media.events.clone()).map(Msg::Media);
+    let watch = channel_subscription("watch-events", app.watcher.events.clone()).map(|()| Msg::Rescan);
     let rescan = iced::time::every(RESCAN_INTERVAL).map(|_| Msg::Rescan);
 
     let animating = app.view == View::NowPlaying && app.anim_pos != flow_target(app);
@@ -63,5 +65,5 @@ fn subscription(app: &App) -> Subscription<Msg> {
         Subscription::none()
     };
 
-    Subscription::batch([player, media, rescan, frames])
+    Subscription::batch([player, media, watch, rescan, frames])
 }
