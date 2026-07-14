@@ -39,13 +39,14 @@ pub fn view(app: &App) -> Element<'_, Msg> {
         View::Library => library_view(app),
         View::NowPlaying => now_playing_view(app),
     };
-    let mut content = column![top, body];
-    // The player accompanies every view (once something is queued).
+    // Everything renders over the backdrop glow; the player floats over the view body (which
+    // remains visible through its translucent panel), accompanying every view once something
+    // is queued.
+    let mut layers: Vec<Element<'_, Msg>> = vec![background::background(app.glow).into(), column![top, body].into()];
     if let Some(bar) = player_bar(app) {
-        content = content.push(bar);
+        layers.push(container(bar).center_x(Fill).align_bottom(Fill).into());
     }
-    // Everything renders over the backdrop glow.
-    stack![background::background(app.glow), content].into()
+    stack(layers).into()
 }
 
 /// The playing track's title & artist, the seek bar, and the playback controls.
@@ -90,19 +91,21 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     .spacing(24)
     .align_y(Center);
 
-    Some(
-        column![
-            text(&current.title).size(20),
-            text(format!("{} — {}", current.artist, current.album)).size(14).style(text::secondary),
-            seek_bar,
-            controls,
-        ]
-        .spacing(10)
-        .padding(16)
-        .align_x(Center)
-        .width(Fill)
-        .into(),
-    )
+    let bar = column![
+        text(&current.title).size(20),
+        text(format!("{} — {}", current.artist, current.album)).size(14).style(text::secondary),
+        seek_bar,
+        controls,
+    ]
+    .spacing(10)
+    .padding(16)
+    .align_x(Center)
+    .width(Fill);
+    let panel = container(bar).style(|_theme| container::Style {
+        background: Some(iced::Background::Color(iced::Color { a: 0.55, ..iced::Color::BLACK })),
+        ..container::Style::default()
+    });
+    Some(panel.into())
 }
 
 fn library_view(app: &App) -> Element<'_, Msg> {
@@ -115,6 +118,8 @@ fn library_view(app: &App) -> Element<'_, Msg> {
     }
     const SPACING: f32 = 16.0;
     const PADDING: f32 = 16.0;
+    // Room to scroll the last row out from under the floating player bar.
+    let bottom_padding = if app.queue.is_empty() { PADDING } else { 170.0 };
     responsive(move |size| {
         // As many columns as fit the actual width at the base card size, so albums wrap instead
         // of clipping -- then the cards stretch to use the row fully, so dropping a column
@@ -122,7 +127,12 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         let width = size.width - 2.0 * PADDING;
         let cols = (((width + SPACING) / (CARD_SIDE + SPACING)) as usize).max(1);
         let side = ((width - SPACING * (cols - 1) as f32) / cols as f32).floor().max(CARD_SIDE / 2.0);
-        let mut grid = column![].spacing(24).padding(PADDING);
+        let mut grid = column![].spacing(24).padding(iced::Padding {
+            top: PADDING,
+            right: PADDING,
+            bottom: bottom_padding,
+            left: PADDING,
+        });
         for (row_ix, albums) in app.albums.chunks(cols).enumerate() {
             let mut r = row![].spacing(SPACING);
             for (col_ix, album) in albums.iter().enumerate() {
