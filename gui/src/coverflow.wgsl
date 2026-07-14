@@ -2,8 +2,17 @@
 
 struct Uniforms {
     view_proj: mat4x4<f32>,
-    // The background color; reflections fade towards it.
-    floor: vec4<f32>,
+    // The backdrop glow (see background.wgsl); reflections fade towards the backdrop.
+    glow_color: vec4<f32>,
+    glow_center: vec2<f32>,
+    glow_radius: f32,
+    _pad: f32,
+}
+
+// Keep in sync with the copy in background.wgsl: this must evaluate the exact backdrop.
+fn glow(pos: vec2<f32>) -> vec3<f32> {
+    let d = distance(pos, uniforms.glow_center) / uniforms.glow_radius;
+    return uniforms.glow_color.rgb * exp(-3.0 * d * d);
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -47,7 +56,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         gradient = 0.3 * pow(1.0 - in.uv.y, 2.0);
     }
     let color = textureSample(cover_t, cover_s, uv);
-    let rgb = mix(uniforms.floor.rgb, color.rgb * in.misc.y, gradient);
+    let rgb = mix(glow(in.pos.xy), color.rgb * in.misc.y, gradient);
     // Premultiplied alpha; in.misc.z is the carousel's distance fade.
     return vec4<f32>(rgb, color.a) * in.misc.z;
 }

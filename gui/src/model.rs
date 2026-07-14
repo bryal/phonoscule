@@ -50,8 +50,8 @@ pub struct App {
     pub seek_drag: Option<f32>,
     /// Animated Cover Flow position, chasing `current`.
     pub anim_pos: f32,
-    /// Animated application background color, chasing the playing album's accent.
-    pub bg: iced::Color,
+    /// Animated backdrop glow color, chasing the playing album's accent.
+    pub glow: iced::Color,
     pub last_frame: Instant,
 }
 
@@ -73,7 +73,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             len: None,
             seek_drag: None,
             anim_pos: 0.0,
-            bg: iced::Color::BLACK,
+            glow: iced::Color::BLACK,
             last_frame: Instant::now(),
         };
         let options = library::ScanOptions {
@@ -118,17 +118,20 @@ pub fn flow_target(app: &App) -> f32 {
     run_of(&album_runs(&app.queue), app.current) as f32
 }
 
-/// The background color the application is (fading towards) showing: the playing album's accent,
-/// heavily darkened so covers and text keep their contrast.
-pub fn bg_target(app: &App) -> iced::Color {
-    const TINT: f32 = 0.25;
+/// The backdrop glow color the application is (fading towards) showing: the playing album's
+/// accent at full brightness -- normalized so its strongest channel saturates; the backdrop
+/// shader decides how much of it to actually show.
+pub fn glow_target(app: &App) -> iced::Color {
     match app.queue.get(app.current).and_then(|item| item.cover.as_ref()) {
-        Some(cover) => iced::Color {
-            r: cover.accent.r * TINT,
-            g: cover.accent.g * TINT,
-            b: cover.accent.b * TINT,
-            a: 1.0,
-        },
+        Some(cover) => {
+            let accent = cover.accent;
+            let max = accent.r.max(accent.g).max(accent.b);
+            if max <= f32::EPSILON {
+                iced::Color::BLACK
+            } else {
+                iced::Color { r: accent.r / max, g: accent.g / max, b: accent.b / max, a: 1.0 }
+            }
+        }
         None => iced::Color::BLACK,
     }
 }

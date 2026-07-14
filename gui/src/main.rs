@@ -8,7 +8,7 @@ mod model;
 mod update;
 mod view;
 
-use model::{App, View, bg_target, boot, flow_target};
+use model::{App, View, glow_target, boot, flow_target};
 use phonoscule_gui::conf::{self, Conf};
 use smol::channel;
 use std::path::PathBuf;
@@ -75,7 +75,7 @@ fn subscription(app: &App) -> Subscription<Msg> {
     let rescan = iced::time::every(RESCAN_INTERVAL).map(|_| Msg::Rescan);
 
     let animating = (app.view == View::NowPlaying && app.anim_pos != flow_target(app))
-        || app.bg != bg_target(app);
+        || app.glow != glow_target(app);
     let frames = if animating {
         iced::time::every(Duration::from_millis(16)).map(Msg::Frame)
     } else {

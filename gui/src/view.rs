@@ -4,6 +4,7 @@ use crate::model::{App, ScanState, View, album_runs, run_of};
 use crate::update::Msg;
 use iced::widget::{button, column, container, hover, image, responsive, row, scrollable, slider, stack, text};
 use iced::{Center, Element, Fill, Theme};
+use phonoscule_gui::background;
 use phonoscule_gui::coverflow::cover_flow;
 use phonoscule_gui::library::Album;
 use phonoscule_gui::player;
@@ -24,8 +25,8 @@ pub fn theme(_app: &App) -> Theme {
     Theme::Dark
 }
 
-pub fn style(app: &App, theme: &Theme) -> iced::theme::Style {
-    iced::theme::Style { background_color: app.bg, text_color: theme.palette().text }
+pub fn style(_app: &App, theme: &Theme) -> iced::theme::Style {
+    iced::theme::Style { background_color: iced::Color::BLACK, text_color: theme.palette().text }
 }
 
 pub fn view(app: &App) -> Element<'_, Msg> {
@@ -38,7 +39,8 @@ pub fn view(app: &App) -> Element<'_, Msg> {
         View::Library => library_view(app),
         View::NowPlaying => now_playing_view(app),
     };
-    column![top, body].into()
+    // Everything renders over the backdrop glow.
+    stack![background::background(app.glow), column![top, body]].into()
 }
 
 fn library_view(app: &App) -> Element<'_, Msg> {
@@ -154,8 +156,8 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
 
     let covers =
         album_runs(&app.queue).iter().map(|run| app.queue[run.start].cover.clone()).collect();
-    // The reflections' floor fade must match the rendered background.
-    let flow = cover_flow(covers, app.anim_pos, app.bg, Msg::CoverClicked);
+    // The reflections' floor fade must match the rendered backdrop.
+    let flow = cover_flow(covers, app.anim_pos, app.glow, Msg::CoverClicked);
 
     let shown_pos = match (app.seek_drag, app.len) {
         (Some(frac), Some(len)) => len.mul_f32(frac.clamp(0.0, 1.0)),

@@ -41,10 +41,10 @@ const PLACEHOLDER_ID: u64 = u64::MAX;
 pub fn cover_flow<Message>(
     covers: Vec<Option<CoverArt>>,
     position: f32,
-    floor: iced::Color,
+    glow: iced::Color,
     on_click: fn(usize) -> Message,
 ) -> iced::widget::Shader<Message, CoverFlow<Message>> {
-    iced::widget::shader(CoverFlow { covers, position, floor, on_click })
+    iced::widget::shader(CoverFlow { covers, position, glow, on_click })
         .width(iced::Fill)
         .height(iced::Fill)
 }
@@ -52,8 +52,8 @@ pub fn cover_flow<Message>(
 pub struct CoverFlow<Message> {
     covers: Vec<Option<CoverArt>>,
     position: f32,
-    /// The background color: reflections fade towards it (see the shader).
-    floor: iced::Color,
+    /// The backdrop's glow color: reflections fade towards the backdrop (see the shader).
+    glow: iced::Color,
     on_click: fn(usize) -> Message,
 }
 
@@ -100,8 +100,7 @@ impl<Message> shader::Program<Message> for CoverFlow<Message> {
             instances.push(Instance::new(model, 0.0, brightness, fade));
             draws.push(Draw { texture: id, instances: first..first + 2 });
         }
-        // Linear color space, like the sampled textures the shader blends it with.
-        Flow { view_proj, floor: self.floor.into_linear(), instances, draws, uploads }
+        Flow { view_proj, glow: self.glow, instances, draws, uploads }
     }
 
     fn mouse_interaction(
@@ -225,7 +224,7 @@ impl fmt::Debug for Upload {
 #[derive(Debug)]
 pub struct Flow {
     view_proj: Mat4,
-    floor: [f32; 4],
+    glow: iced::Color,
     instances: Vec<Instance>,
     draws: Vec<Draw>,
     uploads: Vec<Upload>,
@@ -240,13 +239,15 @@ impl shader::Primitive for Flow {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         _bounds: &Rectangle,
-        _viewport: &Viewport,
+        viewport: &Viewport,
     ) {
         for upload in &self.uploads {
             pipeline.upload_texture(device, queue, upload);
         }
         queue.write_buffer(&pipeline.uniforms, 0, bytemuck::cast_slice(&self.view_proj.to_cols_array()));
-        queue.write_buffer(&pipeline.uniforms, 64, bytemuck::cast_slice(&self.floor));
+        // Same glow parameters as the backdrop, so the reflections' floor matches it exactly.
+        let glow = crate::background::glow_uniform(self.glow, viewport);
+        queue.write_buffer(&pipeline.uniforms, 64, bytemuck::cast_slice(&glow));
         let instance_bytes: &[u8] = bytemuck::cast_slice(&self.instances);
         if pipeline.instances.size() < instance_bytes.len() as u64 {
             pipeline.instances = instance_buffer(device, instance_bytes.len() as u64);
@@ -391,7 +392,7 @@ impl shader::Pipeline for Pipeline {
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("coverflow uniforms"),
-            size: 64 + 16, // view_proj + floor color
+            size: 64 + 32, // view_proj + the backdrop glow parameters
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
