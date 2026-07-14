@@ -88,15 +88,26 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             player::Event::TrackStarted { ix, len } => {
                 app.current = ix;
                 app.len = len;
-                app.pos = Duration::ZERO;
+                // A seek that restarts the track passes through here with the optimistic
+                // position already shown; don't flash zero in between.
+                if app.pending_seeks == 0 {
+                    app.pos = Duration::ZERO;
+                }
                 push_media_metadata(app);
                 push_media_playback(app);
             }
             player::Event::Progress(t) => {
-                if app.seek_drag.is_none() {
+                if app.seek_drag.is_none() && app.pending_seeks == 0 {
                     app.pos = t;
                 }
                 if app.pos.abs_diff(app.media_pos) >= Duration::from_secs(1) {
+                    push_media_playback(app);
+                }
+            }
+            player::Event::Seeked(t) => {
+                app.pending_seeks = app.pending_seeks.saturating_sub(1);
+                if app.pending_seeks == 0 {
+                    app.pos = t;
                     push_media_playback(app);
                 }
             }
@@ -126,6 +137,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             MediaControlEvent::SeekBy(direction, dt) => media_seek(app, direction, dt),
             MediaControlEvent::SetPosition(MediaPosition(t)) => {
                 app.pos = t;
+                app.pending_seeks += 1;
                 app.send(player::Cmd::Seek(t));
                 push_media_playback(app);
             }
@@ -153,6 +165,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             if let (Some(frac), Some(len)) = (app.seek_drag.take(), app.len) {
                 let t = len.mul_f32(frac.clamp(0.0, 1.0));
                 app.pos = t;
+                app.pending_seeks += 1;
                 app.send(player::Cmd::Seek(t));
                 push_media_playback(app);
             }
@@ -226,6 +239,7 @@ fn media_seek(app: &mut App, direction: SeekDirection, dt: Duration) {
         SeekDirection::Backward => app.pos.saturating_sub(dt),
     };
     app.pos = target;
+    app.pending_seeks += 1;
     app.send(player::Cmd::Seek(target));
     push_media_playback(app);
 }
