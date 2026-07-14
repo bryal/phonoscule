@@ -18,6 +18,21 @@ use view::{style, theme, view};
 
 use iced::Subscription;
 
+/// All fonts are embedded and pinned, so the application looks the same everywhere without the
+/// user installing anything: Iosevka for text, Font Awesome for symbols & icons (which would
+/// otherwise be at the mercy of the system's fallback fonts -- colored emoji and all).
+static FONTS_DATA: &[&[u8]] = &[
+    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-ExtraLight.ttf"),
+    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-ExtraLightItalic.ttf"),
+    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-Regular.ttf"),
+    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-Italic.ttf"),
+    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-SemiBold.ttf"),
+    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-SemiBoldItalic.ttf"),
+    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-ExtraBold.ttf"),
+    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-ExtraBoldItalic.ttf"),
+    include_bytes!("../assets/font-awesome/Font Awesome 7 Free-Solid-900.otf"),
+];
+
 fn main() -> anyhow::Result<()> {
     simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).env().init().unwrap();
 
@@ -26,12 +41,13 @@ fn main() -> anyhow::Result<()> {
     anyhow::ensure!(args.next().is_none(), "expected at most one argument: a path to a config file");
     let conf = smol::block_on(Conf::load(conf::locate(arg_conf_path)))?;
 
-    iced::application(boot(conf), update, view)
+    let app = iced::application(boot(conf), update, view)
         .title("Phonoscule")
         .subscription(subscription)
         .theme(theme)
         .style(style)
-        .run()?;
+        .default_font(iced::Font { family: iced::font::Family::Name("Iosevka Fixed SS05"), ..iced::Font::DEFAULT });
+    FONTS_DATA.iter().fold(app, |app, font| app.font(*font)).run()?;
     Ok(())
 }
 

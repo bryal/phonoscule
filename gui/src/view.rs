@@ -10,6 +10,16 @@ use phonoscule_gui::player;
 use std::cmp::min;
 use std::time::Duration;
 
+const FA_PLAY: &str = "\u{f04b}";
+const FA_PAUSE: &str = "\u{f04c}";
+const FA_BACKWARD_STEP: &str = "\u{f048}";
+const FA_FORWARD_STEP: &str = "\u{f051}";
+const FA_PLUS: &str = "\u{2b}";
+
+fn font_awesome_solid() -> iced::Font {
+    iced::Font { family: iced::font::Family::Name("Font Awesome 7 Free"), weight: iced::font::Weight::Black, ..iced::Font::DEFAULT }
+}
+
 pub fn theme(_app: &App) -> Theme {
     Theme::Dark
 }
@@ -91,12 +101,11 @@ fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
             .into(),
     };
     // Action bubbles along the cover's right edge, shown only while hovering the cover.
-    let play = text("▶").size(13).center();
-    let enqueue = text("+").size(19).font(iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT }).center();
+    let play = text(FA_PLAY).font(font_awesome_solid()).size(12);
+    let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(14);
     let bubbles = container(
         column![
-            // Nudged right: a right-pointing triangle looks left-leaning when geometrically centered.
-            bubble(container(play).center(Fill).padding(iced::Padding { left: 2.0, ..iced::Padding::ZERO }), Msg::PlayAlbum(ix)),
+            bubble(container(play).center(Fill), Msg::PlayAlbum(ix)),
             bubble(container(enqueue).center(Fill), Msg::QueueAlbum(ix)),
         ]
         .spacing(6),
@@ -168,17 +177,20 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     .align_y(Center);
 
     let controls = row![
-        button(text("⏮").size(18)).style(button::text).on_press(Msg::Prev),
+        button(text(FA_BACKWARD_STEP).font(font_awesome_solid()).size(18)).style(button::text).on_press(Msg::Prev),
         button(
             text(match app.play_state {
-                player::PlayState::Playing => "⏸",
-                player::PlayState::Paused => "▶",
+                player::PlayState::Playing => FA_PAUSE,
+                player::PlayState::Paused => FA_PLAY,
             })
-            .size(24),
+            .font(font_awesome_solid())
+            .size(24)
+            .width(30)
+            .center(),
         )
         .style(button::text)
         .on_press(Msg::Toggle),
-        button(text("⏭").size(18)).style(button::text).on_press(Msg::Next),
+        button(text(FA_FORWARD_STEP).font(font_awesome_solid()).size(18)).style(button::text).on_press(Msg::Next),
     ]
     .spacing(24)
     .align_y(Center);
