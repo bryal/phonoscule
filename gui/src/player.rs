@@ -169,6 +169,11 @@ async fn player_task(
                     AfterCmd::Continue => match (play_state, queue.get(ix)) {
                         // Tracks appended and play pressed, in either order: start playing.
                         (PlayState::Playing, Some(_)) => continue 'next_track,
+                        // Play on a finished queue: start it over from the top.
+                        (PlayState::Playing, None) if !queue.is_empty() => {
+                            ix = 0;
+                            continue 'next_track;
+                        }
                         // No autoplay surprises: a play press on an empty queue must not
                         // linger and start playback whenever tracks eventually arrive.
                         (PlayState::Playing, None) => play_state = PlayState::Paused,

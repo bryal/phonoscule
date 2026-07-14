@@ -104,6 +104,9 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
             player::Event::QueueEnded => {
                 app.play_state = player::PlayState::Paused;
+                // The queue may have ended through a skip: rest the bar at the end rather than
+                // wherever the last track happened to be.
+                app.pos = app.len.unwrap_or(Duration::ZERO);
                 app.media.set_playback(MediaPlayback::Stopped);
             }
         },
