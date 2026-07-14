@@ -2,7 +2,7 @@
 
 use crate::model::{App, ScanState, View, album_runs, run_of};
 use crate::update::Msg;
-use iced::widget::{button, column, container, image, responsive, row, scrollable, slider, stack, text};
+use iced::widget::{button, column, container, hover, image, responsive, row, scrollable, slider, stack, text};
 use iced::{Center, Element, Fill, Theme};
 use phonoscule_gui::coverflow::cover_flow;
 use phonoscule_gui::library::Album;
@@ -90,19 +90,42 @@ fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
             .style(container::rounded_box)
             .into(),
     };
+    // Action bubbles in the cover's top-right corner, shown only while hovering the cover.
+    let bubbles = container(row![bubble("▶", Msg::PlayAlbum(ix)), bubble("+", Msg::QueueAlbum(ix))].spacing(6))
+        .align_right(Fill)
+        .padding(8);
+    let cover = hover(button(cover).padding(0).style(button::text).on_press(Msg::PlayAlbum(ix)), bubbles);
     column![
-        button(cover).padding(0).style(button::text).on_press(Msg::PlayAlbum(ix)),
+        cover,
         text(&album.title).size(14),
         text(&album.artist).size(12).style(text::secondary),
-        row![
-            button(text("Play").size(12)).on_press(Msg::PlayAlbum(ix)),
-            button(text("Queue").size(12)).style(button::secondary).on_press(Msg::QueueAlbum(ix)),
-        ]
-        .spacing(8),
     ]
     .spacing(4)
     .width(side)
     .into()
+}
+
+/// A small round action button, floating over content.
+fn bubble(symbol: &str, msg: Msg) -> Element<'_, Msg> {
+    const DIAMETER: f32 = 30.0;
+    button(text(symbol).size(14).width(Fill).height(Fill).center())
+        .width(DIAMETER)
+        .height(DIAMETER)
+        .padding(0)
+        .style(|_theme, status| {
+            let alpha = match status {
+                button::Status::Hovered | button::Status::Pressed => 0.9,
+                button::Status::Active | button::Status::Disabled => 0.6,
+            };
+            button::Style {
+                background: Some(iced::Background::Color(iced::Color { a: alpha, ..iced::Color::BLACK })),
+                text_color: iced::Color::WHITE,
+                border: iced::border::rounded(DIAMETER / 2.0),
+                ..button::Style::default()
+            }
+        })
+        .on_press(msg)
+        .into()
 }
 
 fn now_playing_view(app: &App) -> Element<'_, Msg> {
