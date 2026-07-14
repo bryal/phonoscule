@@ -101,11 +101,28 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     .padding(16)
     .align_x(Center)
     .width(Fill);
-    let panel = container(bar).style(|_theme| container::Style {
-        background: Some(iced::Background::Color(iced::Color { a: 0.75, ..iced::Color::BLACK })),
+
+    // Frosted-glass impression: dark glass tinted by the animated accent (the same color as the
+    // backdrop glow, so it crossfades with track changes), with an accent hairline along the
+    // top edge as the glass highlight.
+    let tinted = |k: f32, a: f32| {
+        let g = app.glow;
+        iced::Color { r: g.r * k, g: g.g * k, b: g.b * k, a }
+    };
+    let glass = tinted(0.16, 0.72);
+    let highlight = tinted(0.85, 0.5);
+    let hairline = container(iced::widget::Space::new())
+        .width(Fill)
+        .height(1)
+        .style(move |_theme| container::Style {
+            background: Some(iced::Background::Color(highlight)),
+            ..container::Style::default()
+        });
+    let panel = container(bar).style(move |_theme| container::Style {
+        background: Some(iced::Background::Color(glass)),
         ..container::Style::default()
     });
-    Some(panel.into())
+    Some(column![hairline, panel].into())
 }
 
 fn library_view(app: &App) -> Element<'_, Msg> {
