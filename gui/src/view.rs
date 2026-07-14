@@ -2,7 +2,7 @@
 
 use crate::model::{App, ScanState, View, album_runs, run_of};
 use crate::update::Msg;
-use iced::widget::{button, column, container, image, row, scrollable, slider, stack, text};
+use iced::widget::{button, column, container, image, responsive, row, scrollable, slider, stack, text};
 use iced::{Center, Element, Fill, Theme};
 use phonoscule_gui::coverflow::cover_flow;
 use phonoscule_gui::library::Album;
@@ -39,31 +39,40 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         };
         return container(text(format!("{status} {:?}…", app.conf.music_dir))).center(Fill).into();
     }
-    const COLS: usize = 4;
-    let mut grid = column![].spacing(24).padding(16);
-    for (row_ix, albums) in app.albums.chunks(COLS).enumerate() {
-        let mut r = row![].spacing(16);
-        for (col_ix, album) in albums.iter().enumerate() {
-            r = r.push(album_card(row_ix * COLS + col_ix, album));
+    const SPACING: f32 = 16.0;
+    const PADDING: f32 = 16.0;
+    responsive(move |size| {
+        // As many columns as fit the actual width, so albums wrap instead of clipping.
+        let cols = (((size.width - 2.0 * PADDING + SPACING) / (CARD_SIDE + SPACING)) as usize).max(1);
+        let mut grid = column![].spacing(24).padding(PADDING);
+        for (row_ix, albums) in app.albums.chunks(cols).enumerate() {
+            let mut r = row![].spacing(SPACING);
+            for (col_ix, album) in albums.iter().enumerate() {
+                r = r.push(album_card(row_ix * cols + col_ix, album));
+            }
+            grid = grid.push(r);
         }
-        grid = grid.push(r);
-    }
-    let grid = scrollable(grid).height(Fill);
-    match app.scan {
-        // The scan status floats over the grid rather than claiming layout space; rescans (the
-        // watcher, the periodic poll) must not shift the albums around.
-        ScanState::Scanning => {
-            let status = shadowed_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, |_| {
-                iced::Color { a: 0.6, ..iced::Color::WHITE }
-            });
-            stack![grid, container(status).center_x(Fill).align_bottom(Fill).padding(12)].into()
+        let grid = scrollable(grid).height(Fill);
+        match app.scan {
+            // The scan status floats over the grid rather than claiming layout space; rescans
+            // (the watcher, the periodic poll) must not shift the albums around.
+            ScanState::Scanning => {
+                let status = shadowed_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, |_| {
+                    iced::Color { a: 0.6, ..iced::Color::WHITE }
+                });
+                stack![grid, container(status).center_x(Fill).align_bottom(Fill).padding(12)].into()
+            }
+            ScanState::Complete => grid.into(),
         }
-        ScanState::Complete => grid.into(),
-    }
+    })
+    .into()
 }
 
+/// The width of an album card in the library grid.
+const CARD_SIDE: f32 = 168.0;
+
 fn album_card(ix: usize, album: &Album) -> Element<'_, Msg> {
-    const SIDE: f32 = 168.0;
+    const SIDE: f32 = CARD_SIDE;
     let cover: Element<'_, Msg> = match &album.cover {
         Some(c) => image(c.handle.clone())
             .width(SIDE)
