@@ -218,7 +218,9 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
 fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
     let runs = album_runs(&app.queue);
     let run = runs.get(run_of(&runs, app.current)).cloned().unwrap_or(0..0);
-    let mut list = column![].spacing(2);
+    // Right-aligned: the list hugs the window's right edge, so the titles' ragged side faces
+    // the content.
+    let mut list = column![].spacing(2).align_x(iced::Alignment::End);
     for ix in run {
         let item = &app.queue[ix];
         let playing = ix == app.current;
