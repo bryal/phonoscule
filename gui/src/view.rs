@@ -42,13 +42,17 @@ fn library_view(app: &App) -> Element<'_, Msg> {
     const SPACING: f32 = 16.0;
     const PADDING: f32 = 16.0;
     responsive(move |size| {
-        // As many columns as fit the actual width, so albums wrap instead of clipping.
-        let cols = (((size.width - 2.0 * PADDING + SPACING) / (CARD_SIDE + SPACING)) as usize).max(1);
+        // As many columns as fit the actual width at the base card size, so albums wrap instead
+        // of clipping -- then the cards stretch to use the row fully, so dropping a column
+        // doesn't leave a bare right margin.
+        let width = size.width - 2.0 * PADDING;
+        let cols = (((width + SPACING) / (CARD_SIDE + SPACING)) as usize).max(1);
+        let side = ((width - SPACING * (cols - 1) as f32) / cols as f32).floor().max(CARD_SIDE / 2.0);
         let mut grid = column![].spacing(24).padding(PADDING);
         for (row_ix, albums) in app.albums.chunks(cols).enumerate() {
             let mut r = row![].spacing(SPACING);
             for (col_ix, album) in albums.iter().enumerate() {
-                r = r.push(album_card(row_ix * cols + col_ix, album));
+                r = r.push(album_card(row_ix * cols + col_ix, album, side));
             }
             grid = grid.push(r);
         }
@@ -68,21 +72,21 @@ fn library_view(app: &App) -> Element<'_, Msg> {
     .into()
 }
 
-/// The width of an album card in the library grid.
+/// The base width of an album card in the library grid; actual cards stretch a bit beyond this
+/// to fill their row.
 const CARD_SIDE: f32 = 168.0;
 
-fn album_card(ix: usize, album: &Album) -> Element<'_, Msg> {
-    const SIDE: f32 = CARD_SIDE;
+fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
     let cover: Element<'_, Msg> = match &album.cover {
         Some(c) => image(c.handle.clone())
-            .width(SIDE)
-            .height(SIDE)
+            .width(side)
+            .height(side)
             .content_fit(iced::ContentFit::Cover)
             .into(),
         None => container(text(&album.title).size(16).center())
-            .width(SIDE)
-            .height(SIDE)
-            .center(SIDE)
+            .width(side)
+            .height(side)
+            .center(side)
             .style(container::rounded_box)
             .into(),
     };
@@ -97,7 +101,7 @@ fn album_card(ix: usize, album: &Album) -> Element<'_, Msg> {
         .spacing(8),
     ]
     .spacing(4)
-    .width(SIDE)
+    .width(side)
     .into()
 }
 
