@@ -93,9 +93,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 push_media_playback(app);
             }
             player::Event::Progress(t) => {
-                if app.seek_drag.is_none() {
-                    app.pos = t;
-                }
+                app.pos = t;
                 if app.pos.abs_diff(app.media_pos) >= Duration::from_secs(1) {
                     push_media_playback(app);
                 }
