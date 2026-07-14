@@ -9,11 +9,11 @@ use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle};
 
 /// The glow's center, as a fraction of the viewport size.
-const CENTER: (f32, f32) = (0.25, 0.1);
+const CENTER: (f32, f32) = (0.15, 0.1);
 /// The glow's radius, as a fraction of the viewport's larger dimension.
-const RADIUS: f32 = 0.55;
+const RADIUS: f32 = 0.65;
 /// Peak brightness of the glow.
-const INTENSITY: f32 = 0.30;
+const INTENSITY: f32 = 0.45;
 
 /// The glow uniform data shared by this shader and the cover flow's: intensity-scaled linear
 /// color, center and radius in framebuffer pixels.
