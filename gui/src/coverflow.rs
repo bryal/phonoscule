@@ -294,7 +294,8 @@ impl shader::Pipeline for Pipeline {
             label: Some("coverflow uniforms"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                // The vertex stage reads the view projection, the fragment stage the floor color.
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
