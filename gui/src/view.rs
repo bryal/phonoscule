@@ -173,6 +173,7 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
         slider(0.0..=1.0f32, frac, Msg::SeekChanged)
             .step(0.001_f32)
             .on_release(Msg::SeekReleased)
+            .style(seek_slider_style)
             .width(Fill),
         text(app.len.map(fmt_time).unwrap_or_else(|| "--:--".into())).size(13),
     ]
@@ -254,4 +255,19 @@ fn shadowed_text<'a>(
 
 fn fmt_time(t: Duration) -> String {
     format!("{:02}:{:02}", t.as_secs() / 60, t.as_secs() % 60)
+}
+
+/// While dragging, only a ghostly grey handle hints at the seek target -- the bar is not filled
+/// up to it. The filled bar keeps meaning "how far playback got", so the moments around a seek
+/// (position reports racing the seek command) can't flash the fill back and forth.
+fn seek_slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
+    let mut style = slider::default(theme, status);
+    match status {
+        slider::Status::Dragged => {
+            style.rail.backgrounds.0 = style.rail.backgrounds.1;
+            style.handle.background = iced::Color { r: 0.8, g: 0.8, b: 0.8, a: 0.5 }.into();
+        }
+        slider::Status::Active | slider::Status::Hovered => (),
+    }
+    style
 }
