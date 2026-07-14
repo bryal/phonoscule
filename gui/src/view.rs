@@ -24,8 +24,8 @@ pub fn theme(_app: &App) -> Theme {
     Theme::Dark
 }
 
-pub fn style(_app: &App, theme: &Theme) -> iced::theme::Style {
-    iced::theme::Style { background_color: iced::Color::BLACK, text_color: theme.palette().text }
+pub fn style(app: &App, theme: &Theme) -> iced::theme::Style {
+    iced::theme::Style { background_color: app.bg, text_color: theme.palette().text }
 }
 
 pub fn view(app: &App) -> Element<'_, Msg> {
@@ -154,7 +154,8 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
 
     let covers =
         album_runs(&app.queue).iter().map(|run| app.queue[run.start].cover.clone()).collect();
-    let flow = cover_flow(covers, app.anim_pos, Msg::CoverClicked);
+    // The reflections' floor fade must match the rendered background.
+    let flow = cover_flow(covers, app.anim_pos, app.bg, Msg::CoverClicked);
 
     let shown_pos = match (app.seek_drag, app.len) {
         (Some(frac), Some(len)) => len.mul_f32(frac.clamp(0.0, 1.0)),

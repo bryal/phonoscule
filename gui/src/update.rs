@@ -1,6 +1,6 @@
 //! The messages, and how each of them changes the model.
 
-use crate::model::{App, ScanState, View, album_runs, flow_target, queue_items, run_of};
+use crate::model::{App, ScanState, View, album_runs, bg_target, flow_target, queue_items, run_of};
 use iced::Task;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::player;
@@ -160,11 +160,25 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::Frame(now) => {
             let dt = (now - app.last_frame).as_secs_f32().min(0.1);
             app.last_frame = now;
-            let target = flow_target(app);
             // Exponential ease towards the current album run.
+            let target = flow_target(app);
             app.anim_pos += (target - app.anim_pos) * (1.0 - (-10.0 * dt).exp());
             if (target - app.anim_pos).abs() < 0.002 {
                 app.anim_pos = target;
+            }
+            // The background fades towards the playing album's accent on the same clock.
+            let target = bg_target(app);
+            let step = 1.0 - (-6.0 * dt).exp();
+            let lerp = |from: f32, to: f32| from + (to - from) * step;
+            app.bg = iced::Color {
+                r: lerp(app.bg.r, target.r),
+                g: lerp(app.bg.g, target.g),
+                b: lerp(app.bg.b, target.b),
+                a: 1.0,
+            };
+            let close = |from: f32, to: f32| (to - from).abs() < 0.002;
+            if close(app.bg.r, target.r) && close(app.bg.g, target.g) && close(app.bg.b, target.b) {
+                app.bg = target;
             }
         }
     }

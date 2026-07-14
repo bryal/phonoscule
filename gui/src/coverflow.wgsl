@@ -2,6 +2,8 @@
 
 struct Uniforms {
     view_proj: mat4x4<f32>,
+    // The background color; reflections fade towards it.
+    floor: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -38,13 +40,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     var gradient = 1.0;
     if in.misc.x > 0.5 {
         // Reflection: mirror the texture and fade with distance below the floor. The fade
-        // darkens toward black (the floor's color) rather than toward transparency: opaque
+        // blends toward the floor's own color rather than toward transparency: opaque
         // reflections occlude each other back-to-front like a real mirrored scene, instead of
         // ghosting through one another where covers overlap.
         uv.y = 1.0 - uv.y;
         gradient = 0.3 * pow(1.0 - in.uv.y, 2.0);
     }
     let color = textureSample(cover_t, cover_s, uv);
+    let rgb = mix(uniforms.floor.rgb, color.rgb * in.misc.y, gradient);
     // Premultiplied alpha; in.misc.z is the carousel's distance fade.
-    return vec4<f32>(color.rgb * in.misc.y * gradient, color.a) * in.misc.z;
+    return vec4<f32>(rgb, color.a) * in.misc.z;
 }

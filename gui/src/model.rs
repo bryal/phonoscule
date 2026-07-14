@@ -50,6 +50,8 @@ pub struct App {
     pub seek_drag: Option<f32>,
     /// Animated Cover Flow position, chasing `current`.
     pub anim_pos: f32,
+    /// Animated application background color, chasing the playing album's accent.
+    pub bg: iced::Color,
     pub last_frame: Instant,
 }
 
@@ -71,6 +73,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             len: None,
             seek_drag: None,
             anim_pos: 0.0,
+            bg: iced::Color::BLACK,
             last_frame: Instant::now(),
         };
         let options = library::ScanOptions {
@@ -113,6 +116,21 @@ pub fn run_of(runs: &[std::ops::Range<usize>], track: usize) -> usize {
 /// The Cover Flow target position for the currently playing track.
 pub fn flow_target(app: &App) -> f32 {
     run_of(&album_runs(&app.queue), app.current) as f32
+}
+
+/// The background color the application is (fading towards) showing: the playing album's accent,
+/// heavily darkened so covers and text keep their contrast.
+pub fn bg_target(app: &App) -> iced::Color {
+    const TINT: f32 = 0.25;
+    match app.queue.get(app.current).and_then(|item| item.cover.as_ref()) {
+        Some(cover) => iced::Color {
+            r: cover.accent.r * TINT,
+            g: cover.accent.g * TINT,
+            b: cover.accent.b * TINT,
+            a: 1.0,
+        },
+        None => iced::Color::BLACK,
+    }
 }
 
 pub fn queue_items(album: &Album) -> Vec<QueueItem> {

@@ -65,6 +65,8 @@ pub struct CoverArt {
     pub size: (u32, u32),
     pub rgba: Arc<Vec<u8>>,
     pub handle: iced::widget::image::Handle,
+    /// The cover's most distinct color, e.g. for theming the surroundings after it.
+    pub accent: iced::Color,
 }
 
 impl fmt::Debug for CoverArt {
@@ -223,9 +225,10 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
                 .buffer_unordered(concurrency())
         );
         while let Some((ids, cover_id, cover)) = covers.next().await {
-            let Some((file, size, rgba)) = cover else { continue };
+            let Some((file, size, rgba, accent)) = cover else { continue };
             let handle = iced::widget::image::Handle::from_rgba(size.0, size.1, rgba.clone());
-            let art = CoverArt { id: cover_id, file: Arc::new(file), size, rgba: Arc::new(rgba), handle };
+            let art =
+                CoverArt { id: cover_id, file: Arc::new(file), size, rgba: Arc::new(rgba), handle, accent };
             if tx.send(ScanEvent::Cover { albums: ids, art }).await.is_err() {
                 return;
             }
@@ -358,8 +361,9 @@ async fn read_tags(path: &Path) -> Option<StaticMetadata> {
 }
 
 /// Decodes a cover image, downscaled to [`COVER_SIZE`], on the blocking thread pool (so calls
-/// can proceed in parallel regardless of executor threads). Also returns the absolute path.
-async fn load_cover(path: PathBuf) -> Option<(PathBuf, (u32, u32), Vec<u8>)> {
+/// can proceed in parallel regardless of executor threads). Also returns the absolute path and
+/// the accent color.
+async fn load_cover(path: PathBuf) -> Option<(PathBuf, (u32, u32), Vec<u8>, iced::Color)> {
     // Absolute, so consumers (e.g. the MPRIS art URL) don't depend on our working directory.
     let file = smol::fs::canonicalize(path).await.ok()?;
     smol::unblock(move || {
@@ -372,9 +376,44 @@ async fn load_cover(path: PathBuf) -> Option<(PathBuf, (u32, u32), Vec<u8>)> {
         };
         let rgba = img.resize_to_fill(COVER_SIZE, COVER_SIZE, image::imageops::FilterType::Triangle).into_rgba8();
         let size = rgba.dimensions();
-        Some((file, size, rgba.into_raw()))
+        let rgba = rgba.into_raw();
+        let accent = accent_color(&rgba);
+        Some((file, size, rgba, accent))
     })
     .await
+}
+
+/// Picks the image's most distinct color: dominant among saturated, reasonably bright pixels,
+/// falling back towards the most common color for near-grayscale images.
+pub fn accent_color(rgba: &[u8]) -> iced::Color {
+    // Histogram over a coarsely quantized (4 bits per channel) color space, accumulating exact
+    // sums per bucket so the winner keeps its true shade.
+    let mut buckets = vec![[0u64; 4]; 16 * 16 * 16];
+    for px in rgba.chunks_exact(4).step_by(7) {
+        let (r, g, b) = (px[0] as u64, px[1] as u64, px[2] as u64);
+        let bucket = &mut buckets[((r >> 4 << 8) | (g >> 4 << 4) | (b >> 4)) as usize];
+        *bucket = [bucket[0] + 1, bucket[1] + r, bucket[2] + g, bucket[3] + b];
+    }
+    let score = |&[n, r, g, b]: &[u64; 4]| {
+        if n == 0 {
+            return 0.0;
+        }
+        let (r, g, b) = ((r / n) as f32 / 255.0, (g / n) as f32 / 255.0, (b / n) as f32 / 255.0);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let saturation = if max > 0.0 { (max - min) / max } else { 0.0 };
+        // The small floor keeps grayscale art from ending in a tie of zeroes.
+        n as f32 * (0.05 + saturation * saturation * max)
+    };
+    let best = buckets.iter().max_by(|a, b| score(a).total_cmp(&score(b)));
+    match best {
+        Some(&[n, r, g, b]) if n > 0 => iced::Color::from_rgb(
+            (r / n) as f32 / 255.0,
+            (g / n) as f32 / 255.0,
+            (b / n) as f32 / 255.0,
+        ),
+        _ => iced::Color::BLACK,
+    }
 }
 
 async fn load_cache(path: &Path) -> Cache {
@@ -476,6 +515,21 @@ mod test {
             }
             albums.sort_by(|a, b| a.title.cmp(&b.title));
         })
+    }
+
+    #[test]
+    fn accent_prefers_the_saturated_color() {
+        // Mostly dull gray, with a strong red minority: the red should win.
+        let mut rgba = Vec::new();
+        for i in 0..10_000 {
+            if i % 4 == 0 {
+                rgba.extend([200u8, 16, 16, 255]);
+            } else {
+                rgba.extend([90u8, 90, 90, 255]);
+            }
+        }
+        let accent = accent_color(&rgba);
+        assert!(accent.r > 0.5 && accent.g < 0.2 && accent.b < 0.2, "{accent:?}");
     }
 
     #[test]
