@@ -140,7 +140,10 @@ fn library_view(app: &App) -> Element<'_, Msg> {
             }
             grid = grid.push(r);
         }
-        let grid = scrollable(grid).height(Fill);
+        // No scrollbar (it would overlap the floating player bar and can't be shortened):
+        // wheel/touchpad scrolling only, like the track list overlay.
+        let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
+        let grid = scrollable(grid).direction(scrollable::Direction::Vertical(invisible_scrollbar)).height(Fill);
         match app.scan {
             // The scan status floats over the grid rather than claiming layout space; rescans
             // (the watcher, the periodic poll) must not shift the albums around.
