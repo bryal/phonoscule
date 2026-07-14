@@ -47,10 +47,6 @@ pub enum Cmd {
 pub enum Event {
     TrackStarted { ix: usize, len: Option<Duration> },
     Progress(Duration),
-    /// Acknowledges one [`Cmd::Seek`], with the position actually landed on. Consumers doing
-    /// optimistic seek UI can ignore [`Event::Progress`] (necessarily stale) while seeks are
-    /// unacknowledged.
-    Seeked(Duration),
     PlayState(PlayState),
     QueueEnded,
 }
@@ -104,9 +100,6 @@ async fn player_task(
     let mut queue: Vec<PathBuf> = vec![];
     let mut ix = 0usize;
     let mut start_at: u64 = 0; // samples into the track to start from
-    // Seeks that fell back to reopening the track still owe an Event::Seeked, sent once the
-    // reopened track has fast-forwarded to the target.
-    let mut owed_seek_acks: u32 = 0;
     let mut play_state = PlayState::Paused;
 
     /// What the player loop must do after a command has been applied.
@@ -203,16 +196,7 @@ async fn player_task(
         let mut source = track.samples;
         let mut pos = source.fast_forward(start_at).await.unwrap_or(0);
         start_at = 0;
-        let ack = match owed_seek_acks {
-            0 => Event::Progress(t_of(pos)),
-            _ => {
-                owed_seek_acks -= 1;
-                Event::Seeked(t_of(pos))
-            }
-        };
-        if events.send(ack).await.is_err() {
-            return;
-        }
+        let _ = events.send(Event::Progress(t_of(pos))).await;
         let mut prev_status_pos = pos;
         let mut chan_from_source = ConnectSource::to_output(source, &mut audio_tx);
 
@@ -236,13 +220,12 @@ async fn player_task(
                         Some(new_pos) => {
                             pos = new_pos;
                             prev_status_pos = pos;
-                            if events.send(Event::Seeked(t_of(pos))).await.is_err() {
+                            if events.send(Event::Progress(t_of(pos))).await.is_err() {
                                 return;
                             }
                         }
                         None => {
                             // Restart the current track, fast-forwarding to the target.
-                            owed_seek_acks += 1;
                             start_at = target;
                             continue 'next_track;
                         }

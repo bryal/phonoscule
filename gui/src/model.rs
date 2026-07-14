@@ -48,10 +48,6 @@ pub struct App {
     pub len: Option<Duration>,
     /// Seek-bar fraction while the user is dragging it.
     pub seek_drag: Option<f32>,
-    /// Seeks sent but not yet acknowledged: `pos` is optimistic and player progress reports are
-    /// necessarily stale, so they are ignored until the acks arrive (else the seek bar snaps
-    /// back and forth).
-    pub pending_seeks: u32,
     /// Animated Cover Flow position, chasing `current`.
     pub anim_pos: f32,
     /// Animated backdrop glow color, chasing the playing album's accent.
@@ -76,7 +72,6 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             pos: Duration::ZERO,
             len: None,
             seek_drag: None,
-            pending_seeks: 0,
             anim_pos: 0.0,
             glow: iced::Color::BLACK,
             last_frame: Instant::now(),
