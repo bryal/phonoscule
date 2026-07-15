@@ -26,6 +26,7 @@ fn font_awesome_solid() -> iced::Font {
 }
 
 pub fn theme(_app: &App) -> Theme {
+    // The one place the current theme is chosen; a light/dark toggle would read it from `app`.
     Theme::Dark
 }
 
@@ -289,45 +290,36 @@ fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
     scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar)).into()
 }
 
-/// Translucent text with a faked drop shadow -- the same text in translucent black, offset one
-/// pixel down-right, layered underneath -- so text floating over busy content stays legible.
-/// The drop shadow shared by all shadowed text: black, offset one pixel down-right.
-fn drop_shadow() -> ((f32, f32), iced::Color) {
-    ((1.0, 1.0), color!(0x000000, 0.7))
-}
-
 /// Bright-white text lit by a top-left `primary`-colored glow over the usual drop shadow (the active list entry / nav tab).
 fn active_text<'a>(content: impl iced::widget::text::IntoFragment<'a> + Clone, size: f32, opacity: f32) -> Element<'a, Msg> {
-    let glow = ((-1.0, -1.0), iced::Theme::Dark.palette().primary);
-    shadowed(content, size, color!(0xffffff, opacity), &[drop_shadow(), glow])
+    stack![
+        shadow_layer(content.clone(), size, (1.0, 1.0), |_| color!(0x000000, 0.7)),
+        shadow_layer(content.clone(), size, (-1.0, -1.0), |theme| theme.palette().primary),
+        shadow_layer(content, size, (0.0, 0.0), move |_| color!(0xffffff, opacity)),
+    ]
+    .into()
 }
 
 /// Dim text with just the drop shadow -- for inactive entries / tabs and other quiet overlays.
 fn inactive_text<'a>(content: impl iced::widget::text::IntoFragment<'a> + Clone, size: f32, opacity: f32) -> Element<'a, Msg> {
-    shadowed(content, size, color!(0xf0f0f0, opacity), &[drop_shadow()])
+    stack![
+        shadow_layer(content.clone(), size, (1.0, 1.0), |_| color!(0x000000, 0.7)),
+        shadow_layer(content, size, (0.0, 0.0), move |_| color!(0xf0f0f0, opacity)),
+    ]
+    .into()
 }
 
-/// `text` (in the default font) with drop-shadow / glow copies behind it: each `(offset, color)` is a copy displaced by
-/// `offset` pixels. All layers share one bounding box, sized to cover the front (at the origin) and every offset, so the
-/// stack overlays them regardless of direction.
-fn shadowed<'a>(
-    content: impl iced::widget::text::IntoFragment<'a> + Clone,
+/// One layer of a shadowed text: `content` as text, its color resolved against the theme, placed
+/// at `offset` pixels within a 1px margin so the ±1px layers of a stack line up in register.
+fn shadow_layer<'a>(
+    content: impl iced::widget::text::IntoFragment<'a>,
     size: f32,
-    front: iced::Color,
-    shadows: &[((f32, f32), iced::Color)],
+    (dx, dy): (f32, f32),
+    color: impl Fn(&Theme) -> iced::Color + 'a,
 ) -> Element<'a, Msg> {
-    let xs = || std::iter::once(0.0).chain(shadows.iter().map(|&((dx, _), _)| dx));
-    let ys = || std::iter::once(0.0).chain(shadows.iter().map(|&((_, dy), _)| dy));
-    let (min_x, max_x) = (xs().fold(0.0, f32::min), xs().fold(0.0, f32::max));
-    let (min_y, max_y) = (ys().fold(0.0, f32::min), ys().fold(0.0, f32::max));
-    let layer = |dx: f32, dy: f32, color: iced::Color| {
-        container(text(content.clone()).size(size).style(move |_theme| text::Style { color: Some(color) }))
-            .padding(iced::Padding { left: dx - min_x, top: dy - min_y, right: max_x - dx, bottom: max_y - dy })
-    };
-    // Shadows behind (drawn first), front on top.
-    let mut layers: Vec<Element<'a, Msg>> = shadows.iter().map(|&((dx, dy), color)| layer(dx, dy, color).into()).collect();
-    layers.push(layer(0.0, 0.0, front).into());
-    stack(layers).into()
+    container(text(content).size(size).style(move |theme: &Theme| text::Style { color: Some(color(theme)) }))
+        .padding(iced::Padding { left: 1.0 + dx, top: 1.0 + dy, right: 1.0 - dx, bottom: 1.0 - dy })
+        .into()
 }
 
 fn fmt_time(t: Duration) -> String {
