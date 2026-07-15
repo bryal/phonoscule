@@ -50,8 +50,7 @@ pub fn view(app: &App) -> Element<'_, Msg> {
     stack(layers).into()
 }
 
-/// A nav tab, styled like a track list entry: the active view's tab is the lit `active_text`,
-/// the others dim.
+/// A nav tab, styled like a track list entry: the active view's tab is the lit `active_text`, the others dim.
 fn tab<'a>(app: &App, label: &'a str, target: View) -> Element<'a, Msg> {
     let text = if app.view == target { active_text(label, 21.0, 1.0) } else { inactive_text(label, 21.0, 0.75) };
     button(text).style(button::text).padding(4).on_press(Msg::Show(target)).into()
@@ -297,8 +296,7 @@ fn drop_shadow() -> ((f32, f32), iced::Color) {
     ((1.0, 1.0), color!(0x000000, 0.7))
 }
 
-/// Bright-white text lit from the top-left by a `primary`-colored glow, over the usual drop
-/// shadow -- for the active entry in a list / the active nav tab.
+/// Bright-white text lit by a top-left `primary`-colored glow over the usual drop shadow (the active list entry / nav tab).
 fn active_text<'a>(content: impl iced::widget::text::IntoFragment<'a> + Clone, size: f32, opacity: f32) -> Element<'a, Msg> {
     let glow = ((-1.0, -1.0), iced::Theme::Dark.palette().primary);
     shadowed(content, size, color!(0xffffff, opacity), &[drop_shadow(), glow])
@@ -309,9 +307,9 @@ fn inactive_text<'a>(content: impl iced::widget::text::IntoFragment<'a> + Clone,
     shadowed(content, size, color!(0xf0f0f0, opacity), &[drop_shadow()])
 }
 
-/// `text` (in the default font) with drop-shadow / glow copies behind it: each `(offset, color)`
-/// is a copy displaced by `offset` pixels. All layers share one bounding box, sized to cover the
-/// front (at the origin) and every offset, so the stack overlays them regardless of direction.
+/// `text` (in the default font) with drop-shadow / glow copies behind it: each `(offset, color)` is a copy displaced by
+/// `offset` pixels. All layers share one bounding box, sized to cover the front (at the origin) and every offset, so the
+/// stack overlays them regardless of direction.
 fn shadowed<'a>(
     content: impl iced::widget::text::IntoFragment<'a> + Clone,
     size: f32,
