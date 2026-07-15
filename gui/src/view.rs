@@ -3,7 +3,7 @@
 use crate::model::{App, ScanState, View, album_runs, run_of};
 use crate::update::Msg;
 use iced::widget::{button, column, container, hover, image, responsive, row, scrollable, slider, stack, text};
-use iced::{Center, Element, Fill, Theme, color};
+use iced::{Center, Color, Element, Fill, Theme, color};
 use phonoscule_gui::background;
 use phonoscule_gui::coverflow::cover_flow;
 use phonoscule_gui::library::Album;
@@ -31,7 +31,7 @@ pub fn theme(_app: &App) -> Theme {
 }
 
 pub fn style(_app: &App, theme: &Theme) -> iced::theme::Style {
-    iced::theme::Style { background_color: iced::Color::BLACK, text_color: theme.palette().text }
+    iced::theme::Style { background_color: Color::BLACK, text_color: theme.palette().text }
 }
 
 pub fn view(app: &App) -> Element<'_, Msg> {
@@ -53,7 +53,7 @@ pub fn view(app: &App) -> Element<'_, Msg> {
 
 /// A nav tab, styled like a track list entry: the active view's tab is the lit `active_text`, the others dim.
 fn tab<'a>(app: &App, label: &'a str, target: View) -> Element<'a, Msg> {
-    let text = if app.view == target { active_text(label, 21.0, 1.0) } else { inactive_text(label, 21.0, 0.75) };
+    let text = if app.view == target { active_text(label, 21.0, 0.95) } else { inactive_text(label, 21.0, 0.8) };
     button(text).style(button::text).padding(4).on_press(Msg::Show(target)).into()
 }
 
@@ -112,7 +112,7 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     // top edge as the glass highlight.
     let tinted = |k: f32, a: f32| {
         let g = app.glow;
-        iced::Color { r: g.r * k, g: g.g * k, b: g.b * k, a }
+        Color { r: g.r * k, g: g.g * k, b: g.b * k, a }
     };
     let glass = tinted(0.16, 0.72);
     let highlight = tinted(0.85, 0.5);
@@ -168,7 +168,7 @@ fn library_view(app: &App) -> Element<'_, Msg> {
             // The scan status floats over the grid rather than claiming layout space; rescans
             // (the watcher, the periodic poll) must not shift the albums around.
             ScanState::Scanning => {
-                let status = inactive_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, 0.6);
+                let status = inactive_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, 0.7);
                 // Sits just above the player bar (when there is one).
                 let padding = iced::Padding { top: 12.0, right: 12.0, bottom: bottom_padding.max(12.0), left: 12.0 };
                 stack![grid, container(status).center_x(Fill).align_bottom(Fill).padding(padding)].into()
@@ -232,8 +232,8 @@ fn bubble(label: impl Into<Element<'static, Msg>>, msg: Msg) -> Element<'static,
                 button::Status::Active | button::Status::Disabled => 0.6,
             };
             button::Style {
-                background: Some(iced::Background::Color(iced::Color { a: alpha, ..iced::Color::BLACK })),
-                text_color: iced::Color::WHITE,
+                background: Some(iced::Background::Color(Color { a: alpha, ..Color::BLACK })),
+                text_color: Color::WHITE,
                 border: iced::border::rounded(DIAMETER / 2.0),
                 ..button::Style::default()
             }
@@ -283,7 +283,8 @@ fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
     let mut list = column![].spacing(2).align_x(iced::Alignment::End);
     for ix in run {
         let item = &app.queue[ix];
-        let label = if ix == app.current { active_text(&item.title, 16.0, 1.0) } else { inactive_text(&item.title, 16.0, 0.6) };
+        let label =
+            if ix == app.current { active_text(&item.title, 16.0, 0.85) } else { inactive_text(&item.title, 16.0, 0.7) };
         list = list.push(button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)));
     }
     let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
@@ -293,9 +294,9 @@ fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
 /// Bright-white text lit by a top-left `primary`-colored glow over the usual drop shadow (the active list entry / nav tab).
 fn active_text<'a>(content: impl iced::widget::text::IntoFragment<'a> + Clone, size: f32, opacity: f32) -> Element<'a, Msg> {
     stack![
-        shadow_layer(content.clone(), size, (1.0, 1.0), |_| color!(0x000000, 0.7)),
-        shadow_layer(content.clone(), size, (-1.0, -1.0), |theme| theme.palette().primary),
-        shadow_layer(content, size, (0.0, 0.0), move |_| color!(0xffffff, opacity)),
+        shadow_layer(content.clone(), size, (2.0, 2.0), move |_| color!(0x000000, 0.8 * opacity)),
+        shadow_layer(content.clone(), size, (-1.0, -1.0), move |theme| Color { a: 0.6 * opacity, ..theme.palette().primary }),
+        shadow_layer(content, size, (0.0, 0.0), move |_| color!(0xffffff, 0.9 * opacity)),
     ]
     .into()
 }
@@ -303,22 +304,24 @@ fn active_text<'a>(content: impl iced::widget::text::IntoFragment<'a> + Clone, s
 /// Dim text with just the drop shadow -- for inactive entries / tabs and other quiet overlays.
 fn inactive_text<'a>(content: impl iced::widget::text::IntoFragment<'a> + Clone, size: f32, opacity: f32) -> Element<'a, Msg> {
     stack![
-        shadow_layer(content.clone(), size, (1.0, 1.0), |_| color!(0x000000, 0.7)),
+        shadow_layer(content.clone(), size, (1.0, 1.0), move |_| color!(0x000000, 0.8 * opacity)),
         shadow_layer(content, size, (0.0, 0.0), move |_| color!(0xf0f0f0, opacity)),
     ]
     .into()
 }
 
-/// One layer of a shadowed text: `content` as text, its color resolved against the theme, placed
-/// at `offset` pixels within a 1px margin so the ±1px layers of a stack line up in register.
+/// One layer of a shadowed text: `content` as text, its color resolved against the theme, shifted
+/// by `offset` pixels. The complementary +/- padding nets to zero, so the box stays content-sized
+/// and every layer of a stack registers exactly; the copy simply spills its offset into the
+/// whitespace around the text (fine for shadows, which are secondary).
 fn shadow_layer<'a>(
     content: impl iced::widget::text::IntoFragment<'a>,
     size: f32,
     (dx, dy): (f32, f32),
-    color: impl Fn(&Theme) -> iced::Color + 'a,
+    color: impl Fn(&Theme) -> Color + 'a,
 ) -> Element<'a, Msg> {
     container(text(content).size(size).style(move |theme: &Theme| text::Style { color: Some(color(theme)) }))
-        .padding(iced::Padding { left: 1.0 + dx, top: 1.0 + dy, right: 1.0 - dx, bottom: 1.0 - dy })
+        .padding(iced::Padding { left: dx, top: dy, right: -dx, bottom: -dy })
         .into()
 }
 
