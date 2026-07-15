@@ -257,17 +257,22 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     // of the player bar, and the track list with them.
     let flow = cover_flow(covers, app.anim_pos, app.glow, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
 
-    // The track list prefers to sit centered in the region above the player bar, but when it is
-    // too tall to fit there it centers in the full height instead -- extending down behind the
-    // translucent bar rather than being clipped, so all the tracks stay visible.
+    // The track list is centered in a vertical region. That region reserves the player bar's
+    // space when the list is short (so it sits comfortably above the bar), but gives that space
+    // back continuously as the list grows, down to none -- so as the window shrinks the list
+    // slides into and behind the translucent bar smoothly, never jumping between two placements
+    // or cropping at the boundary.
     let runs = album_runs(&app.queue);
     let run_len = runs.get(run_of(&runs, app.current)).map_or(0, |r| r.len());
     let overlay = responsive(move |size| {
-        // Rough per-row height (title text + button padding + column spacing).
-        const ROW_HEIGHT: f32 = 28.0;
-        let fits_above = run_len as f32 * ROW_HEIGHT <= size.height - PLAYER_BAR_HEIGHT - 24.0;
-        let bottom = if fits_above { 24.0 + PLAYER_BAR_HEIGHT } else { 24.0 };
-        let padding = iced::Padding { top: 24.0, right: 24.0, bottom, left: 24.0 };
+        const MARGIN: f32 = 24.0;
+        // Per-row height estimate (title + button padding + spacing), rounded up: over-
+        // estimating only adds slack, whereas under-estimating would crop the list.
+        const ROW_HEIGHT: f32 = 30.0;
+        let list_height = run_len as f32 * ROW_HEIGHT;
+        let region = list_height.clamp(size.height - PLAYER_BAR_HEIGHT - MARGIN, size.height - MARGIN);
+        let bottom = (size.height - MARGIN - region).max(0.0);
+        let padding = iced::Padding { top: MARGIN, right: MARGIN, bottom, left: MARGIN };
         container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(padding).into()
     });
     stack![flow, overlay].into()
