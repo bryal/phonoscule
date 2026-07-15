@@ -42,9 +42,10 @@ pub fn cover_flow<Message>(
     covers: Vec<Option<CoverArt>>,
     position: f32,
     glow: iced::Color,
+    obscured_bottom: f32,
     on_click: fn(usize) -> Message,
 ) -> iced::widget::Shader<Message, CoverFlow<Message>> {
-    iced::widget::shader(CoverFlow { covers, position, glow, on_click })
+    iced::widget::shader(CoverFlow { covers, position, glow, obscured_bottom, on_click })
         .width(iced::Fill)
         .height(iced::Fill)
 }
@@ -54,7 +55,21 @@ pub struct CoverFlow<Message> {
     position: f32,
     /// The backdrop's glow color: reflections fade towards the backdrop (see the shader).
     glow: iced::Color,
+    /// Pixels of the widget's bottom hidden behind the player bar. The covers center in the
+    /// region above it (only the reflections run down behind the bar).
+    obscured_bottom: f32,
     on_click: fn(usize) -> Message,
+}
+
+impl<Message> CoverFlow<Message> {
+    /// The projection for this frame, lifted so covers center above the obscured bottom strip.
+    fn view_proj(&self, bounds: Rectangle) -> Mat4 {
+        let aspect = bounds.width / bounds.height.max(1.0);
+        // The visible region's center sits this far up in NDC (y up, [-1, 1]); shift the whole
+        // scene up to match, which the reflections follow down behind the bar.
+        let shift = (self.obscured_bottom / bounds.height.max(1.0)).clamp(0.0, 1.0);
+        view_proj(aspect, shift)
+    }
 }
 
 impl<Message> shader::Program<Message> for CoverFlow<Message> {
@@ -76,7 +91,7 @@ impl<Message> shader::Program<Message> for CoverFlow<Message> {
     }
 
     fn draw(&self, _state: &Self::State, _cursor: mouse::Cursor, bounds: Rectangle) -> Flow {
-        let view_proj = view_proj(bounds.width / bounds.height.max(1.0));
+        let view_proj = self.view_proj(bounds);
         let mut order = self.visible().collect::<Vec<_>>();
         // No depth buffer: draw back-to-front, i.e. the covers furthest from the center first.
         order.sort_by(|(_, d0), (_, d1)| d1.abs().total_cmp(&d0.abs()));
@@ -129,7 +144,7 @@ impl<Message> CoverFlow<Message> {
     fn hit_test(&self, bounds: Rectangle, cursor: mouse::Cursor) -> Option<usize> {
         let p = cursor.position_in(bounds)?;
         let ndc = glam::vec2(p.x / bounds.width * 2.0 - 1.0, 1.0 - p.y / bounds.height * 2.0);
-        let inv = view_proj(bounds.width / bounds.height.max(1.0)).inverse();
+        let inv = self.view_proj(bounds).inverse();
         let origin = inv.project_point3(Vec3::new(ndc.x, ndc.y, 0.0));
         let target = inv.project_point3(Vec3::new(ndc.x, ndc.y, 0.9));
         let dir = (target - origin).normalize();
@@ -159,11 +174,13 @@ impl<Message> CoverFlow<Message> {
     }
 }
 
-fn view_proj(aspect: f32) -> Mat4 {
+fn view_proj(aspect: f32, ndc_shift_up: f32) -> Mat4 {
     // directx convention: NDC depth in [0, 1], like wgpu.
     let proj = glam::camera::rh::proj::directx::perspective(35_f32.to_radians(), aspect.max(0.1), 0.1, 100.0);
     let view = glam::camera::rh::view::look_at_mat4(Vec3::new(0.0, 0.25, 3.2), Vec3::new(0.0, -0.05, 0.0), Vec3::Y);
-    proj * view
+    // A post-projection clip-space translation shifts NDC y uniformly at every depth (it adds
+    // shift * w before the perspective divide), unlike moving the camera.
+    Mat4::from_translation(Vec3::new(0.0, ndc_shift_up, 0.0)) * proj * view
 }
 
 /// How visible a cover at offset `d` is: 1.0 up to [`FADE_START`], smoothly falling to 0.0 at

@@ -136,7 +136,7 @@ fn library_view(app: &App) -> Element<'_, Msg> {
     const SPACING: f32 = 16.0;
     const PADDING: f32 = 16.0;
     // Room to scroll the last row out from under the floating player bar.
-    let bottom_padding = if app.queue.is_empty() { PADDING } else { 170.0 };
+    let bottom_padding = if app.queue.is_empty() { PADDING } else { PLAYER_BAR_HEIGHT };
     responsive(move |size| {
         // As many columns as fit the actual width at the base card size, so albums wrap instead
         // of clipping -- then the cards stretch to use the row fully, so dropping a column
@@ -182,6 +182,10 @@ fn library_view(app: &App) -> Element<'_, Msg> {
 /// The base width of an album card in the library grid; actual cards stretch a bit beyond this
 /// to fill their row.
 const CARD_SIDE: f32 = 168.0;
+
+/// Approximate height of the floating player bar, used to keep content clear of it: the library
+/// grid's bottom scroll room, and how far the cover flow and track list are lifted.
+const PLAYER_BAR_HEIGHT: f32 = 170.0;
 
 fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
     let cover: Element<'_, Msg> = match &album.cover {
@@ -249,10 +253,12 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     }
     let covers =
         album_runs(&app.queue).iter().map(|run| app.queue[run.start].cover.clone()).collect();
-    // The reflections' floor fade must match the rendered backdrop.
-    let flow = cover_flow(covers, app.anim_pos, app.glow, Msg::CoverClicked);
-
-    stack![flow, container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(24)].into()
+    // The reflections' floor fade must match the rendered backdrop; the covers are lifted clear
+    // of the player bar, and the track list with them.
+    let flow = cover_flow(covers, app.anim_pos, app.glow, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
+    let overlay_padding =
+        iced::Padding { top: 24.0, right: 24.0, bottom: 24.0 + PLAYER_BAR_HEIGHT, left: 24.0 };
+    stack![flow, container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(overlay_padding)].into()
 }
 
 /// The current album run's track list, overlaid in translucent text with the playing track
