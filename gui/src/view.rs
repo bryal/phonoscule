@@ -256,9 +256,21 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     // The reflections' floor fade must match the rendered backdrop; the covers are lifted clear
     // of the player bar, and the track list with them.
     let flow = cover_flow(covers, app.anim_pos, app.glow, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
-    let overlay_padding =
-        iced::Padding { top: 24.0, right: 24.0, bottom: 24.0 + PLAYER_BAR_HEIGHT, left: 24.0 };
-    stack![flow, container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(overlay_padding)].into()
+
+    // The track list prefers to sit centered in the region above the player bar, but when it is
+    // too tall to fit there it centers in the full height instead -- extending down behind the
+    // translucent bar rather than being clipped, so all the tracks stay visible.
+    let runs = album_runs(&app.queue);
+    let run_len = runs.get(run_of(&runs, app.current)).map_or(0, |r| r.len());
+    let overlay = responsive(move |size| {
+        // Rough per-row height (title text + button padding + column spacing).
+        const ROW_HEIGHT: f32 = 28.0;
+        let fits_above = run_len as f32 * ROW_HEIGHT <= size.height - PLAYER_BAR_HEIGHT - 24.0;
+        let bottom = if fits_above { 24.0 + PLAYER_BAR_HEIGHT } else { 24.0 };
+        let padding = iced::Padding { top: 24.0, right: 24.0, bottom, left: 24.0 };
+        container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(padding).into()
+    });
+    stack![flow, overlay].into()
 }
 
 /// The current album run's track list, overlaid in translucent text with the playing track

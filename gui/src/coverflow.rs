@@ -67,8 +67,14 @@ impl<Message> CoverFlow<Message> {
         let aspect = bounds.width / bounds.height.max(1.0);
         // The visible region's center sits this far up in NDC (y up, [-1, 1]); shift the whole
         // scene up to match, which the reflections follow down behind the bar.
-        let shift = (self.obscured_bottom / bounds.height.max(1.0)).clamp(0.0, 1.0);
-        view_proj(aspect, shift)
+        let want = (self.obscured_bottom / bounds.height.max(1.0)).clamp(0.0, 1.0);
+        // But never so far that the front cover's top clips the widget's top edge (the shader's
+        // scissor rect): on a short window there is simply no room to fully lift it, so cap the
+        // shift and let the cover extend down behind the bar instead of vanishing upward.
+        let cover_top = view_proj(aspect, 0.0).project_point3(Vec3::new(0.0, 0.5, 0.0)).y;
+        const TOP_MARGIN: f32 = 0.05;
+        let max_shift = (1.0 - TOP_MARGIN - cover_top).max(0.0);
+        view_proj(aspect, want.min(max_shift))
     }
 }
 
