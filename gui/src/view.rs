@@ -3,7 +3,7 @@
 use crate::model::{App, ScanState, View, album_runs, run_of};
 use crate::update::Msg;
 use iced::widget::{button, column, container, hover, image, responsive, row, scrollable, slider, stack, text};
-use iced::{Center, Element, Fill, Theme};
+use iced::{Center, Element, Fill, Theme, color};
 use phonoscule_gui::background;
 use phonoscule_gui::coverflow::cover_flow;
 use phonoscule_gui::library::Album;
@@ -38,7 +38,7 @@ pub fn view(app: &App) -> Element<'_, Msg> {
     // window height (the covers may touch the top on a short window); the player floats over the
     // bottom. Both sit above the body, over the backdrop glow.
     let tabs = row![tab(app, "Library", View::Library), tab(app, "Now Playing", View::NowPlaying)].spacing(20);
-    let tabs = container(tabs).padding(iced::Padding { top: 9.0, right: 12.0, bottom: 12.0, left: 12.0 });
+    let tabs = container(tabs).padding(iced::Padding { top: 10.0, right: 12.0, bottom: 0.0, left: 12.0 });
     let mut layers: Vec<Element<'_, Msg>> = vec![background::background(app.glow).into(), body, tabs.into()];
     if let Some(bar) = player_bar(app) {
         layers.push(container(bar).center_x(Fill).align_bottom(Fill).into());
@@ -50,9 +50,12 @@ pub fn view(app: &App) -> Element<'_, Msg> {
 /// primary control; the active view's tab takes the accent color.
 fn tab<'a>(app: &App, label: &'a str, target: View) -> Element<'a, Msg> {
     let active = app.view == target;
-    let label = shadowed_text(label, 18.0, iced::Font::DEFAULT, move |theme| {
-        let base = if active { theme.palette().primary } else { iced::Color::WHITE };
-        iced::Color { a: 0.8, ..base }
+    let label = shadowed_text(label, 21.0, iced::Font::DEFAULT, move |_| {
+        if active {
+            color!(0xFFFFFF, 0.90)
+        } else {
+            color!(0xF0F0F0, 0.75)
+        }
     });
     button(label).style(button::text).padding(4).on_press(Msg::Show(target)).into()
 }
@@ -197,7 +200,7 @@ const CARD_SIDE: f32 = 168.0;
 const PLAYER_BAR_HEIGHT: f32 = 170.0;
 
 /// Where the library grid starts, leaving the floating nav tabs clear with a gap below them.
-const TAB_BAR_HEIGHT: f32 = 50.0;
+const TAB_BAR_HEIGHT: f32 = 60.0;
 
 fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
     let cover: Element<'_, Msg> = match &album.cover {
