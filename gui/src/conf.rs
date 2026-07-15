@@ -47,18 +47,15 @@ pub fn locate(arg: Option<PathBuf>) -> Location {
     if let Some(path) = arg.or_else(|| env("PHONOSCULE_CONFIG").map(PathBuf::from)) {
         return Location::Explicit(path);
     }
-    let config_home = env("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::home_dir().unwrap_or_default().join(".config"));
+    let config_home =
+        env("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| std::env::home_dir().unwrap_or_default().join(".config"));
     Location::Default(config_home.join("phonoscule.toml"))
 }
 
 impl Conf {
     pub async fn load(location: Location) -> anyhow::Result<Self> {
         match location {
-            Location::Explicit(path) => {
-                Self::open(&path).await.with_context(|| format!("failed to read config from {path:?}"))
-            }
+            Location::Explicit(path) => Self::open(&path).await.with_context(|| format!("failed to read config from {path:?}")),
             Location::Default(path) => match Self::open(&path).await {
                 Ok(conf) => Ok(conf),
                 Err(e) if is_not_found(&e) => {

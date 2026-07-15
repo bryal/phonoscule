@@ -45,9 +45,7 @@ pub fn cover_flow<Message>(
     obscured_bottom: f32,
     on_click: fn(usize) -> Message,
 ) -> iced::widget::Shader<Message, CoverFlow<Message>> {
-    iced::widget::shader(CoverFlow { covers, position, glow, obscured_bottom, on_click })
-        .width(iced::Fill)
-        .height(iced::Fill)
+    iced::widget::shader(CoverFlow { covers, position, glow, obscured_bottom, on_click }).width(iced::Fill).height(iced::Fill)
 }
 
 pub struct CoverFlow<Message> {
@@ -124,17 +122,8 @@ impl<Message> shader::Program<Message> for CoverFlow<Message> {
         Flow { view_proj, glow: self.glow, instances, draws, uploads }
     }
 
-    fn mouse_interaction(
-        &self,
-        _state: &Self::State,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
-        if self.hit_test(bounds, cursor).is_some() {
-            mouse::Interaction::Pointer
-        } else {
-            mouse::Interaction::default()
-        }
+    fn mouse_interaction(&self, _state: &Self::State, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        if self.hit_test(bounds, cursor).is_some() { mouse::Interaction::Pointer } else { mouse::Interaction::default() }
     }
 }
 
@@ -206,9 +195,7 @@ fn model(d: f32) -> Mat4 {
     let z = swing.abs() * SIDE_Z + slide.abs() * STEP_Z;
     let rot_y = -swing * TILT;
     let scale = 1.0 - 0.1 * swing.abs();
-    Mat4::from_translation(Vec3::new(x, 0.0, z))
-        * Mat4::from_rotation_y(rot_y)
-        * Mat4::from_scale(Vec3::splat(scale))
+    Mat4::from_translation(Vec3::new(x, 0.0, z)) * Mat4::from_rotation_y(rot_y) * Mat4::from_scale(Vec3::splat(scale))
 }
 
 #[repr(C)]
@@ -487,11 +474,7 @@ fn make_texture_bind(
             aspect: wgpu::TextureAspect::All,
         },
         rgba,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * width),
-            rows_per_image: Some(height),
-        },
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * width), rows_per_image: Some(height) },
         size,
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -500,7 +483,7 @@ fn make_texture_bind(
         layout,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
         ],
     })
 }

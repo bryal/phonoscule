@@ -31,9 +31,14 @@ type OutSample = Stereo<PcmS16Le>;
 #[derive(Debug, Clone)]
 pub enum Cmd {
     /// Replace the queue and start playing at index `start`.
-    SetQueue { tracks: Vec<PathBuf>, start: usize },
+    SetQueue {
+        tracks: Vec<PathBuf>,
+        start: usize,
+    },
     /// Append to the queue without interrupting playback.
-    Append { tracks: Vec<PathBuf> },
+    Append {
+        tracks: Vec<PathBuf>,
+    },
     /// Jump to the given queue index.
     JumpTo(usize),
     TogglePlayPause,

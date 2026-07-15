@@ -77,17 +77,15 @@ impl<const BUF_SIZE: usize> StaticMetadata<BUF_SIZE> {
         }
         self.buf[start..start + new_size].copy_from_slice(bs);
         // trim potentially broken utf8 at the end
-        if let Some(last_nonempty) = self.fields.iter_mut().rev().find(|f| f.1 > 0) {
-            if last_nonempty.0 as usize + last_nonempty.1 as usize == BUF_SIZE {
-                let len: usize = Utf8Decoder::new(self.buf[last_nonempty.0 as usize..].iter().cloned())
-                    .flatten()
-                    .map(|c| c.len_utf8())
-                    .sum();
-                last_nonempty.1 = len as u16;
-                let trimmed = last_nonempty.1 as usize - len;
-                for next in self.fields.iter_mut().rev().take_while(|f| f.1 == 0) {
-                    next.0 -= trimmed as u16;
-                }
+        if let Some(last_nonempty) = self.fields.iter_mut().rev().find(|f| f.1 > 0)
+            && last_nonempty.0 as usize + last_nonempty.1 as usize == BUF_SIZE
+        {
+            let len: usize =
+                Utf8Decoder::new(self.buf[last_nonempty.0 as usize..].iter().cloned()).flatten().map(|c| c.len_utf8()).sum();
+            last_nonempty.1 = len as u16;
+            let trimmed = last_nonempty.1 as usize - len;
+            for next in self.fields.iter_mut().rev().take_while(|f| f.1 == 0) {
+                next.0 -= trimmed as u16;
             }
         }
     }

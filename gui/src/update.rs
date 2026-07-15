@@ -1,6 +1,6 @@
 //! The messages, and how each of them changes the model.
 
-use crate::model::{App, ScanState, View, album_runs, glow_target, flow_target, queue_items, run_of};
+use crate::model::{App, ScanState, View, album_runs, flow_target, glow_target, queue_items, run_of};
 use iced::Task;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::player;
@@ -195,8 +195,7 @@ fn rescan_options(app: &App) -> library::ScanOptions {
 /// Pushes the playing track's metadata to the OS media integration.
 fn push_media_metadata(app: &mut App) {
     let Some(item) = app.queue.get(app.current) else { return };
-    let cover_url =
-        item.cover.as_ref().and_then(|c| url::Url::from_file_path(&*c.file).ok()).map(String::from);
+    let cover_url = item.cover.as_ref().and_then(|c| url::Url::from_file_path(&*c.file).ok()).map(String::from);
     app.media.set_metadata(MediaMetadata {
         title: Some(&item.title),
         album: Some(&item.album),

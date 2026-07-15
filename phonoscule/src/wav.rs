@@ -60,8 +60,7 @@ where
                             let _speaker_position_mask = inp.read_u32_le().await.ok();
                             let sub_format_code = inp.read_u16_le().await.ok();
                             let mut guid_constant = [0u8; 14];
-                            let guid_constant =
-                                inp.read_exact(&mut guid_constant).await.ok().map(move |_| guid_constant);
+                            let guid_constant = inp.read_exact(&mut guid_constant).await.ok().map(move |_| guid_constant);
                             log::trace!(
                                 "fc: {}, ch: {}, blps: {}, avg: {}, blsz: {}, bps: {}, es: {:?}, sf: {:?}, gc: {:?}",
                                 format_code,
@@ -74,14 +73,19 @@ where
                                 sub_format_code,
                                 guid_constant
                             );
-                            if let Some(v) = valid_bits_per_sample && v != bits_per_sample {
-                                log::error!("Valid bits per sample not equal to bits per sample is unsupported. {} != {}", v, bits_per_sample);
-                                return None
+                            if let Some(v) = valid_bits_per_sample
+                                && v != bits_per_sample
+                            {
+                                log::error!(
+                                    "Valid bits per sample not equal to bits per sample is unsupported. {} != {}",
+                                    v,
+                                    bits_per_sample
+                                );
+                                return None;
                             }
                             let float = match (format_code, sub_format_code) {
                                 (WAVE_FORMAT_PCM, _) | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_PCM)) => false,
-                                (WAVE_FORMAT_IEEE_FLOAT, _)
-                                | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_IEEE_FLOAT)) => true,
+                                (WAVE_FORMAT_IEEE_FLOAT, _) | (WAVE_FORMAT_EXTENSIBLE, Some(WAVE_FORMAT_IEEE_FLOAT)) => true,
                                 (c, Some(s)) => {
                                     log::error!("Unsupported format. Format code = {:X}, sub format code = {:X}", c, s);
                                     return None;
@@ -92,14 +96,7 @@ where
                                 }
                             };
                             inp.skip_rest().await.ok()?;
-                            format = Some(Format {
-                                n_channels,
-                                float,
-                                bits_per_sample,
-                                block_size,
-                                size: 0,
-                                blocks_per_sec,
-                            });
+                            format = Some(Format { n_channels, float, bits_per_sample, block_size, size: 0, blocks_per_sec });
                         }
                         // The story with metadata in WAV files doesn't look great. There's the standard RIFF/LIST-INFO
                         // method, but most applications only support writing this, and not reading. Then there's ID3v2,

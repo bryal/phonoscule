@@ -5,9 +5,9 @@
 
 use crossterm::style::Stylize;
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
-use std::str::FromStr;
-use time::{format_description::FormatItem, OffsetDateTime};
 use smol::channel;
+use std::str::FromStr;
+use time::{OffsetDateTime, format_description::FormatItem};
 
 const TIMESTAMP_FORMAT_UTC: &[FormatItem] =
     time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
@@ -67,8 +67,7 @@ impl Log for Logger {
                 Level::Debug => format!("{:<5}", record.level().to_string()).dark_green().to_string(),
                 Level::Trace => format!("{:<5}", record.level().to_string()).grey().to_string(),
             };
-            let target =
-                if !record.target().is_empty() { record.target() } else { record.module_path().unwrap_or_default() };
+            let target = if !record.target().is_empty() { record.target() } else { record.module_path().unwrap_or_default() };
             let timestamp = format!("{} ", OffsetDateTime::now_utc().format(TIMESTAMP_FORMAT_UTC).unwrap());
             let message = format!("{}{} [{}] {}", timestamp, level_string, target, record.args());
             if let Err(message) = self.tx.try_send(message) {

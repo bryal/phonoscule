@@ -58,13 +58,10 @@ fn start_with(root: &Path, quiet: Duration) -> Watcher {
                 let Ok(()) = raw_rx.recv().await else { return };
                 // ...then absorb the rest until nothing has happened for `quiet`.
                 loop {
-                    let event = smol::future::or(
-                        async { Some(raw_rx.recv().await) },
-                        async {
-                            smol::Timer::after(quiet).await;
-                            None
-                        },
-                    )
+                    let event = smol::future::or(async { Some(raw_rx.recv().await) }, async {
+                        smol::Timer::after(quiet).await;
+                        None
+                    })
                     .await;
                     match event {
                         Some(Ok(())) => continue, // still busy
@@ -88,13 +85,10 @@ mod test {
 
     /// Receives with a timeout, from outside the async world.
     fn recv_within(rx: &channel::Receiver<()>, timeout: Duration) -> bool {
-        smol::block_on(smol::future::or(
-            async { rx.recv().await.is_ok() },
-            async {
-                smol::Timer::after(timeout).await;
-                false
-            },
-        ))
+        smol::block_on(smol::future::or(async { rx.recv().await.is_ok() }, async {
+            smol::Timer::after(timeout).await;
+            false
+        }))
     }
 
     #[test]

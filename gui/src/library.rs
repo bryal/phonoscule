@@ -21,12 +21,7 @@ use phonoscule::{
     wav::Wav,
 };
 use serde::{Deserialize, Serialize};
-use smol::{
-    channel,
-    fs::File,
-    io::BufReader,
-    stream::Stream,
-};
+use smol::{channel, fs::File, io::BufReader, stream::Stream};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
@@ -227,8 +222,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
         while let Some((ids, cover_id, cover)) = covers.next().await {
             let Some((file, size, rgba, accent)) = cover else { continue };
             let handle = iced::widget::image::Handle::from_rgba(size.0, size.1, rgba.clone());
-            let art =
-                CoverArt { id: cover_id, file: Arc::new(file), size, rgba: Arc::new(rgba), handle, accent };
+            let art = CoverArt { id: cover_id, file: Arc::new(file), size, rgba: Arc::new(rgba), handle, accent };
             if tx.send(ScanEvent::Cover { albums: ids, art }).await.is_err() {
                 return;
             }
@@ -409,11 +403,9 @@ pub fn accent_color(rgba: &[u8]) -> iced::Color {
     };
     let best = buckets.iter().max_by(|a, b| score(a).total_cmp(&score(b)));
     match best {
-        Some(&[n, r, g, b]) if n > 0 => iced::Color::from_rgb(
-            (r / n) as f32 / 255.0,
-            (g / n) as f32 / 255.0,
-            (b / n) as f32 / 255.0,
-        ),
+        Some(&[n, r, g, b]) if n > 0 => {
+            iced::Color::from_rgb((r / n) as f32 / 255.0, (g / n) as f32 / 255.0, (b / n) as f32 / 255.0)
+        }
         _ => iced::Color::BLACK,
     }
 }
@@ -560,11 +552,8 @@ mod test {
             std::fs::write(root.join(dir).join("track.wav"), wav_bytes(title, "Artist", dir)).unwrap();
         }
         let cache_file = root.join("cache.json");
-        let options = || ScanOptions {
-            root: root.clone(),
-            known_covers: Default::default(),
-            cache_file: Some(cache_file.clone()),
-        };
+        let options =
+            || ScanOptions { root: root.clone(), known_covers: Default::default(), cache_file: Some(cache_file.clone()) };
 
         // Initial scan populates the cache.
         let mut albums = Vec::new();

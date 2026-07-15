@@ -16,14 +16,14 @@ use phonoscule::{
     sample::*,
     wav::*,
 };
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
 use smol::{
     Timer, channel,
     fs::File,
     io::{AsyncReadExt, BufReader},
+};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
 };
 
 const PLAYBACK_SAMPLE_RATE: u32 = 48000;
@@ -381,14 +381,8 @@ async fn main_() {
             }
             None => format!("{mins_current:02}:{secs_current:02}"),
         };
-        ct::queue!(
-            w,
-            ct::style::Print(track),
-            ct::style::Print("\n"),
-            ct::cursor::MoveToColumn(0),
-            ct::style::Print(time)
-        )
-        .unwrap();
+        ct::queue!(w, ct::style::Print(track), ct::style::Print("\n"), ct::cursor::MoveToColumn(0), ct::style::Print(time))
+            .unwrap();
         std::io::Write::flush(w).unwrap();
     }
 

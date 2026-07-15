@@ -35,8 +35,7 @@ mod test {
     fn parse_a_wav_file() {
         init();
         smol::block_on(async {
-            let f =
-                Skippable(FromFutures::new(BufReader::new(File::open("../assets/Listless-s16.wav").await.unwrap())));
+            let f = Skippable(FromFutures::new(BufReader::new(File::open("../assets/Listless-s16.wav").await.unwrap())));
             let wav = Wav::<StaticMetadata, _>::parse(f).await.unwrap();
             assert_eq!(wav.metadata.title(), "Listless");
             assert_eq!(wav.metadata.album(), "Listless/Second Skin 2019 Single");
@@ -53,10 +52,7 @@ mod test {
                     assert!(nread == 0, "wav format says no left, but we read another {nread}");
                     break;
                 } else {
-                    assert!(
-                        nread > 0 && nread as u64 <= nleft,
-                        "wav format says there are {nleft} left, but we read {nread}"
-                    );
+                    assert!(nread > 0 && nread as u64 <= nleft, "wav format says there are {nleft} left, but we read {nread}");
                     nleft -= nread as u64;
                 }
             }
@@ -90,11 +86,8 @@ mod test {
         writer.write_packet(head, serial, ogg::PacketWriteEndInfo::EndPage, 0).unwrap();
         writer.write_packet(tags, serial, ogg::PacketWriteEndInfo::EndPage, 0).unwrap();
         for i in 0..n_packets {
-            let end = if i + 1 == n_packets {
-                ogg::PacketWriteEndInfo::EndStream
-            } else {
-                ogg::PacketWriteEndInfo::NormalPacket
-            };
+            let end =
+                if i + 1 == n_packets { ogg::PacketWriteEndInfo::EndStream } else { ogg::PacketWriteEndInfo::NormalPacket };
             // 0xFC: CELT fullband 20 ms, stereo, code 0 -- with no payload it's one zero-length
             // (DTX) frame, which decodes to a frame of silence.
             writer.write_packet(vec![0xfc], serial, end, (i as u64 + 1) * 960).unwrap();
@@ -102,7 +95,6 @@ mod test {
         drop(writer);
         out
     }
-
 
     /// The reader moves through async fns whose futures embed several copies of it; if it grows
     /// big again (say an unboxed decoder or frame buffer), those futures can overflow default
@@ -130,8 +122,7 @@ mod test {
                 let mut remaining: u64 = 0;
                 loop {
                     let mut buf = [Default::default(); 512];
-                    let nread =
-                        Source::<sample::Stereo<sample::PcmS16Le>>::read_samples(samples, &mut buf).await.unwrap();
+                    let nread = Source::<sample::Stereo<sample::PcmS16Le>>::read_samples(samples, &mut buf).await.unwrap();
                     if nread == 0 {
                         break;
                     }
@@ -159,8 +150,7 @@ mod test {
     fn parse_an_opus_file() {
         init();
         smol::block_on(async {
-            let f =
-                Skippable(FromFutures::new(BufReader::new(File::open("../assets/Listless.opus").await.unwrap())));
+            let f = Skippable(FromFutures::new(BufReader::new(File::open("../assets/Listless.opus").await.unwrap())));
             let opus = OggOpus::<StaticMetadata, _>::parse_seekable(f).await.unwrap();
             assert_eq!(opus.metadata.title(), "Listless");
             assert_eq!(opus.metadata.album(), "Listless/Second Skin 2019 Single");
@@ -171,8 +161,7 @@ mod test {
             let mut total: u64 = 0;
             loop {
                 let mut buf = [Default::default(); 512];
-                let nread =
-                    Source::<sample::Stereo<sample::PcmS16Le>>::read_samples(&mut samples, &mut buf).await.unwrap();
+                let nread = Source::<sample::Stereo<sample::PcmS16Le>>::read_samples(&mut samples, &mut buf).await.unwrap();
                 if nread == 0 {
                     break;
                 }

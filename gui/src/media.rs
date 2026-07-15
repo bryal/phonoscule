@@ -92,30 +92,23 @@ mod test {
         std::thread::sleep(Duration::from_millis(500));
 
         // What we pushed is visible on the bus...
-        let status = Command::new("busctl")
-            .args(["--user", "get-property", &mpris, PATH, PLAYER, "PlaybackStatus"])
-            .output();
+        let status = Command::new("busctl").args(["--user", "get-property", &mpris, PATH, PLAYER, "PlaybackStatus"]).output();
         let Ok(status) = status else {
             eprintln!("skipping: no busctl in this environment");
             return;
         };
         assert!(String::from_utf8_lossy(&status.stdout).contains("Playing"), "{status:?}");
-        let metadata = Command::new("busctl")
-            .args(["--user", "get-property", &mpris, PATH, PLAYER, "Metadata"])
-            .output()
-            .unwrap();
+        let metadata =
+            Command::new("busctl").args(["--user", "get-property", &mpris, PATH, PLAYER, "Metadata"]).output().unwrap();
         assert!(String::from_utf8_lossy(&metadata.stdout).contains("Roundtrip Test"), "{metadata:?}");
 
         // ...and a control call from the outside arrives as an event.
         let call = Command::new("busctl").args(["--user", "call", &mpris, PATH, PLAYER, "PlayPause"]).status().unwrap();
         assert!(call.success());
-        let event = smol::block_on(smol::future::or(
-            async { media.events.recv().await.ok() },
-            async {
-                smol::Timer::after(Duration::from_secs(3)).await;
-                None
-            },
-        ));
+        let event = smol::block_on(smol::future::or(async { media.events.recv().await.ok() }, async {
+            smol::Timer::after(Duration::from_secs(3)).await;
+            None
+        }));
         assert!(matches!(event, Some(MediaControlEvent::Toggle | MediaControlEvent::Pause)), "{event:?}");
     }
 }

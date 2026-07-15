@@ -18,7 +18,11 @@ const FA_FORWARD_STEP: &str = "\u{f051}";
 const FA_PLUS: &str = "\u{2b}";
 
 fn font_awesome_solid() -> iced::Font {
-    iced::Font { family: iced::font::Family::Name("Font Awesome 7 Free"), weight: iced::font::Weight::Black, ..iced::Font::DEFAULT }
+    iced::Font {
+        family: iced::font::Family::Name("Font Awesome 7 Free"),
+        weight: iced::font::Weight::Black,
+        ..iced::Font::DEFAULT
+    }
 }
 
 pub fn theme(_app: &App) -> Theme {
@@ -50,13 +54,15 @@ pub fn view(app: &App) -> Element<'_, Msg> {
 /// primary control; the active view's tab takes the accent color.
 fn tab<'a>(app: &App, label: &'a str, target: View) -> Element<'a, Msg> {
     let active = app.view == target;
-    let label = shadowed_text(label, 21.0, iced::Font::DEFAULT, move |_| {
-        if active {
-            color!(0xFFFFFF, 0.90)
-        } else {
-            color!(0xF0F0F0, 0.75)
-        }
-    });
+    let label =
+        shadowed_text(
+            label,
+            21.0,
+            iced::Font::DEFAULT,
+            move |_| {
+                if active { color!(0xFFFFFF, 0.90) } else { color!(0xF0F0F0, 0.75) }
+            },
+        );
     button(label).style(button::text).padding(4).on_press(Msg::Show(target)).into()
 }
 
@@ -74,10 +80,7 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     };
     let seek_bar = row![
         text(fmt_time(app.pos)).size(13),
-        slider(0.0..=1.0f32, frac, Msg::SeekChanged)
-            .step(0.001_f32)
-            .on_release(Msg::SeekReleased)
-            .width(Fill),
+        slider(0.0..=1.0f32, frac, Msg::SeekChanged).step(0.001_f32).on_release(Msg::SeekReleased).width(Fill),
         text(app.len.map(fmt_time).unwrap_or_else(|| "--:--".into())).size(13),
     ]
     .spacing(12)
@@ -122,13 +125,10 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     };
     let glass = tinted(0.16, 0.72);
     let highlight = tinted(0.85, 0.5);
-    let hairline = container(iced::widget::Space::new())
-        .width(Fill)
-        .height(1)
-        .style(move |_theme| container::Style {
-            background: Some(iced::Background::Color(highlight)),
-            ..container::Style::default()
-        });
+    let hairline = container(iced::widget::Space::new()).width(Fill).height(1).style(move |_theme| container::Style {
+        background: Some(iced::Background::Color(highlight)),
+        ..container::Style::default()
+    });
     let panel = container(bar).style(move |_theme| container::Style {
         background: Some(iced::Background::Color(glass)),
         ..container::Style::default()
@@ -181,8 +181,7 @@ fn library_view(app: &App) -> Element<'_, Msg> {
                     iced::Color { a: 0.6, ..iced::Color::WHITE }
                 });
                 // Sits just above the player bar (when there is one).
-                let padding =
-                    iced::Padding { top: 12.0, right: 12.0, bottom: bottom_padding.max(12.0), left: 12.0 };
+                let padding = iced::Padding { top: 12.0, right: 12.0, bottom: bottom_padding.max(12.0), left: 12.0 };
                 stack![grid, container(status).center_x(Fill).align_bottom(Fill).padding(padding)].into()
             }
             ScanState::Complete => grid.into(),
@@ -204,11 +203,7 @@ const TAB_BAR_HEIGHT: f32 = 60.0;
 
 fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
     let cover: Element<'_, Msg> = match &album.cover {
-        Some(c) => image(c.handle.clone())
-            .width(side)
-            .height(side)
-            .content_fit(iced::ContentFit::Cover)
-            .into(),
+        Some(c) => image(c.handle.clone()).width(side).height(side).content_fit(iced::ContentFit::Cover).into(),
         None => container(text(&album.title).size(16).center())
             .width(side)
             .height(side)
@@ -229,14 +224,10 @@ fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
     .align_right(Fill)
     .padding(8);
     let cover = hover(button(cover).padding(0).style(button::text).on_press(Msg::PlayAlbum(ix)), bubbles);
-    column![
-        cover,
-        text(&album.title).size(15),
-        text(&album.artist).size(13).style(text::secondary),
-    ]
-    .spacing(4)
-    .width(side)
-    .into()
+    column![cover, text(&album.title).size(15), text(&album.artist).size(13).style(text::secondary),]
+        .spacing(4)
+        .width(side)
+        .into()
 }
 
 /// A small round action button, floating over content.
@@ -266,8 +257,7 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     if app.queue.is_empty() {
         return container(text("Play or queue an album from the library")).center(Fill).into();
     }
-    let covers =
-        album_runs(&app.queue).iter().map(|run| app.queue[run.start].cover.clone()).collect();
+    let covers = album_runs(&app.queue).iter().map(|run| app.queue[run.start].cover.clone()).collect();
     // The reflections' floor fade must match the rendered backdrop; the covers are lifted clear
     // of the player bar, and the track list with them.
     let flow = cover_flow(covers, app.anim_pos, app.glow, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
@@ -322,10 +312,8 @@ fn shadowed_text<'a>(
     font: iced::Font,
     color: impl Fn(&Theme) -> iced::Color + 'a,
 ) -> Element<'a, Msg> {
-    let front = text(content.clone())
-        .size(size)
-        .font(font)
-        .style(move |theme: &Theme| text::Style { color: Some(color(theme)) });
+    let front =
+        text(content.clone()).size(size).font(font).style(move |theme: &Theme| text::Style { color: Some(color(theme)) });
     let shadow = text(content)
         .size(size)
         .font(font)

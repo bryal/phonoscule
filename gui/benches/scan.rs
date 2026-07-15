@@ -112,9 +112,8 @@ fn corpus(with_covers: bool) -> PathBuf {
             }
         }
         if with_covers {
-            let cover = image::RgbaImage::from_fn(1000, 1000, |x, y| {
-                image::Rgba([(x / 4) as u8, (y / 4) as u8, (a * 24) as u8, 255])
-            });
+            let cover =
+                image::RgbaImage::from_fn(1000, 1000, |x, y| image::Rgba([(x / 4) as u8, (y / 4) as u8, (a * 24) as u8, 255]));
             cover.save(dir.join("cover.png")).unwrap();
         }
     }
@@ -126,8 +125,7 @@ fn corpus(with_covers: bool) -> PathBuf {
 /// disabled: this measures the full scanning work, reproducibly.
 fn drain(root: PathBuf) -> Vec<Album> {
     smol::block_on(async {
-        let options =
-            library::ScanOptions { root, known_covers: Default::default(), cache_file: None };
+        let options = library::ScanOptions { root, known_covers: Default::default(), cache_file: None };
         let mut albums: Vec<Album> = Vec::new();
         let mut stream = std::pin::pin!(library::scan(options));
         while let Some(event) = stream.next().await {
