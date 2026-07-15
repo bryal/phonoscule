@@ -50,20 +50,11 @@ pub fn view(app: &App) -> Element<'_, Msg> {
     stack(layers).into()
 }
 
-/// A nav tab: bare shadowed text like the track list, but heavier and more opaque since it is a
-/// primary control; the active view's tab takes the accent color.
+/// A nav tab, styled like a track list entry: the active view's tab is the lit `active_text`,
+/// the others dim.
 fn tab<'a>(app: &App, label: &'a str, target: View) -> Element<'a, Msg> {
-    let active = app.view == target;
-    let label =
-        shadowed_text(
-            label,
-            21.0,
-            iced::Font::DEFAULT,
-            move |_| {
-                if active { color!(0xFFFFFF, 0.90) } else { color!(0xF0F0F0, 0.75) }
-            },
-        );
-    button(label).style(button::text).padding(4).on_press(Msg::Show(target)).into()
+    let text = if app.view == target { active_text(label, 21.0, 1.0) } else { inactive_text(label, 21.0, 0.75) };
+    button(text).style(button::text).padding(4).on_press(Msg::Show(target)).into()
 }
 
 /// The playing track's title & artist, the seek bar, and the playback controls.
@@ -177,9 +168,7 @@ fn library_view(app: &App) -> Element<'_, Msg> {
             // The scan status floats over the grid rather than claiming layout space; rescans
             // (the watcher, the periodic poll) must not shift the albums around.
             ScanState::Scanning => {
-                let status = shadowed_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, iced::Font::DEFAULT, |_| {
-                    iced::Color { a: 0.6, ..iced::Color::WHITE }
-                });
+                let status = inactive_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, 0.6);
                 // Sits just above the player bar (when there is one).
                 let padding = iced::Padding { top: 12.0, right: 12.0, bottom: bottom_padding.max(12.0), left: 12.0 };
                 stack![grid, container(status).center_x(Fill).align_bottom(Fill).padding(padding)].into()
@@ -294,10 +283,7 @@ fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
     let mut list = column![].spacing(2).align_x(iced::Alignment::End);
     for ix in run {
         let item = &app.queue[ix];
-        let playing = ix == app.current;
-        let label = shadowed_text(&item.title, 16.0, iced::Font::DEFAULT, move |theme| {
-            if playing { theme.palette().primary } else { iced::Color { a: 0.6, ..iced::Color::WHITE } }
-        });
+        let label = if ix == app.current { active_text(&item.title, 16.0, 1.0) } else { inactive_text(&item.title, 16.0, 0.6) };
         list = list.push(button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)));
     }
     let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
@@ -306,23 +292,44 @@ fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
 
 /// Translucent text with a faked drop shadow -- the same text in translucent black, offset one
 /// pixel down-right, layered underneath -- so text floating over busy content stays legible.
-fn shadowed_text<'a>(
+/// The drop shadow shared by all shadowed text: black, offset one pixel down-right.
+fn drop_shadow() -> ((f32, f32), iced::Color) {
+    ((1.0, 1.0), color!(0x000000, 0.7))
+}
+
+/// Bright-white text lit from the top-left by a `primary`-colored glow, over the usual drop
+/// shadow -- for the active entry in a list / the active nav tab.
+fn active_text<'a>(content: impl iced::widget::text::IntoFragment<'a> + Clone, size: f32, opacity: f32) -> Element<'a, Msg> {
+    let glow = ((-1.0, -1.0), iced::Theme::Dark.palette().primary);
+    shadowed(content, size, color!(0xffffff, opacity), &[drop_shadow(), glow])
+}
+
+/// Dim text with just the drop shadow -- for inactive entries / tabs and other quiet overlays.
+fn inactive_text<'a>(content: impl iced::widget::text::IntoFragment<'a> + Clone, size: f32, opacity: f32) -> Element<'a, Msg> {
+    shadowed(content, size, color!(0xf0f0f0, opacity), &[drop_shadow()])
+}
+
+/// `text` (in the default font) with drop-shadow / glow copies behind it: each `(offset, color)`
+/// is a copy displaced by `offset` pixels. All layers share one bounding box, sized to cover the
+/// front (at the origin) and every offset, so the stack overlays them regardless of direction.
+fn shadowed<'a>(
     content: impl iced::widget::text::IntoFragment<'a> + Clone,
     size: f32,
-    font: iced::Font,
-    color: impl Fn(&Theme) -> iced::Color + 'a,
+    front: iced::Color,
+    shadows: &[((f32, f32), iced::Color)],
 ) -> Element<'a, Msg> {
-    let front =
-        text(content.clone()).size(size).font(font).style(move |theme: &Theme| text::Style { color: Some(color(theme)) });
-    let shadow = text(content)
-        .size(size)
-        .font(font)
-        .style(|_theme| text::Style { color: Some(iced::Color { a: 0.7, ..iced::Color::BLACK }) });
-    stack![
-        container(shadow).padding(iced::Padding { top: 1.0, left: 1.0, right: 0.0, bottom: 0.0 }),
-        container(front).padding(iced::Padding { top: 0.0, left: 0.0, right: 1.0, bottom: 1.0 }),
-    ]
-    .into()
+    let xs = || std::iter::once(0.0).chain(shadows.iter().map(|&((dx, _), _)| dx));
+    let ys = || std::iter::once(0.0).chain(shadows.iter().map(|&((_, dy), _)| dy));
+    let (min_x, max_x) = (xs().fold(0.0, f32::min), xs().fold(0.0, f32::max));
+    let (min_y, max_y) = (ys().fold(0.0, f32::min), ys().fold(0.0, f32::max));
+    let layer = |dx: f32, dy: f32, color: iced::Color| {
+        container(text(content.clone()).size(size).style(move |_theme| text::Style { color: Some(color) }))
+            .padding(iced::Padding { left: dx - min_x, top: dy - min_y, right: max_x - dx, bottom: max_y - dy })
+    };
+    // Shadows behind (drawn first), front on top.
+    let mut layers: Vec<Element<'a, Msg>> = shadows.iter().map(|&((dx, dy), color)| layer(dx, dy, color).into()).collect();
+    layers.push(layer(0.0, 0.0, front).into());
+    stack(layers).into()
 }
 
 fn fmt_time(t: Duration) -> String {
