@@ -50,9 +50,9 @@ pub fn view(app: &App) -> Element<'_, Msg> {
 /// primary control; the active view's tab takes the accent color.
 fn tab<'a>(app: &App, label: &'a str, target: View) -> Element<'a, Msg> {
     let active = app.view == target;
-    let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
-    let label = shadowed_text(label, 17.0, bold, move |theme| {
-        if active { theme.palette().primary } else { iced::Color { a: 0.85, ..iced::Color::WHITE } }
+    let label = shadowed_text(label, 17.0, iced::Font::DEFAULT, move |theme| {
+        let base = if active { theme.extended_palette().secondary.base.color } else { iced::Color::WHITE };
+        iced::Color { a: 0.9, ..base }
     });
     button(label).style(button::text).padding(4).on_press(Msg::Show(target)).into()
 }
