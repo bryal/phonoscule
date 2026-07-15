@@ -30,23 +30,31 @@ pub fn style(_app: &App, theme: &Theme) -> iced::theme::Style {
 }
 
 pub fn view(app: &App) -> Element<'_, Msg> {
-    let tab = |label, target| {
-        let b = button(text(label).size(14)).on_press(Msg::Show(target));
-        if app.view == target { b } else { b.style(button::secondary) }
-    };
-    let top = row![tab("Library", View::Library), tab("Now Playing", View::NowPlaying)].spacing(8).padding(8);
     let body = match app.view {
         View::Library => library_view(app),
         View::NowPlaying => now_playing_view(app),
     };
-    // Everything renders over the backdrop glow; the player floats over the view body (which
-    // remains visible through its translucent panel), accompanying every view once something
-    // is queued.
-    let mut layers: Vec<Element<'_, Msg>> = vec![background::background(app.glow).into(), column![top, body].into()];
+    // The nav tabs float over the top-left as bare shadowed text, so the body can use the full
+    // window height (the covers may touch the top on a short window); the player floats over the
+    // bottom. Both sit above the body, over the backdrop glow.
+    let tabs = row![tab(app, "Library", View::Library), tab(app, "Now Playing", View::NowPlaying)].spacing(20);
+    let mut layers: Vec<Element<'_, Msg>> =
+        vec![background::background(app.glow).into(), body, container(tabs).padding(12).into()];
     if let Some(bar) = player_bar(app) {
         layers.push(container(bar).center_x(Fill).align_bottom(Fill).into());
     }
     stack(layers).into()
+}
+
+/// A nav tab: bare shadowed text like the track list, but heavier and more opaque since it is a
+/// primary control; the active view's tab takes the accent color.
+fn tab<'a>(app: &App, label: &'a str, target: View) -> Element<'a, Msg> {
+    let active = app.view == target;
+    let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+    let label = shadowed_text(label, 17.0, bold, move |theme| {
+        if active { theme.palette().primary } else { iced::Color { a: 0.85, ..iced::Color::WHITE } }
+    });
+    button(label).style(button::text).padding(4).on_press(Msg::Show(target)).into()
 }
 
 /// The playing track's title & artist, the seek bar, and the playback controls.
@@ -145,7 +153,8 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         let cols = (((width + SPACING) / (CARD_SIDE + SPACING)) as usize).max(1);
         let side = ((width - SPACING * (cols - 1) as f32) / cols as f32).floor().max(CARD_SIDE / 2.0);
         let mut grid = column![].spacing(24).padding(iced::Padding {
-            top: PADDING,
+            // Clear the floating nav tabs at the top.
+            top: TAB_BAR_HEIGHT,
             right: PADDING,
             bottom: bottom_padding,
             left: PADDING,
@@ -165,7 +174,7 @@ fn library_view(app: &App) -> Element<'_, Msg> {
             // The scan status floats over the grid rather than claiming layout space; rescans
             // (the watcher, the periodic poll) must not shift the albums around.
             ScanState::Scanning => {
-                let status = shadowed_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, |_| {
+                let status = shadowed_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, iced::Font::DEFAULT, |_| {
                     iced::Color { a: 0.6, ..iced::Color::WHITE }
                 });
                 // Sits just above the player bar (when there is one).
@@ -186,6 +195,9 @@ const CARD_SIDE: f32 = 168.0;
 /// Approximate height of the floating player bar, used to keep content clear of it: the library
 /// grid's bottom scroll room, and how far the cover flow and track list are lifted.
 const PLAYER_BAR_HEIGHT: f32 = 170.0;
+
+/// Approximate height of the floating nav tabs, used to keep the library grid clear of them.
+const TAB_BAR_HEIGHT: f32 = 44.0;
 
 fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
     let cover: Element<'_, Msg> = match &album.cover {
@@ -290,7 +302,7 @@ fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
     for ix in run {
         let item = &app.queue[ix];
         let playing = ix == app.current;
-        let label = shadowed_text(&item.title, 16.0, move |theme| {
+        let label = shadowed_text(&item.title, 16.0, iced::Font::DEFAULT, move |theme| {
             if playing { theme.palette().primary } else { iced::Color { a: 0.6, ..iced::Color::WHITE } }
         });
         list = list.push(button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)));
@@ -304,13 +316,17 @@ fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
 fn shadowed_text<'a>(
     content: impl iced::widget::text::IntoFragment<'a> + Clone,
     size: f32,
+    font: iced::Font,
     color: impl Fn(&Theme) -> iced::Color + 'a,
 ) -> Element<'a, Msg> {
     let front = text(content.clone())
         .size(size)
+        .font(font)
         .style(move |theme: &Theme| text::Style { color: Some(color(theme)) });
-    let shadow =
-        text(content).size(size).style(|_theme| text::Style { color: Some(iced::Color { a: 0.7, ..iced::Color::BLACK }) });
+    let shadow = text(content)
+        .size(size)
+        .font(font)
+        .style(|_theme| text::Style { color: Some(iced::Color { a: 0.7, ..iced::Color::BLACK }) });
     stack![
         container(shadow).padding(iced::Padding { top: 1.0, left: 1.0, right: 0.0, bottom: 0.0 }),
         container(front).padding(iced::Padding { top: 0.0, left: 0.0, right: 1.0, bottom: 1.0 }),
