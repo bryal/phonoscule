@@ -1,0 +1,18 @@
+#!/bin/sh
+# Reject commits that aren't formatted or that trip clippy. Enable in a fresh clone with:
+#     git config core.hooksPath .githooks
+# Bypass for a work-in-progress commit with `git commit --no-verify`.
+
+set -e
+
+if ! cargo fmt --all --check; then
+    echo
+    echo "pre-commit: formatting check failed. Run 'cargo fmt --all' and re-stage." >&2
+    exit 1
+fi
+
+if ! cargo clippy --workspace --all-targets -- -D warnings; then
+    echo
+    echo "pre-commit: clippy found issues (warnings are errors here). Fix them and re-stage." >&2
+    exit 1
+fi
