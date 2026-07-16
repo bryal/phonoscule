@@ -56,6 +56,9 @@ pub struct App {
     /// When the last track skip from a held Home/End key fired, used to rate-limit its auto-repeat
     /// (see `skip_ready`). `None` until the first such skip.
     pub last_skip: Option<Instant>,
+    /// When the current held Home/End press began, so its auto-repeat can accelerate the longer
+    /// it's held (see `skip_interval`). Reset on each fresh press.
+    pub hold_start: Option<Instant>,
     /// Animated Cover Flow position, chasing `current`.
     pub anim_pos: f32,
     /// The backdrop glow transitions between two album states: `glow_from` -> `glow_to` as
@@ -95,6 +98,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             seek_drag: None,
             pending_seek: None,
             last_skip: None,
+            hold_start: None,
             anim_pos: 0.0,
             glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
             glow_to: GlowState { color: iced::Color::BLACK, center: glow_center(0) },

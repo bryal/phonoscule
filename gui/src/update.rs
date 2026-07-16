@@ -300,18 +300,37 @@ fn do_seek(app: &mut App, seek: Seek) {
     app.send(player::Cmd::Seek(target));
 }
 
-/// Whether a Home/End track skip should fire now. A fresh press (`repeat` false) always does and
-/// resets the clock; an auto-repeat only once [`SKIP_THROTTLE`] has elapsed since the last skip,
-/// so holding the key walks the queue at a steady pace instead of flooding the engine.
+/// Whether a Home/End track skip should fire now, with staged auto-repeat acceleration. A fresh
+/// press (`repeat` false) always fires and starts a new hold; while the key stays down the skip
+/// rate ramps up the longer it's held (see [`skip_interval`]), so a quick tap stays precise but a
+/// sustained hold races through a long queue.
 fn skip_ready(app: &mut App, repeat: bool) -> bool {
-    /// Minimum spacing between successive skips from a held navigation key.
-    const SKIP_THROTTLE: Duration = Duration::from_millis(500);
     let now = Instant::now();
-    if repeat && app.last_skip.is_some_and(|t| now.duration_since(t) < SKIP_THROTTLE) {
+    if !repeat {
+        app.hold_start = Some(now);
+        app.last_skip = Some(now);
+        return true;
+    }
+    let held = app.hold_start.map_or(Duration::ZERO, |t| now.duration_since(t));
+    if app.last_skip.is_some_and(|t| now.duration_since(t) < skip_interval(held)) {
         return false;
     }
     app.last_skip = Some(now);
     true
+}
+
+/// The minimum spacing between held-key skips, as a function of how long the key has been held:
+/// 3/s for the first 3s, 5/s up to 5s, then 10/s. Holding accelerates through a long queue while a
+/// short press keeps fine, one-at-a-time control.
+fn skip_interval(held: Duration) -> Duration {
+    let per_sec: u32 = if held >= Duration::from_secs(5) {
+        10
+    } else if held >= Duration::from_secs(3) {
+        5
+    } else {
+        3
+    };
+    Duration::from_secs(1) / per_sec
 }
 
 /// Translates a key press into a message, or `None` for keys we don't bind. `repeat` marks
