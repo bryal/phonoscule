@@ -40,20 +40,6 @@ fn start_named(display_name: &str, dbus_name: &str) -> Media {
     Media { controls, events: rx }
 }
 
-impl Drop for Media {
-    fn drop(&mut self) {
-        // souvlaki's `MediaControls::drop` stops its D-Bus service thread by signalling it and
-        // then *joining* it -- but that thread only notices the signal between its blocking
-        // `Connection::process` calls, so the join can stall for many seconds (observed ~50s on
-        // Wayland). Since `Media` is only ever dropped as the app exits, that stall would freeze
-        // the whole GUI teardown. Leak the controls instead: the OS reaps the thread and releases
-        // the MPRIS name when the process goes.
-        if let Some(controls) = self.controls.take() {
-            std::mem::forget(controls);
-        }
-    }
-}
-
 impl Media {
     /// Whether OS media integration is actually up.
     pub fn active(&self) -> bool {
