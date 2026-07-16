@@ -89,6 +89,10 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.current = ix;
                 app.len = len;
                 app.pos = Duration::ZERO;
+                // A new album (re)starts the glow/cover-flow animation after a possibly long
+                // idle stretch; reset the frame clock so the first frame's dt is one frame, not
+                // the whole idle gap (which would jump the animation far in a single step).
+                app.last_frame = Instant::now();
                 push_media_metadata(app);
                 push_media_playback(app);
             }
@@ -156,7 +160,9 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::Frame(now) => {
-            let dt = (now - app.last_frame).as_secs_f32().min(0.1);
+            // Clamp to ~one frame: after an idle stretch (frames only run while animating) the
+            // gap since the last frame would otherwise lurch every animation forward at once.
+            let dt = (now - app.last_frame).as_secs_f32().min(1.0 / 30.0);
             app.last_frame = now;
 
             // Exponential ease of the cover flow towards the current album run.
