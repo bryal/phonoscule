@@ -4,6 +4,7 @@ use crate::model::{
     App, ScanState, View, album_runs, current_album_id, current_glow, flow_target, glow_blend, queue_items, run_of,
 };
 use iced::Task;
+use iced::keyboard::{Key, Modifiers, key::Named};
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::player;
 use souvlaki::{MediaControlEvent, MediaMetadata, MediaPlayback, MediaPosition, SeekDirection};
@@ -26,7 +27,18 @@ pub enum Msg {
     TrackClicked(usize),
     SeekChanged(f32),
     SeekReleased,
+    /// A relative or absolute seek, from the keyboard or the OS media keys (the seek *bar* uses
+    /// SeekChanged/SeekReleased instead, since a drag is a stream of absolute fractions).
+    Seek(Seek),
     Frame(Instant),
+}
+
+/// A seek that isn't a drag of the bar: a jump relative to the current position, or to the start
+/// of the track.
+#[derive(Debug, Clone, Copy)]
+pub enum Seek {
+    By(SeekDirection, Duration),
+    ToStart,
 }
 
 pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
@@ -129,8 +141,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             MediaControlEvent::Toggle => app.send(player::Cmd::TogglePlayPause),
             MediaControlEvent::Next => app.send(player::Cmd::Next),
             MediaControlEvent::Previous => app.send(player::Cmd::Prev),
-            MediaControlEvent::Seek(direction) => media_seek(app, direction, Duration::from_secs(5)),
-            MediaControlEvent::SeekBy(direction, dt) => media_seek(app, direction, dt),
+            MediaControlEvent::Seek(direction) => do_seek(app, Seek::By(direction, Duration::from_secs(5))),
+            MediaControlEvent::SeekBy(direction, dt) => do_seek(app, Seek::By(direction, dt)),
             MediaControlEvent::SetPosition(MediaPosition(t)) => app.send(player::Cmd::Seek(t)),
             // No volume control (yet): playback follows the system volume.
             MediaControlEvent::SetVolume(_) => (),
@@ -161,6 +173,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.send(player::Cmd::Seek(t));
             }
         }
+        Msg::Seek(seek) => do_seek(app, seek),
         Msg::Frame(now) => {
             // Clamp to ~one frame: after an idle stretch (frames only run while animating) the
             // gap since the last frame would otherwise lurch every animation forward at once.
@@ -225,11 +238,39 @@ fn push_media_playback(app: &mut App) {
     app.media.set_playback(playback);
 }
 
-/// Seeks relative to the current position, on behalf of the OS media integration.
-fn media_seek(app: &mut App, direction: SeekDirection, dt: Duration) {
-    let target = match direction {
-        SeekDirection::Forward => app.pos.saturating_add(dt),
-        SeekDirection::Backward => app.pos.saturating_sub(dt),
+/// Performs a [`Seek`]. Relative seeks saturate at zero (there is no clamp at the far end: the
+/// player treats a past-the-end target as the track ending).
+fn do_seek(app: &mut App, seek: Seek) {
+    let target = match seek {
+        Seek::By(SeekDirection::Forward, dt) => app.pos.saturating_add(dt),
+        Seek::By(SeekDirection::Backward, dt) => app.pos.saturating_sub(dt),
+        Seek::ToStart => Duration::ZERO,
     };
     app.send(player::Cmd::Seek(target));
+}
+
+/// Translates a key press into a message, or `None` for keys we don't bind. `repeat` marks
+/// auto-repeat from a held key: seeking honors it (hold an arrow to scrub), one-shot actions
+/// don't (holding Space must not machine-gun play/pause). Any of Ctrl/Alt/Logo suppresses the
+/// binding, so window-manager and future chorded shortcuts pass through untouched.
+///
+/// Bindings: Space toggles play/pause; Left/Right seek by [`SEEK_STEP`]; Shift+Left/Right step to
+/// the previous/next track; Home restarts the track; Escape returns to the library.
+pub fn key_to_msg(key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
+    /// How far a single Left/Right tap seeks.
+    const SEEK_STEP: Duration = Duration::from_secs(5);
+    if modifiers.control() || modifiers.alt() || modifiers.logo() {
+        return None;
+    }
+    let one_shot = |msg| if repeat { None } else { Some(msg) };
+    match (key, modifiers.shift()) {
+        (Key::Named(Named::ArrowLeft), false) => Some(Msg::Seek(Seek::By(SeekDirection::Backward, SEEK_STEP))),
+        (Key::Named(Named::ArrowRight), false) => Some(Msg::Seek(Seek::By(SeekDirection::Forward, SEEK_STEP))),
+        (Key::Named(Named::ArrowLeft), true) => one_shot(Msg::Prev),
+        (Key::Named(Named::ArrowRight), true) => one_shot(Msg::Next),
+        (Key::Named(Named::Space), _) => one_shot(Msg::Toggle),
+        (Key::Named(Named::Home), _) => one_shot(Msg::Seek(Seek::ToStart)),
+        (Key::Named(Named::Escape), _) => one_shot(Msg::Show(View::Library)),
+        _ => None,
+    }
 }

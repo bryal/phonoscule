@@ -13,10 +13,11 @@ use phonoscule_gui::conf::{self, Conf};
 use smol::channel;
 use std::path::PathBuf;
 use std::time::Duration;
-use update::{Msg, update};
+use update::{Msg, key_to_msg, update};
 use view::{style, theme, view};
 
 use iced::Subscription;
+use iced::keyboard;
 
 /// All fonts are embedded and pinned, so the application looks the same everywhere without the
 /// user installing anything: Iosevka for text, Font Awesome for symbols & icons (which would
@@ -77,5 +78,12 @@ fn subscription(app: &App) -> Subscription<Msg> {
     let animating = (app.view == View::NowPlaying && app.anim_pos != flow_target(app)) || glow_animating(app);
     let frames = if animating { iced::time::every(Duration::from_millis(16)).map(Msg::Frame) } else { Subscription::none() };
 
-    Subscription::batch([player, media, watch, rescan, frames])
+    // `listen` yields only keyboard events a focused widget ignored, so shortcuts never shadow a
+    // widget's own key handling (e.g. arrow keys while the seek bar has focus).
+    let keys = keyboard::listen().filter_map(|event| match event {
+        keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => key_to_msg(key, modifiers, repeat),
+        _ => None,
+    });
+
+    Subscription::batch([player, media, watch, rescan, frames, keys])
 }
