@@ -176,17 +176,18 @@ pub fn current_glow(app: &App) -> GlowState {
 /// and its color desaturates and dims to a dark grey at the midpoint before re-saturating and
 /// brightening into the new color -- reading as a cross-fade of two glows.
 pub fn glow_blend(from: GlowState, to: GlowState, p: f32) -> GlowState {
-    /// How dim the glow gets at the midpoint (a partial fade, not all the way to black).
-    const MIN_BRIGHT: f32 = 0.2;
+    /// The per-channel level the glow blends towards at the midpoint: a dim neutral grey -- both
+    /// desaturated and dimmed, but bright enough to stay clearly visible so the glow reads as
+    /// travelling and recolouring rather than blinking out (which would look like a teleport).
+    const MIDPOINT: f32 = 0.35;
     let ease = p * p * (3.0 - 2.0 * p); // smoothstep
     let center = (from.center.0 + (to.center.0 - from.center.0) * ease, from.center.1 + (to.center.1 - from.center.1) * ease);
-    // 1 at the ends, 0 at the midpoint: drives both the desaturation and the brightness dip. The
-    // base color switches from -> to at the midpoint, where it is fully grey so the swap is unseen.
+    // `m` is 1 at the ends and 0 at the midpoint: the endpoint color blends towards the grey
+    // midpoint as `m` falls. The base color switches from -> to at the midpoint, where it is
+    // fully grey, so the hue swap is unseen.
     let m = (2.0 * p - 1.0).abs();
     let base = if p < 0.5 { from.color } else { to.color };
-    let grey = 0.299 * base.r + 0.587 * base.g + 0.114 * base.b;
-    let bright = MIN_BRIGHT + (1.0 - MIN_BRIGHT) * m;
-    let channel = |c: f32| (grey + (c - grey) * m) * bright;
+    let channel = |c: f32| c * m + MIDPOINT * (1.0 - m);
     GlowState { color: iced::Color { r: channel(base.r), g: channel(base.g), b: channel(base.b), a: 1.0 }, center }
 }
 
