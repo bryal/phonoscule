@@ -174,27 +174,25 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
 
             // The backdrop glow. On the same album it just fades its color towards the accent.
             // On an album change the glow position is fixed per album, so a direct color fade
-            // would snap the glow to the new spot mid-fade; instead fade the color to black
-            // first, swap the position seed once the glow is dark enough to hide the jump, then
-            // fade the new color up -- a cross-dissolve through black.
-            const RATE: f32 = 8.0;
+            // would slide the glow across the screen mid-fade; instead fade the color down to
+            // black, swap the position seed while it is dark, then fade the new color up -- a
+            // cross-dissolve through black. Linear (constant speed), so the fade reads evenly:
+            // an exponential ease front-loads the drop then crawls a long near-black tail.
+            const RATE: f32 = 3.0; // color-units per second
             let album = current_album_id(app);
             let goal = if app.glow_seed == album { glow_target(app) } else { iced::Color::BLACK };
-            let step = 1.0 - (-RATE * dt).exp();
-            let lerp = |from: f32, to: f32| from + (to - from) * step;
-            app.glow =
-                iced::Color { r: lerp(app.glow.r, goal.r), g: lerp(app.glow.g, goal.g), b: lerp(app.glow.b, goal.b), a: 1.0 };
-            let brightness = app.glow.r.max(app.glow.g).max(app.glow.b);
-            if app.glow_seed != album {
-                // Fading out: adopt the new position as soon as the jump would be imperceptible.
-                if brightness < 0.03 {
-                    app.glow_seed = album;
-                }
-            } else if (goal.r - app.glow.r).abs() < 0.004
-                && (goal.g - app.glow.g).abs() < 0.004
-                && (goal.b - app.glow.b).abs() < 0.004
-            {
-                app.glow = goal; // settled at the accent
+            let max_step = RATE * dt;
+            let approach = |from: f32, to: f32| from + (to - from).clamp(-max_step, max_step);
+            app.glow = iced::Color {
+                r: approach(app.glow.r, goal.r),
+                g: approach(app.glow.g, goal.g),
+                b: approach(app.glow.b, goal.b),
+                a: 1.0,
+            };
+            // Reached black at the end of a fade-out: adopt the new album's position (invisible
+            // while dark), so the next frames fade its color up in the new spot.
+            if app.glow_seed != album && app.glow.r.max(app.glow.g).max(app.glow.b) <= 0.0 {
+                app.glow_seed = album;
             }
         }
     }
