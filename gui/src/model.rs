@@ -52,6 +52,9 @@ pub struct App {
     pub anim_pos: f32,
     /// Animated backdrop glow color, chasing the playing album's accent.
     pub glow: iced::Color,
+    /// Displayed glow position seed. Lags the current album id: on an album change the glow fades
+    /// to black, the seed swaps here while it is invisible, then the new glow fades in.
+    pub glow_seed: u64,
     pub last_frame: Instant,
 }
 
@@ -74,6 +77,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             seek_drag: None,
             anim_pos: 0.0,
             glow: iced::Color::BLACK,
+            glow_seed: 0,
             last_frame: Instant::now(),
         };
         let options = library::ScanOptions {
@@ -118,9 +122,9 @@ pub fn flow_target(app: &App) -> f32 {
     run_of(&album_runs(&app.queue), app.current) as f32
 }
 
-/// A stable, near-unique per-album value (the playing album's id) for seeding cosmetic
-/// randomness like the backdrop glow position; 0 when nothing is playing.
-pub fn glow_seed(app: &App) -> u64 {
+/// The currently playing album's id (a stable, near-unique per-album value); 0 when nothing is
+/// playing. Used as the target the displayed glow seed animates to.
+pub fn current_album_id(app: &App) -> u64 {
     app.queue.get(app.current).map_or(0, |item| item.album_id)
 }
 
