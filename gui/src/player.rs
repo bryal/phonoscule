@@ -28,6 +28,9 @@ pub const PLAYBACK_SAMPLE_RATE: u32 = 48000;
 
 type OutSample = Stereo<PcmS16Le>;
 
+/// Frames decoded and written to PulseAudio per loop iteration.
+const CHUNK: usize = 512;
+
 #[derive(Debug, Clone)]
 pub enum Cmd {
     /// Replace the queue and start playing at index `start`.
@@ -71,12 +74,25 @@ impl PlayState {
     }
 }
 
-/// Handle to the running engine. Dropping it stops both tasks.
+/// Handle to the running engine. Dropping it stops the audio thread and waits for it, so
+/// PulseAudio is torn down cleanly rather than left playing into the process's own teardown.
 pub struct Engine {
     pub cmd: channel::Sender<Cmd>,
     pub events: channel::Receiver<Event>,
-    _pulse_task: smol::Task<()>,
-    _player_task: smol::Task<()>,
+    audio: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // Close both channels so the loop returns whether it is parked on the next command or on
+        // sending an event, then join the thread so its PulseAudio stream is drained and closed
+        // before we return.
+        self.cmd.close();
+        self.events.close();
+        if let Some(audio) = self.audio.take() {
+            let _ = audio.join();
+        }
+    }
 }
 
 pub fn start() -> Engine {
@@ -84,24 +100,22 @@ pub fn start() -> Engine {
     // sending non-blocking there.
     let (cmd_tx, cmd_rx) = channel::unbounded::<Cmd>();
     let (event_tx, event_rx) = channel::bounded::<Event>(256);
-    let (audio_tx, audio_rx) = sample_channel::<512, OutSample>(1);
-    let _pulse_task = smol::spawn(pulse_task(audio_rx));
-    let _player_task = smol::spawn(player_task(cmd_rx, event_tx, audio_tx));
-    Engine { cmd: cmd_tx, events: event_rx, _pulse_task, _player_task }
+    // The engine owns a dedicated thread running a thread-local `block_on`. Decoding is async but
+    // the PulseAudio writes block; a dedicated thread keeps that blocking off the GUI's shared
+    // executor (which would also force these futures to be `Send`), and lets the loop park when
+    // idle. Communication stays on the (`Send`) channels.
+    let audio = std::thread::Builder::new()
+        .name("phonoscule-audio".into())
+        .spawn(move || smol::block_on(player_loop(cmd_rx, event_tx)))
+        .expect("cannot spawn the audio thread");
+    Engine { cmd: cmd_tx, events: event_rx, audio: Some(audio) }
 }
 
-async fn pulse_task(audio_rx: RecvSamples<512, OutSample>) {
-    let pulse_sink = PulseSink::new();
-    let mut chan_to_sink = ConnectSink::from_input(audio_rx, pulse_sink);
-    while chan_to_sink.push().await.is_some() {}
-    log::debug!("pulse sink closing");
-}
+async fn player_loop(cmd_rx: channel::Receiver<Cmd>, events: channel::Sender<Event>) {
+    // Opened once and reused across tracks; its blocking writes below pace playback to real time.
+    let mut sink = PulseSink::new();
+    let mut buf = [OutSample::default(); CHUNK];
 
-async fn player_task(
-    cmd_rx: channel::Receiver<Cmd>,
-    events: channel::Sender<Event>,
-    mut audio_tx: SendSamples<512, OutSample>,
-) {
     let mut queue: Vec<PathBuf> = vec![];
     let mut ix = 0usize;
     let mut start_at: u64 = 0; // samples into the track to start from
@@ -217,7 +231,6 @@ async fn player_task(
         start_at = 0;
         let _ = events.send(Event::Progress(t_of(pos))).await;
         let mut prev_status_pos = pos;
-        let mut chan_from_source = ConnectSource::to_output(source, &mut audio_tx);
 
         loop {
             let maybe_cmd = match buffered.take() {
@@ -253,7 +266,7 @@ async fn player_task(
                         }
                     }
                     let target = (t.as_secs_f64() * sample_rate as f64) as u64;
-                    match chan_from_source.source_mut().seek_samples(target).await {
+                    match source.seek_samples(target).await {
                         Some(new_pos) => {
                             pos = new_pos;
                             prev_status_pos = pos;
@@ -291,7 +304,7 @@ async fn player_task(
                 PlayState::Paused => continue,
                 PlayState::Playing => (),
             }
-            let Some(n) = chan_from_source.pull().await else {
+            let Some(n) = source.read_samples(&mut buf).await else {
                 log::error!("error while decoding {path:?}, skipping to next track");
                 ix += 1;
                 continue 'next_track;
@@ -300,7 +313,8 @@ async fn player_task(
                 ix += 1;
                 continue 'next_track;
             }
-            pos += n;
+            sink.write(&buf[..n]); // blocks until PulseAudio takes the chunk -- this is our pacing
+            pos += n as u64;
 
             let progress_updates_per_sec = 16;
             let progress_interval = sample_rate as u64 / progress_updates_per_sec;
@@ -388,56 +402,6 @@ impl Track {
     }
 }
 
-struct StaticVec<const N: usize, T> {
-    len: usize,
-    buf: [T; N],
-}
-
-impl<const N: usize, T> StaticVec<N, T> {
-    fn from(buf: [T; N]) -> Self {
-        Self { len: N, buf }
-    }
-
-    fn truncate(&mut self, len: usize) {
-        self.len = min(self.len, len);
-    }
-
-    fn as_slice(&self) -> &[T] {
-        &self.buf[..self.len]
-    }
-}
-
-struct SendSamples<const N: usize, Sample>(channel::Sender<StaticVec<N, Sample>>);
-
-impl<const N: usize, Sample> SourceOutput<Sample> for SendSamples<N, Sample>
-where
-    Sample: Default + Copy,
-{
-    async fn read_samples_from<S: Source<Sample>>(&mut self, source: &mut S) -> Option<u64> {
-        let mut buf = [Sample::default(); N];
-        let nread = source.read_samples(&mut buf).await?;
-        let mut vec = StaticVec::from(buf);
-        vec.truncate(nread);
-        self.0.send(vec).await.ok()?;
-        Some(nread as u64)
-    }
-}
-
-struct RecvSamples<const N: usize, Sample>(channel::Receiver<StaticVec<N, Sample>>);
-
-impl<const N: usize, Sample> SinkInput<Sample> for RecvSamples<N, Sample> {
-    async fn write_samples_to<S: Sink<Sample>>(&mut self, sink: &mut S) -> Option<u64> {
-        let samples = self.0.recv().await.ok()?;
-        let n = sink.write_samples(samples.as_slice()).await?;
-        Some(n as u64)
-    }
-}
-
-fn sample_channel<const N: usize, Sample>(nchunks: usize) -> (SendSamples<N, Sample>, RecvSamples<N, Sample>) {
-    let (tx, rx) = channel::bounded(nchunks);
-    (SendSamples(tx), RecvSamples(rx))
-}
-
 struct PulseSink(pulse_simple::Playback<[i16; 2]>);
 
 impl PulseSink {
@@ -449,18 +413,14 @@ impl PulseSink {
             PLAYBACK_SAMPLE_RATE,
         ))
     }
-}
 
-impl Sink<Stereo<PcmS16Le>> for PulseSink {
-    async fn write_samples(&mut self, samples: &[Stereo<PcmS16Le>]) -> Option<usize> {
+    /// Writes one chunk, blocking until PulseAudio accepts it (its buffer paces us to real time).
+    fn write(&mut self, samples: &[OutSample]) {
         if samples.is_empty() {
-            return Some(0);
+            return;
         }
-        let pulse_samples = unsafe { core::mem::transmute::<&[Stereo<PcmS16Le>], &[[i16; 2]]>(samples) };
+        let pulse_samples = unsafe { core::mem::transmute::<&[OutSample], &[[i16; 2]]>(samples) };
         assert_eq!(core::mem::size_of_val(samples), core::mem::size_of_val(pulse_samples));
         self.0.write(pulse_samples);
-        Some(samples.len())
     }
 }
-
-unsafe impl Send for PulseSink {}
