@@ -6,8 +6,8 @@ use crate::model::{
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use phonoscule_gui::library::{self, Album};
-use phonoscule_gui::player;
-use souvlaki::{MediaControlEvent, MediaMetadata, MediaPlayback, MediaPosition, SeekDirection};
+use phonoscule_gui::{media, player};
+use souvlaki::{MediaControlEvent, MediaPosition, SeekDirection};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -40,9 +40,6 @@ pub enum Msg {
     /// A relative or absolute seek, from the keyboard or the OS media keys (the seek *bar* uses
     /// SeekChanged/SeekReleased instead, since a drag is a stream of absolute fractions).
     Seek(Seek),
-    /// Time to push any pending track metadata to the OS media integration (the coalescing timer;
-    /// see `flush_meta`).
-    SyncMedia,
     Frame(Instant),
 }
 
@@ -81,8 +78,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
             // The playing track's cover art may just have arrived.
             if app.queue.get(app.current).is_some_and(|item| albums.contains(&item.album_id)) {
-                app.media_dirty = true;
-                flush_meta(app);
+                publish_media(app);
             }
         }
         Msg::Library(library::ScanEvent::Done { album_ids }) => {
@@ -123,12 +119,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 // idle stretch; reset the frame clock so the first frame's dt is one frame, not
                 // the whole idle gap (which would jump the animation far in a single step).
                 app.last_frame = Instant::now();
-                // Only flag the metadata as needing a push; `flush_meta` rate-limits the actual
-                // (slow) MPRIS update so a burst of track changes can't flood it. The playback
-                // position/state follows via the PlayState event the engine sends next and the
-                // Progress reports after it -- both already throttled -- so no push here.
-                app.media_dirty = true;
-                flush_meta(app);
+                publish_media(app);
             }
             player::Event::Progress(t) => {
                 // While a seek is settling, ignore reports until playback reaches (roughly) the
@@ -139,22 +130,13 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 }
                 app.pending_seek = None;
                 app.pos = t;
-                if app.pos.abs_diff(app.media_pos) >= Duration::from_secs(1) {
-                    push_media_playback(app);
-                }
-                // The position stream is our heartbeat: it flushes any metadata a burst of track
-                // changes left pending, so the track we settle on reaches MPRIS -- not just the
-                // first of the burst. A no-op unless something is actually dirty.
-                flush_meta(app);
+                // Publish freely -- the media worker coalesces a burst down to the latest, so the
+                // position stream doubles as the heartbeat that flushes a pending track change.
+                publish_media(app);
             }
             player::Event::PlayState(state) => {
-                // The engine re-sends the state on every track start, unchanged; only push when
-                // it actually flips, so a burst of track changes doesn't repeat it to MPRIS.
-                if app.play_state != state {
-                    app.play_state = state;
-                    push_media_playback(app);
-                }
-                flush_meta(app);
+                app.play_state = state;
+                publish_media(app);
             }
             player::Event::QueueEnded => {
                 app.play_state = player::PlayState::Paused;
@@ -162,8 +144,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 // wherever the last track happened to be.
                 app.pos = app.len.unwrap_or(Duration::ZERO);
                 app.pending_seek = None;
-                app.media.set_playback(MediaPlayback::Stopped);
-                flush_meta(app);
+                // Report Stopped to the OS (the bar still shows the last track, but nothing plays).
+                app.media.publish(media::Snapshot { meta: None, state: media::Playback::Stopped, position: app.pos });
             }
         },
         Msg::Media(event) => match event {
@@ -232,7 +214,6 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::Seek(seek) => do_seek(app, seek),
-        Msg::SyncMedia => flush_meta(app),
         Msg::Frame(now) => {
             // Clamp to ~one frame: after an idle stretch (frames only run while animating) the
             // gap since the last frame would otherwise lurch every animation forward at once.
@@ -273,49 +254,23 @@ fn rescan_options(app: &App) -> library::ScanOptions {
     }
 }
 
-/// Pushes pending track metadata to the OS media integration, but no more than once per second.
-/// souvlaki's MPRIS service thread digests updates at roughly that rate, so pushing faster just
-/// backs up its queue (and, on shutdown, its join). When a change is throttled out, the flag
-/// stays set and the media-sync subscription fires [`Msg::SyncMedia`] to flush it once the second
-/// has passed -- always sending the *current* track, so a burst of changes collapses to the one
-/// we land on.
-fn flush_meta(app: &mut App) {
-    /// Minimum spacing between metadata pushes.
-    const MIN_INTERVAL: Duration = Duration::from_secs(1);
-    if !app.media_dirty {
-        return;
-    }
-    let now = Instant::now();
-    if app.last_meta_push.is_some_and(|last| now.duration_since(last) < MIN_INTERVAL) {
-        return;
-    }
-    push_media_metadata(app);
-    app.media_dirty = false;
-    app.last_meta_push = Some(now);
-}
-
-/// Pushes the playing track's metadata to the OS media integration.
-fn push_media_metadata(app: &mut App) {
-    let Some(item) = app.queue.get(app.current) else { return };
-    let cover_url = item.cover.as_ref().and_then(|c| url::Url::from_file_path(&*c.file).ok()).map(String::from);
-    app.media.set_metadata(MediaMetadata {
-        title: Some(&item.title),
-        album: Some(&item.album),
-        artist: Some(&item.artist),
-        cover_url: cover_url.as_deref(),
+/// Publishes the current now-playing state to the OS media integration. Fire-and-forget: the
+/// media worker coalesces a burst of these down to the latest and rate-limits the actual pushes,
+/// so callers need not throttle.
+fn publish_media(app: &App) {
+    let meta = app.queue.get(app.current).map(|item| media::Meta {
+        title: item.title.clone(),
+        album: item.album.clone(),
+        artist: item.artist.clone(),
+        // Absolute file:// URL so the OS can load the cover regardless of our working directory.
+        cover_url: item.cover.as_ref().and_then(|c| url::Url::from_file_path(&*c.file).ok()).map(String::from),
         duration: app.len,
     });
-}
-
-/// Pushes the playback state & position to the OS media integration.
-fn push_media_playback(app: &mut App) {
-    let progress = Some(MediaPosition(app.pos));
-    let playback = match app.play_state {
-        player::PlayState::Playing => MediaPlayback::Playing { progress },
-        player::PlayState::Paused => MediaPlayback::Paused { progress },
+    let state = match app.play_state {
+        player::PlayState::Playing => media::Playback::Playing,
+        player::PlayState::Paused => media::Playback::Paused,
     };
-    app.media_pos = app.pos;
-    app.media.set_playback(playback);
+    app.media.publish(media::Snapshot { meta, state, position: app.pos });
 }
 
 /// How close a reported position must be to a pending seek's target to count as "arrived", after

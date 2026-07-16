@@ -1,6 +1,7 @@
 //! The application model: all state, and the queue/album-run bookkeeping around it.
 
 use crate::update::Msg;
+use futures::StreamExt;
 use iced::Task;
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
@@ -32,19 +33,11 @@ pub struct QueueItem {
 
 pub struct App {
     pub engine: player::Engine,
+    /// Handle to the OS media integration. State changes are published to it (see
+    /// [`publish_media`](crate::update)); a worker coalesces and pushes them, so the update loop
+    /// holds no rate-limiting state of its own.
     pub media: media::Media,
     pub watcher: watcher::Watcher,
-    /// The playback position last pushed to [`media`]: pushes are throttled to ~1/s, since each
-    /// becomes a D-Bus signal.
-    pub media_pos: Duration,
-    /// Whether the playing track's metadata still needs pushing to [`media`]. Track changes only
-    /// set this flag; the actual (comparatively slow) MPRIS push is coalesced to at most ~1/s, so
-    /// scrubbing through the queue with a held key can't flood the D-Bus service (see `flush_meta`
-    /// and the media-sync subscription).
-    pub media_dirty: bool,
-    /// When metadata was last pushed to [`media`], to rate-limit the pushes. `None` before the
-    /// first one.
-    pub last_meta_push: Option<Instant>,
     pub conf: Conf,
     pub scan: ScanState,
     pub albums: Vec<Album>,
@@ -89,13 +82,11 @@ pub struct GlowState {
 
 pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
     move || {
+        let (media, media_worker) = media::start();
         let app = App {
             engine: player::start(),
-            media: media::start(),
+            media,
             watcher: watcher::start(&conf.music_dir),
-            media_pos: Duration::ZERO,
-            media_dirty: false,
-            last_meta_push: None,
             conf: conf.clone(),
             scan: ScanState::Scanning,
             albums: vec![],
@@ -122,7 +113,10 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             cache_file: library::default_cache_file(),
         };
         let scan = Task::run(library::scan(options), Msg::Library);
-        (app, scan)
+        // Run the media worker for the whole session, on iced's executor; it pushes to the OS and
+        // yields no messages, so wrap its never-ending future as a stream that produces nothing.
+        let media = Task::stream(futures::stream::once(media_worker.run()).filter_map(|()| async { None }));
+        (app, Task::batch([scan, media]))
     }
 }
 
