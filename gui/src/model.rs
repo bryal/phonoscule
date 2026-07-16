@@ -48,6 +48,11 @@ pub struct App {
     pub len: Option<Duration>,
     /// Seek-bar fraction while the user is dragging it.
     pub seek_drag: Option<f32>,
+    /// The position last requested of the player, held until playback actually reaches it. Lets a
+    /// burst of relative seeks (a held arrow key) accumulate from the requested position rather
+    /// than the round-trip-lagged reported one, and stops stale in-flight reports from yanking the
+    /// bar back to the pre-seek spot.
+    pub pending_seek: Option<Duration>,
     /// Animated Cover Flow position, chasing `current`.
     pub anim_pos: f32,
     /// The backdrop glow transitions between two album states: `glow_from` -> `glow_to` as
@@ -85,6 +90,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             pos: Duration::ZERO,
             len: None,
             seek_drag: None,
+            pending_seek: None,
             anim_pos: 0.0,
             glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
             glow_to: GlowState { color: iced::Color::BLACK, center: glow_center(0) },

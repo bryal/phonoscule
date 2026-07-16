@@ -103,6 +103,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.current = ix;
                 app.len = len;
                 app.pos = Duration::ZERO;
+                // A new track invalidates any seek still settling against the old one.
+                app.pending_seek = None;
                 // A new album (re)starts the glow/cover-flow animation after a possibly long
                 // idle stretch; reset the frame clock so the first frame's dt is one frame, not
                 // the whole idle gap (which would jump the animation far in a single step).
@@ -111,6 +113,13 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 push_media_playback(app);
             }
             player::Event::Progress(t) => {
+                // While a seek is settling, ignore reports until playback reaches (roughly) the
+                // requested position: earlier reports still in flight would otherwise yank the
+                // optimistically-placed bar back to where playback was before the seek.
+                if matches!(app.pending_seek, Some(target) if t.abs_diff(target) > SEEK_SETTLE) {
+                    return Task::none();
+                }
+                app.pending_seek = None;
                 app.pos = t;
                 if app.pos.abs_diff(app.media_pos) >= Duration::from_secs(1) {
                     push_media_playback(app);
@@ -125,6 +134,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 // The queue may have ended through a skip: rest the bar at the end rather than
                 // wherever the last track happened to be.
                 app.pos = app.len.unwrap_or(Duration::ZERO);
+                app.pending_seek = None;
                 app.media.set_playback(MediaPlayback::Stopped);
             }
         },
@@ -238,14 +248,25 @@ fn push_media_playback(app: &mut App) {
     app.media.set_playback(playback);
 }
 
-/// Performs a [`Seek`]. Relative seeks saturate at zero (there is no clamp at the far end: the
-/// player treats a past-the-end target as the track ending).
+/// How close a reported position must be to a pending seek's target to count as "arrived", after
+/// which live reports drive the bar again. Wide enough that the first report once playback catches
+/// up clears it, narrow relative to a seek step so it doesn't clear mid-scrub while holding a key.
+const SEEK_SETTLE: Duration = Duration::from_secs(1);
+
+/// Performs a [`Seek`]. The target is taken relative to [`pos`](App::pos) -- which is itself moved
+/// optimistically below -- so a burst of relative seeks accumulates instead of all reading the
+/// same round-trip-lagged position. Relative seeks saturate at zero and clamp to the track length.
 fn do_seek(app: &mut App, seek: Seek) {
     let target = match seek {
         Seek::By(SeekDirection::Forward, dt) => app.pos.saturating_add(dt),
         Seek::By(SeekDirection::Backward, dt) => app.pos.saturating_sub(dt),
         Seek::ToStart => Duration::ZERO,
     };
+    let target = app.len.map_or(target, |len| target.min(len));
+    // Move the bar now and remember the target: the next relative seek reads this position, and
+    // reports still in flight are ignored until playback reaches it (see the Progress handler).
+    app.pos = target;
+    app.pending_seek = Some(target);
     app.send(player::Cmd::Seek(target));
 }
 
