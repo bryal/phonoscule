@@ -23,6 +23,9 @@ pub enum Msg {
     Toggle,
     Next,
     Prev,
+    /// Restart the current track, or step to the previous one if playback is already near the
+    /// start (Home). Position-dependent, so it's resolved here rather than in the key mapping.
+    PrevOrRestart,
     CoverClicked(usize),
     TrackClicked(usize),
     SeekChanged(f32),
@@ -164,6 +167,19 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::Toggle => app.send(player::Cmd::TogglePlayPause),
         Msg::Next => app.send(player::Cmd::Next),
         Msg::Prev => app.send(player::Cmd::Prev),
+        Msg::PrevOrRestart => {
+            /// Below this, Home steps back a track rather than restarting the current one.
+            const NEAR_START: Duration = Duration::from_secs(2);
+            if app.pos < NEAR_START {
+                // Cmd::Prev steps to the previous track when playback is near the start. On a
+                // double-press the second press lands here after the first has queued a seek to
+                // zero, and the engine applies that seek before this Prev -- so it reliably sees
+                // playback at the start and steps back rather than restarting again.
+                app.send(player::Cmd::Prev);
+            } else {
+                do_seek(app, Seek::ToStart);
+            }
+        }
         Msg::CoverClicked(ix) => {
             let runs = album_runs(&app.queue);
             if ix == run_of(&runs, app.current) {
@@ -276,7 +292,8 @@ fn do_seek(app: &mut App, seek: Seek) {
 /// binding, so window-manager and future chorded shortcuts pass through untouched.
 ///
 /// Bindings: Space toggles play/pause; Left/Right seek by [`SEEK_STEP`]; Shift+Left/Right step to
-/// the previous/next track; Home restarts the track; Escape returns to the library.
+/// the previous/next track; Home restarts the track (or steps back near the start); End steps to
+/// the next track; Escape returns to the library.
 pub fn key_to_msg(key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
@@ -290,7 +307,8 @@ pub fn key_to_msg(key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
         (Key::Named(Named::ArrowLeft), true) => one_shot(Msg::Prev),
         (Key::Named(Named::ArrowRight), true) => one_shot(Msg::Next),
         (Key::Named(Named::Space), _) => one_shot(Msg::Toggle),
-        (Key::Named(Named::Home), _) => one_shot(Msg::Seek(Seek::ToStart)),
+        (Key::Named(Named::Home), _) => one_shot(Msg::PrevOrRestart),
+        (Key::Named(Named::End), _) => one_shot(Msg::Next),
         (Key::Named(Named::Escape), _) => one_shot(Msg::Show(View::Library)),
         _ => None,
     }
