@@ -93,6 +93,11 @@ fn subscription(app: &App) -> Subscription<Msg> {
     let animating = (app.view == View::NowPlaying && app.anim_pos != flow_target(app)) || glow_animating(app);
     let frames = if animating { iced::time::every(Duration::from_millis(16)).map(Msg::Frame) } else { Subscription::none() };
 
+    // While a metadata push is pending (throttled out), tick once a second to flush it -- so the
+    // final track after a burst still reaches MPRIS. Idle otherwise.
+    let media_sync =
+        if app.media_dirty { iced::time::every(Duration::from_secs(1)).map(|_| Msg::SyncMedia) } else { Subscription::none() };
+
     // `listen` yields only keyboard events a focused widget ignored, so shortcuts never shadow a
     // widget's own key handling (e.g. arrow keys while the seek bar has focus).
     let keys = keyboard::listen().filter_map(|event| match event {
@@ -100,5 +105,5 @@ fn subscription(app: &App) -> Subscription<Msg> {
         _ => None,
     });
 
-    Subscription::batch([player, media, watch, rescan, frames, keys])
+    Subscription::batch([player, media, watch, rescan, frames, media_sync, keys])
 }

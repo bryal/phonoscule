@@ -40,6 +40,9 @@ pub enum Msg {
     /// A relative or absolute seek, from the keyboard or the OS media keys (the seek *bar* uses
     /// SeekChanged/SeekReleased instead, since a drag is a stream of absolute fractions).
     Seek(Seek),
+    /// Time to push any pending track metadata to the OS media integration (the coalescing timer;
+    /// see `flush_meta`).
+    SyncMedia,
     Frame(Instant),
 }
 
@@ -78,7 +81,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
             // The playing track's cover art may just have arrived.
             if app.queue.get(app.current).is_some_and(|item| albums.contains(&item.album_id)) {
-                push_media_metadata(app);
+                app.media_dirty = true;
+                flush_meta(app);
             }
         }
         Msg::Library(library::ScanEvent::Done { album_ids }) => {
@@ -119,8 +123,12 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 // idle stretch; reset the frame clock so the first frame's dt is one frame, not
                 // the whole idle gap (which would jump the animation far in a single step).
                 app.last_frame = Instant::now();
-                push_media_metadata(app);
-                push_media_playback(app);
+                // Only flag the metadata as needing a push; `flush_meta` rate-limits the actual
+                // (slow) MPRIS update so a burst of track changes can't flood it. The playback
+                // position/state follows via the PlayState event the engine sends next and the
+                // Progress reports after it -- both already throttled -- so no push here.
+                app.media_dirty = true;
+                flush_meta(app);
             }
             player::Event::Progress(t) => {
                 // While a seek is settling, ignore reports until playback reaches (roughly) the
@@ -136,8 +144,12 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 }
             }
             player::Event::PlayState(state) => {
-                app.play_state = state;
-                push_media_playback(app);
+                // The engine re-sends the state on every track start, unchanged; only push when
+                // it actually flips, so a burst of track changes doesn't repeat it to MPRIS.
+                if app.play_state != state {
+                    app.play_state = state;
+                    push_media_playback(app);
+                }
             }
             player::Event::QueueEnded => {
                 app.play_state = player::PlayState::Paused;
@@ -214,6 +226,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::Seek(seek) => do_seek(app, seek),
+        Msg::SyncMedia => flush_meta(app),
         Msg::Frame(now) => {
             // Clamp to ~one frame: after an idle stretch (frames only run while animating) the
             // gap since the last frame would otherwise lurch every animation forward at once.
@@ -252,6 +265,27 @@ fn rescan_options(app: &App) -> library::ScanOptions {
         known_covers: app.albums.iter().filter_map(|a| a.cover.as_ref().map(|c| c.id)).collect(),
         cache_file: library::default_cache_file(),
     }
+}
+
+/// Pushes pending track metadata to the OS media integration, but no more than once per second.
+/// souvlaki's MPRIS service thread digests updates at roughly that rate, so pushing faster just
+/// backs up its queue (and, on shutdown, its join). When a change is throttled out, the flag
+/// stays set and the media-sync subscription fires [`Msg::SyncMedia`] to flush it once the second
+/// has passed -- always sending the *current* track, so a burst of changes collapses to the one
+/// we land on.
+fn flush_meta(app: &mut App) {
+    /// Minimum spacing between metadata pushes.
+    const MIN_INTERVAL: Duration = Duration::from_secs(1);
+    if !app.media_dirty {
+        return;
+    }
+    let now = Instant::now();
+    if app.last_meta_push.is_some_and(|last| now.duration_since(last) < MIN_INTERVAL) {
+        return;
+    }
+    push_media_metadata(app);
+    app.media_dirty = false;
+    app.last_meta_push = Some(now);
 }
 
 /// Pushes the playing track's metadata to the OS media integration.

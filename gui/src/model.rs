@@ -37,6 +37,14 @@ pub struct App {
     /// The playback position last pushed to [`media`]: pushes are throttled to ~1/s, since each
     /// becomes a D-Bus signal.
     pub media_pos: Duration,
+    /// Whether the playing track's metadata still needs pushing to [`media`]. Track changes only
+    /// set this flag; the actual (comparatively slow) MPRIS push is coalesced to at most ~1/s, so
+    /// scrubbing through the queue with a held key can't flood the D-Bus service (see `flush_meta`
+    /// and the media-sync subscription).
+    pub media_dirty: bool,
+    /// When metadata was last pushed to [`media`], to rate-limit the pushes. `None` before the
+    /// first one.
+    pub last_meta_push: Option<Instant>,
     pub conf: Conf,
     pub scan: ScanState,
     pub albums: Vec<Album>,
@@ -86,6 +94,8 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             media: media::start(),
             watcher: watcher::start(&conf.music_dir),
             media_pos: Duration::ZERO,
+            media_dirty: false,
+            last_meta_push: None,
             conf: conf.clone(),
             scan: ScanState::Scanning,
             albums: vec![],
