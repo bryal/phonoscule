@@ -167,7 +167,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
 
             // Exponential ease of the cover flow towards the current album run.
             let target = flow_target(app);
-            app.anim_pos += (target - app.anim_pos) * (1.0 - (-6.0 * dt).exp());
+            app.anim_pos += (target - app.anim_pos) * (1.0 - (-9.0 * dt).exp());
             if (target - app.anim_pos).abs() < 0.002 {
                 app.anim_pos = target;
             }
@@ -178,7 +178,11 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // black, swap the position seed while it is dark, then fade the new color up -- a
             // cross-dissolve through black. Linear (constant speed), so the fade reads evenly:
             // an exponential ease front-loads the drop then crawls a long near-black tail.
-            const RATE: f32 = 3.0; // color-units per second
+            const RATE: f32 = 6.0; // color-units per second
+            // Swap the position (and start the fade-in) once the glow has dimmed to here rather
+            // than all the way to black, so the two halves overlap into a snappier handoff; low
+            // enough that the position jump under the dim glow stays inconspicuous.
+            const HANDOFF: f32 = 0.15;
             let album = current_album_id(app);
             let goal = if app.glow_seed == album { glow_target(app) } else { iced::Color::BLACK };
             let max_step = RATE * dt;
@@ -189,9 +193,9 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 b: approach(app.glow.b, goal.b),
                 a: 1.0,
             };
-            // Reached black at the end of a fade-out: adopt the new album's position (invisible
-            // while dark), so the next frames fade its color up in the new spot.
-            if app.glow_seed != album && app.glow.r.max(app.glow.g).max(app.glow.b) <= 0.0 {
+            // Dimmed enough during a fade-out: adopt the new album's position, so the next frames
+            // fade its color up in the new spot.
+            if app.glow_seed != album && app.glow.r.max(app.glow.g).max(app.glow.b) < HANDOFF {
                 app.glow_seed = album;
             }
         }
