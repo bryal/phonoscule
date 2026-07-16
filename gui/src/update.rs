@@ -320,16 +320,10 @@ fn skip_ready(app: &mut App, repeat: bool) -> bool {
 }
 
 /// The minimum spacing between held-key skips, as a function of how long the key has been held:
-/// 3/s for the first 3s, 5/s up to 5s, then 10/s. Holding accelerates through a long queue while a
-/// short press keeps fine, one-at-a-time control.
+/// 8/s for the first 2s, then 20/s. Holding accelerates through a long queue while a short press
+/// keeps fine, one-at-a-time control.
 fn skip_interval(held: Duration) -> Duration {
-    let per_sec: u32 = if held >= Duration::from_secs(5) {
-        10
-    } else if held >= Duration::from_secs(3) {
-        5
-    } else {
-        3
-    };
+    let per_sec: u32 = if held >= Duration::from_secs(2) { 20 } else { 8 };
     Duration::from_secs(1) / per_sec
 }
 
