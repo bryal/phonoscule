@@ -74,24 +74,22 @@ impl PlayState {
     }
 }
 
-/// Handle to the running engine. Dropping it stops the audio thread and waits for it, so
-/// PulseAudio is torn down cleanly rather than left playing into the process's own teardown.
+/// Handle to the running engine. Dropping it stops the audio thread (which exits on its own once
+/// its channels close); the OS reclaims the PulseAudio connection on exit.
 pub struct Engine {
     pub cmd: channel::Sender<Cmd>,
     pub events: channel::Receiver<Event>,
-    audio: Option<std::thread::JoinHandle<()>>,
+    _audio: std::thread::JoinHandle<()>,
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
         // Close both channels so the loop returns whether it is parked on the next command or on
-        // sending an event, then join the thread so its PulseAudio stream is drained and closed
-        // before we return.
+        // sending an event. We deliberately do not join: the thread exits within a frame, and
+        // blocking the GUI's own teardown on it risks stalling shutdown for no real gain (the OS
+        // tears the PulseAudio connection down on exit regardless).
         self.cmd.close();
         self.events.close();
-        if let Some(audio) = self.audio.take() {
-            let _ = audio.join();
-        }
     }
 }
 
@@ -108,7 +106,7 @@ pub fn start() -> Engine {
         .name("phonoscule-audio".into())
         .spawn(move || smol::block_on(player_loop(cmd_rx, event_tx)))
         .expect("cannot spawn the audio thread");
-    Engine { cmd: cmd_tx, events: event_rx, audio: Some(audio) }
+    Engine { cmd: cmd_tx, events: event_rx, _audio: audio }
 }
 
 async fn player_loop(cmd_rx: channel::Receiver<Cmd>, events: channel::Sender<Event>) {
