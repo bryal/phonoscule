@@ -5,17 +5,19 @@
 //! (copying an album in produces hundreds), so nothing is reported until the directory has been
 //! quiet for a while. What changed is irrelevant here -- the rescan is incremental anyway.
 
+use futures::{Stream, stream};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use smol::channel;
 use std::path::Path;
 use std::time::Duration;
 
 pub struct Watcher {
-    /// Emits one `()` per settled burst of filesystem changes.
-    pub events: channel::Receiver<()>,
-    /// Kept alive: dropping it removes the OS watches, which disconnects the channel feeding the
-    /// debounce thread and so ends it.
+    /// Raw change events, one per non-access filesystem event; debounced by [`Watcher::changes`].
+    raw: channel::Receiver<()>,
+    /// Kept alive: dropping it removes the OS watches, which disconnects `raw` (and so ends any
+    /// debounce stream reading it).
     _watcher: Option<RecommendedWatcher>,
+    quiet: Duration,
 }
 
 /// How long the directory must stay quiet before a burst of changes is reported.
@@ -50,49 +52,52 @@ fn start_with(root: &Path, quiet: Duration) -> Watcher {
         }
     };
 
-    let (tx, rx) = channel::bounded(1);
-    // Debounce on its own thread with a thread-local `block_on`, off the global executor. It ends
-    // on its own when the watcher is dropped (its raw-event channel disconnects) or the events
-    // receiver is dropped (the reports channel closes).
-    if watcher.is_some() {
-        std::thread::spawn(move || smol::block_on(debounce(raw_rx, tx, quiet)));
-    }
-    Watcher { events: rx, _watcher: watcher }
+    Watcher { raw: raw_rx, _watcher: watcher, quiet }
 }
 
-/// Coalesces raw filesystem events into one report per settled burst: after the first event, it
-/// waits until nothing more has arrived for `quiet`, then emits a single `()`.
-async fn debounce(raw_rx: channel::Receiver<()>, tx: channel::Sender<()>, quiet: Duration) {
-    loop {
+impl Watcher {
+    /// The raw change-event receiver and the quiet period, for building a debounced subscription
+    /// (see [`debounce`]). The pieces are exposed rather than the stream itself because iced's
+    /// `run_with` takes a builder it can call to (re)create the stream, not a one-shot value.
+    pub fn change_source(&self) -> (channel::Receiver<()>, Duration) {
+        (self.raw.clone(), self.quiet)
+    }
+}
+
+/// One `()` per settled burst of changes, as a stream for a subscription to drive -- so the
+/// debounce runs on iced's own executor rather than a thread of ours. After the first raw event,
+/// absorb the rest until the directory has been quiet for `quiet`, then yield once, and repeat.
+/// Ends when the watcher is dropped (`raw` disconnects). Backpressure is natural -- the next burst
+/// is only picked up once the consumer asks for it.
+pub fn debounce(raw: channel::Receiver<()>, quiet: Duration) -> impl Stream<Item = ()> + Send + 'static {
+    stream::unfold(raw, move |raw| async move {
         // The first event of a burst...
-        let Ok(()) = raw_rx.recv().await else { return };
+        raw.recv().await.ok()?;
         // ...then absorb the rest until nothing has happened for `quiet`.
         loop {
-            let event = smol::future::or(async { Some(raw_rx.recv().await) }, async {
+            let more = smol::future::or(async { Some(raw.recv().await) }, async {
                 smol::Timer::after(quiet).await;
                 None
             })
             .await;
-            match event {
-                Some(Ok(())) => continue, // still busy
-                Some(Err(_)) => return,   // the watcher is gone
-                None => break,            // settled
+            match more {
+                Some(Ok(())) => continue,    // still busy
+                Some(Err(_)) => return None, // the watcher is gone: end the stream
+                None => break,               // settled
             }
         }
-        // Full only means a report is already pending: the burst coalesces into it.
-        if tx.try_send(()).is_err() && tx.is_closed() {
-            return;
-        }
-    }
+        Some(((), raw))
+    })
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use futures::StreamExt;
 
-    /// Receives with a timeout, from outside the async world.
-    fn recv_within(rx: &channel::Receiver<()>, timeout: Duration) -> bool {
-        smol::block_on(smol::future::or(async { rx.recv().await.is_ok() }, async {
+    /// Pulls the next debounced event with a timeout, from outside the async world.
+    fn next_within(changes: &mut (impl Stream<Item = ()> + Unpin), timeout: Duration) -> bool {
+        smol::block_on(smol::future::or(async { changes.next().await.is_some() }, async {
             smol::Timer::after(timeout).await;
             false
         }))
@@ -109,16 +114,18 @@ mod test {
             eprintln!("skipping: no filesystem watching in this environment");
             return;
         }
+        let (raw, quiet) = watcher.change_source();
+        let mut changes = debounce(raw, quiet).boxed();
         // Quiet directory: no events.
-        assert!(!recv_within(&watcher.events, Duration::from_millis(400)));
+        assert!(!next_within(&mut changes, Duration::from_millis(400)));
 
         // A burst of changes produces exactly one event...
         for name in ["a.opus", "b.opus", "c.opus"] {
             std::fs::write(root.join(name), b"x").unwrap();
         }
-        assert!(recv_within(&watcher.events, Duration::from_secs(5)));
+        assert!(next_within(&mut changes, Duration::from_secs(5)));
         // ...and nothing more once settled.
-        assert!(!recv_within(&watcher.events, Duration::from_millis(400)));
+        assert!(!next_within(&mut changes, Duration::from_millis(400)));
 
         let _ = std::fs::remove_dir_all(&root);
     }

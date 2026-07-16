@@ -10,6 +10,7 @@ mod view;
 
 use model::{App, View, boot, flow_target, glow_animating};
 use phonoscule_gui::conf::{self, Conf};
+use phonoscule_gui::watcher;
 use smol::channel;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -69,10 +70,24 @@ fn channel_subscription<T: Send + 'static>(tag: &'static str, rx: channel::Recei
 /// quiet poll costs directory listings and stats.
 const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Debounces the watcher's raw change events into one `Msg::Rescan` per settled burst, driven on
+/// iced's own executor. `run_with` keeps a stable identity (the tag) and (re)builds the debounce
+/// stream from the raw receiver and quiet period.
+fn watch_subscription(app: &App) -> Subscription<Msg> {
+    struct Debounce(&'static str, channel::Receiver<()>, Duration);
+    impl std::hash::Hash for Debounce {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            self.0.hash(state)
+        }
+    }
+    let (raw, quiet) = app.watcher.change_source();
+    Subscription::run_with(Debounce("watch-events", raw, quiet), |d| watcher::debounce(d.1.clone(), d.2)).map(|()| Msg::Rescan)
+}
+
 fn subscription(app: &App) -> Subscription<Msg> {
     let player = channel_subscription("player-events", app.engine.events.clone()).map(Msg::Player);
     let media = channel_subscription("media-events", app.media.events.clone()).map(Msg::Media);
-    let watch = channel_subscription("watch-events", app.watcher.events.clone()).map(|()| Msg::Rescan);
+    let watch = watch_subscription(app);
     let rescan = iced::time::every(RESCAN_INTERVAL).map(|_| Msg::Rescan);
 
     let animating = (app.view == View::NowPlaying && app.anim_pos != flow_target(app)) || glow_animating(app);
