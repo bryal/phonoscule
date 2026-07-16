@@ -106,6 +106,9 @@ async fn player_task(
     let mut ix = 0usize;
     let mut start_at: u64 = 0; // samples into the track to start from
     let mut play_state = PlayState::Paused;
+    // A non-seek command read early while coalescing a burst of seeks (see the Seek arm), taken
+    // ahead of the channel on the next command read. At most one: coalescing overshoots by one.
+    let mut buffered: Option<Cmd> = None;
 
     /// What the player loop must do after a command has been applied.
     #[must_use]
@@ -168,7 +171,13 @@ async fn player_task(
                 return;
             }
             loop {
-                let Ok(cmd) = cmd_rx.recv().await else { return };
+                let cmd = match buffered.take() {
+                    Some(cmd) => cmd,
+                    None => match cmd_rx.recv().await {
+                        Ok(cmd) => cmd,
+                        Err(_) => return,
+                    },
+                };
                 match apply_cmd(cmd, &mut queue, &mut ix, &mut start_at, &mut play_state) {
                     AfterCmd::Reopen => continue 'next_track,
                     AfterCmd::Continue => match (play_state, queue.get(ix)) {
@@ -211,20 +220,38 @@ async fn player_task(
         let mut chan_from_source = ConnectSource::to_output(source, &mut audio_tx);
 
         loop {
-            let maybe_cmd = match play_state {
-                // Paused: nothing to do but wait for the next command.
-                PlayState::Paused => match cmd_rx.recv().await {
-                    Ok(cmd) => Some(cmd),
-                    Err(_) => return,
-                },
-                PlayState::Playing => match cmd_rx.try_recv() {
-                    Ok(cmd) => Some(cmd),
-                    Err(channel::TryRecvError::Empty) => None,
-                    Err(channel::TryRecvError::Closed) => return,
+            let maybe_cmd = match buffered.take() {
+                Some(cmd) => Some(cmd),
+                None => match play_state {
+                    // Paused: nothing to do but wait for the next command.
+                    PlayState::Paused => match cmd_rx.recv().await {
+                        Ok(cmd) => Some(cmd),
+                        Err(_) => return,
+                    },
+                    PlayState::Playing => match cmd_rx.try_recv() {
+                        Ok(cmd) => Some(cmd),
+                        Err(channel::TryRecvError::Empty) => None,
+                        Err(channel::TryRecvError::Closed) => return,
+                    },
                 },
             };
             match maybe_cmd {
                 Some(Cmd::Seek(t)) => {
+                    // Coalesce a burst of seeks -- a held arrow key sends far more than the
+                    // decoder can service (especially in debug builds), and every intermediate
+                    // target is abandoned the instant the next arrives. Skip to the latest,
+                    // stashing the command that ends the run so it is still handled in order.
+                    let mut t = t;
+                    loop {
+                        match cmd_rx.try_recv() {
+                            Ok(Cmd::Seek(next)) => t = next,
+                            Ok(other) => {
+                                buffered = Some(other);
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
                     let target = (t.as_secs_f64() * sample_rate as f64) as u64;
                     match chan_from_source.source_mut().seek_samples(target).await {
                         Some(new_pos) => {
