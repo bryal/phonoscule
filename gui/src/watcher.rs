@@ -13,9 +13,9 @@ use std::time::Duration;
 pub struct Watcher {
     /// Emits one `()` per settled burst of filesystem changes.
     pub events: channel::Receiver<()>,
-    /// Kept alive: dropping it removes the OS watches (which in turn ends the debounce task).
+    /// Kept alive: dropping it removes the OS watches, which disconnects the channel feeding the
+    /// debounce thread and so ends it.
     _watcher: Option<RecommendedWatcher>,
-    _debounce_task: Option<smol::Task<()>>,
 }
 
 /// How long the directory must stay quiet before a burst of changes is reported.
@@ -51,32 +51,39 @@ fn start_with(root: &Path, quiet: Duration) -> Watcher {
     };
 
     let (tx, rx) = channel::bounded(1);
-    let debounce_task = watcher.is_some().then(|| {
-        smol::spawn(async move {
-            loop {
-                // The first event of a burst...
-                let Ok(()) = raw_rx.recv().await else { return };
-                // ...then absorb the rest until nothing has happened for `quiet`.
-                loop {
-                    let event = smol::future::or(async { Some(raw_rx.recv().await) }, async {
-                        smol::Timer::after(quiet).await;
-                        None
-                    })
-                    .await;
-                    match event {
-                        Some(Ok(())) => continue, // still busy
-                        Some(Err(_)) => return,   // the watcher is gone
-                        None => break,            // settled
-                    }
-                }
-                // Full only means a report is already pending: the burst coalesces into it.
-                if tx.try_send(()).is_err() && tx.is_closed() {
-                    return;
-                }
+    // Debounce on its own thread with a thread-local `block_on`, off the global executor. It ends
+    // on its own when the watcher is dropped (its raw-event channel disconnects) or the events
+    // receiver is dropped (the reports channel closes).
+    if watcher.is_some() {
+        std::thread::spawn(move || smol::block_on(debounce(raw_rx, tx, quiet)));
+    }
+    Watcher { events: rx, _watcher: watcher }
+}
+
+/// Coalesces raw filesystem events into one report per settled burst: after the first event, it
+/// waits until nothing more has arrived for `quiet`, then emits a single `()`.
+async fn debounce(raw_rx: channel::Receiver<()>, tx: channel::Sender<()>, quiet: Duration) {
+    loop {
+        // The first event of a burst...
+        let Ok(()) = raw_rx.recv().await else { return };
+        // ...then absorb the rest until nothing has happened for `quiet`.
+        loop {
+            let event = smol::future::or(async { Some(raw_rx.recv().await) }, async {
+                smol::Timer::after(quiet).await;
+                None
+            })
+            .await;
+            match event {
+                Some(Ok(())) => continue, // still busy
+                Some(Err(_)) => return,   // the watcher is gone
+                None => break,            // settled
             }
-        })
-    });
-    Watcher { events: rx, _watcher: watcher, _debounce_task: debounce_task }
+        }
+        // Full only means a report is already pending: the burst coalesces into it.
+        if tx.try_send(()).is_err() && tx.is_closed() {
+            return;
+        }
+    }
 }
 
 #[cfg(test)]
