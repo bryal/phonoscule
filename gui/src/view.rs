@@ -100,12 +100,12 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     .align_y(Center);
 
     let bar = column![
-        text(&current.title).size(20),
-        text(format!("{} — {}", current.artist, current.album)).size(14).style(text::secondary),
+        text(&current.title).size(19),
+        text(format!("{} — {}", current.artist, current.album)).size(15).style(text::secondary),
         seek_bar,
         controls,
     ]
-    .spacing(10)
+    .spacing(5)
     .padding(16)
     .align_x(Center)
     .width(Fill);
@@ -186,7 +186,7 @@ const CARD_SIDE: f32 = 168.0;
 
 /// Approximate height of the floating player bar, used to keep content clear of it: the library
 /// grid's bottom scroll room, and how far the cover flow and track list are lifted.
-const PLAYER_BAR_HEIGHT: f32 = 170.0;
+const PLAYER_BAR_HEIGHT: f32 = 152.0;
 
 /// Where the library grid starts, leaving the floating nav tabs clear with a gap below them.
 const TAB_BAR_HEIGHT: f32 = 60.0;
