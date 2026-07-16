@@ -8,30 +8,43 @@ use iced::wgpu;
 use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle};
 
-/// The glow's center, as a fraction of the viewport size.
-const CENTER: (f32, f32) = (0.20, 0.1);
-/// The glow's radius, as a fraction of the viewport's larger dimension.
-const RADIUS: f32 = 0.60;
-/// Peak brightness of the glow.
-const INTENSITY: f32 = 0.40;
-
 /// The glow uniform data shared by this shader and the cover flow's: intensity-scaled linear
-/// color, center and radius in framebuffer pixels.
-pub fn glow_uniform(color: iced::Color, viewport: &Viewport) -> [f32; 8] {
+/// color, center and radius in framebuffer pixels. `color` is animated (it crossfades between
+/// tracks), so the center is placed from `seed` instead -- the stable per-album id -- to keep the
+/// glow from jumping around mid-crossfade.
+pub fn glow_uniform(color: iced::Color, seed: u64, viewport: &Viewport) -> [f32; 8] {
+    /// Possible horizontal positions for the glow's center, as a fraction of the viewport size.
+    const POSSIBLE_CENTERS_X: [f32; 7] = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80];
+    /// Possible vertical positions for the glow's center, as a fraction of the viewport size.
+    const POSSIBLE_CENTERS_Y: [f32; 4] = [0.10, 0.20, 0.30, 0.40];
+    /// The glow's radius, as a fraction of the viewport's larger dimension.
+    const RADIUS: f32 = 0.80;
+    /// Peak brightness of the glow.
+    const INTENSITY: f32 = 0.30;
+
+    // Scatter the glow per album by indexing the position tables with the album's id (already a
+    // well-mixed hash). x takes the low digit, y a higher one, so the two axes don't correlate.
+    let nx = POSSIBLE_CENTERS_X.len() as u64;
+    let ny = POSSIBLE_CENTERS_Y.len() as u64;
+    let center_x = POSSIBLE_CENTERS_X[(seed % nx) as usize];
+    let center_y = POSSIBLE_CENTERS_Y[(seed / nx % ny) as usize];
+
     let size = viewport.physical_size();
     let (w, h) = (size.width as f32, size.height as f32);
     let [r, g, b, _a] = color.into_linear();
-    let center = (w * CENTER.0, h * CENTER.1);
+    let center = (w * center_x, h * center_y);
     let radius = w.max(h) * RADIUS;
     [r * INTENSITY, g * INTENSITY, b * INTENSITY, 1.0, center.0, center.1, radius, 0.0]
 }
 
-pub fn background<Message>(color: iced::Color) -> iced::widget::Shader<Message, Background> {
-    iced::widget::shader(Background { color }).width(iced::Fill).height(iced::Fill)
+pub fn background<Message>(color: iced::Color, seed: u64) -> iced::widget::Shader<Message, Background> {
+    iced::widget::shader(Background { color, seed }).width(iced::Fill).height(iced::Fill)
 }
 
 pub struct Background {
     color: iced::Color,
+    /// Stable per-album id, seeds the glow position (see [`glow_uniform`]).
+    seed: u64,
 }
 
 impl<Message> shader::Program<Message> for Background {
@@ -49,13 +62,14 @@ impl<Message> shader::Program<Message> for Background {
     }
 
     fn draw(&self, _state: &Self::State, _cursor: mouse::Cursor, _bounds: Rectangle) -> Glow {
-        Glow { color: self.color }
+        Glow { color: self.color, seed: self.seed }
     }
 }
 
 #[derive(Debug)]
 pub struct Glow {
     color: iced::Color,
+    seed: u64,
 }
 
 impl shader::Primitive for Glow {
@@ -69,7 +83,7 @@ impl shader::Primitive for Glow {
         _bounds: &Rectangle,
         viewport: &Viewport,
     ) {
-        queue.write_buffer(&pipeline.uniforms, 0, bytemuck::cast_slice(&glow_uniform(self.color, viewport)));
+        queue.write_buffer(&pipeline.uniforms, 0, bytemuck::cast_slice(&glow_uniform(self.color, self.seed, viewport)));
     }
 
     fn draw(&self, pipeline: &Pipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {

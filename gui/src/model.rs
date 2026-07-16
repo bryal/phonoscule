@@ -118,6 +118,12 @@ pub fn flow_target(app: &App) -> f32 {
     run_of(&album_runs(&app.queue), app.current) as f32
 }
 
+/// A stable, near-unique per-album value (the playing album's id) for seeding cosmetic
+/// randomness like the backdrop glow position; 0 when nothing is playing.
+pub fn glow_seed(app: &App) -> u64 {
+    app.queue.get(app.current).map_or(0, |item| item.album_id)
+}
+
 /// The backdrop glow color the application is (fading towards) showing: the playing album's
 /// accent at full brightness -- normalized so its strongest channel saturates; the backdrop
 /// shader decides how much of it to actually show.

@@ -42,17 +42,22 @@ pub fn cover_flow<Message>(
     covers: Vec<Option<CoverArt>>,
     position: f32,
     glow: iced::Color,
+    glow_seed: u64,
     obscured_bottom: f32,
     on_click: fn(usize) -> Message,
 ) -> iced::widget::Shader<Message, CoverFlow<Message>> {
-    iced::widget::shader(CoverFlow { covers, position, glow, obscured_bottom, on_click }).width(iced::Fill).height(iced::Fill)
+    iced::widget::shader(CoverFlow { covers, position, glow, glow_seed, obscured_bottom, on_click })
+        .width(iced::Fill)
+        .height(iced::Fill)
 }
 
 pub struct CoverFlow<Message> {
     covers: Vec<Option<CoverArt>>,
     position: f32,
-    /// The backdrop's glow color: reflections fade towards the backdrop (see the shader).
+    /// The backdrop's glow color and its stable position seed: reflections fade towards the
+    /// backdrop, so they must evaluate the same glow (see the shader).
     glow: iced::Color,
+    glow_seed: u64,
     /// Pixels of the widget's bottom hidden behind the player bar. The covers center in the
     /// region above it (only the reflections run down behind the bar).
     obscured_bottom: f32,
@@ -119,7 +124,7 @@ impl<Message> shader::Program<Message> for CoverFlow<Message> {
             instances.push(Instance::new(model, 0.0, brightness, fade));
             draws.push(Draw { texture: id, instances: first..first + 2 });
         }
-        Flow { view_proj, glow: self.glow, instances, draws, uploads }
+        Flow { view_proj, glow: self.glow, glow_seed: self.glow_seed, instances, draws, uploads }
     }
 
     fn mouse_interaction(&self, _state: &Self::State, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
@@ -235,6 +240,7 @@ impl fmt::Debug for Upload {
 pub struct Flow {
     view_proj: Mat4,
     glow: iced::Color,
+    glow_seed: u64,
     instances: Vec<Instance>,
     draws: Vec<Draw>,
     uploads: Vec<Upload>,
@@ -256,7 +262,7 @@ impl shader::Primitive for Flow {
         }
         queue.write_buffer(&pipeline.uniforms, 0, bytemuck::cast_slice(&self.view_proj.to_cols_array()));
         // Same glow parameters as the backdrop, so the reflections' floor matches it exactly.
-        let glow = crate::background::glow_uniform(self.glow, viewport);
+        let glow = crate::background::glow_uniform(self.glow, self.glow_seed, viewport);
         queue.write_buffer(&pipeline.uniforms, 64, bytemuck::cast_slice(&glow));
         let instance_bytes: &[u8] = bytemuck::cast_slice(&self.instances);
         if pipeline.instances.size() < instance_bytes.len() as u64 {
