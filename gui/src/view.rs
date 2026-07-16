@@ -1,6 +1,6 @@
 //! Rendering the model: the library browser and the now-playing (Cover Flow) views.
 
-use crate::model::{App, ScanState, View, album_runs, run_of};
+use crate::model::{App, ScanState, View, album_runs, glow_now, run_of};
 use crate::update::Msg;
 use iced::widget::{button, column, container, hover, image, responsive, row, scrollable, slider, stack, text};
 use iced::{Center, Color, Element, Fill, Theme, color};
@@ -44,7 +44,8 @@ pub fn view(app: &App) -> Element<'_, Msg> {
     // bottom. Both sit above the body, over the backdrop glow.
     let tabs = row![tab(app, "Library", View::Library), tab(app, "Now Playing", View::NowPlaying)].spacing(20);
     let tabs = container(tabs).padding(iced::Padding { top: 10.0, right: 12.0, bottom: 0.0, left: 12.0 });
-    let mut layers: Vec<Element<'_, Msg>> = vec![background::background(app.glow, app.glow_seed).into(), body, tabs.into()];
+    let glow = glow_now(app);
+    let mut layers: Vec<Element<'_, Msg>> = vec![background::background(glow.color, glow.center).into(), body, tabs.into()];
     if let Some(bar) = player_bar(app) {
         layers.push(container(bar).center_x(Fill).align_bottom(Fill).into());
     }
@@ -107,13 +108,11 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     .align_x(Center)
     .width(Fill);
 
-    // Frosted-glass impression: dark glass tinted by the animated accent (the same color as the
-    // backdrop glow, so it crossfades with track changes), with an accent hairline along the
-    // top edge as the glass highlight.
-    let tinted = |k: f32, a: f32| {
-        let g = app.glow;
-        Color { r: g.r * k, g: g.g * k, b: g.b * k, a }
-    };
+    // Frosted-glass impression: dark glass tinted by the current glow color (so it transitions
+    // with track changes just like the backdrop), with an accent hairline along the top edge as
+    // the glass highlight.
+    let g = glow_now(app).color;
+    let tinted = |k: f32, a: f32| Color { r: g.r * k, g: g.g * k, b: g.b * k, a };
     let glass = tinted(0.16, 0.72);
     let highlight = tinted(0.85, 0.5);
     let hairline = container(iced::widget::Space::new()).width(Fill).height(1).style(move |_theme| container::Style {
@@ -249,7 +248,8 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     let covers = album_runs(&app.queue).iter().map(|run| app.queue[run.start].cover.clone()).collect();
     // The reflections' floor fade must match the rendered backdrop; the covers are lifted clear
     // of the player bar, and the track list with them.
-    let flow = cover_flow(covers, app.anim_pos, app.glow, app.glow_seed, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
+    let glow = glow_now(app);
+    let flow = cover_flow(covers, app.anim_pos, glow.color, glow.center, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
 
     // The track list is centered in a vertical region. That region reserves the player bar's
     // space when the list is short (so it sits comfortably above the bar), but gives that space

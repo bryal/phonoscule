@@ -50,12 +50,22 @@ pub struct App {
     pub seek_drag: Option<f32>,
     /// Animated Cover Flow position, chasing `current`.
     pub anim_pos: f32,
-    /// Animated backdrop glow color, chasing the playing album's accent.
-    pub glow: iced::Color,
-    /// Displayed glow position seed. Lags the current album id: on an album change the glow fades
-    /// to black, the seed swaps here while it is invisible, then the new glow fades in.
-    pub glow_seed: u64,
+    /// The backdrop glow transitions between two album states: `glow_from` -> `glow_to` as
+    /// `glow_p` runs 0 -> 1 (1 = settled on `glow_to`). `glow_album` is the album `glow_to`
+    /// represents, so a change is detected when the current album differs.
+    pub glow_from: GlowState,
+    pub glow_to: GlowState,
+    pub glow_album: u64,
+    pub glow_p: f32,
     pub last_frame: Instant,
+}
+
+/// A backdrop glow: its color and its center as a fraction of the viewport. Album changes
+/// animate one of these into another (see [`glow_blend`]).
+#[derive(Clone, Copy, PartialEq)]
+pub struct GlowState {
+    pub color: iced::Color,
+    pub center: (f32, f32),
 }
 
 pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
@@ -76,8 +86,10 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             len: None,
             seek_drag: None,
             anim_pos: 0.0,
-            glow: iced::Color::BLACK,
-            glow_seed: 0,
+            glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
+            glow_to: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
+            glow_album: 0,
+            glow_p: 1.0,
             last_frame: Instant::now(),
         };
         let options = library::ScanOptions {
@@ -123,16 +135,26 @@ pub fn flow_target(app: &App) -> f32 {
 }
 
 /// The currently playing album's id (a stable, near-unique per-album value); 0 when nothing is
-/// playing. Used as the target the displayed glow seed animates to.
+/// playing.
 pub fn current_album_id(app: &App) -> u64 {
     app.queue.get(app.current).map_or(0, |item| item.album_id)
 }
 
-/// The backdrop glow color the application is (fading towards) showing: the playing album's
-/// accent at full brightness -- normalized so its strongest channel saturates; the backdrop
-/// shader decides how much of it to actually show.
-pub fn glow_target(app: &App) -> iced::Color {
-    match app.queue.get(app.current).and_then(|item| item.cover.as_ref()) {
+/// Where the currently playing album's glow sits, as a fraction of the viewport size. Scattered
+/// per album by indexing fixed position tables with the album id (already a well-mixed hash);
+/// the low digit picks the column, a higher one the row, so the two axes don't correlate.
+pub fn glow_center(album_id: u64) -> (f32, f32) {
+    const CENTERS_X: [f32; 7] = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80];
+    const CENTERS_Y: [f32; 4] = [0.10, 0.20, 0.30, 0.40];
+    let (nx, ny) = (CENTERS_X.len() as u64, CENTERS_Y.len() as u64);
+    (CENTERS_X[(album_id % nx) as usize], CENTERS_Y[(album_id / nx % ny) as usize])
+}
+
+/// The glow the currently playing album should ultimately show: its accent at full brightness
+/// (normalized so the strongest channel saturates) placed at its scattered position; black when
+/// nothing is playing. The backdrop shader decides how much of the color to actually show.
+pub fn current_glow(app: &App) -> GlowState {
+    let color = match app.queue.get(app.current).and_then(|item| item.cover.as_ref()) {
         Some(cover) => {
             let accent = cover.accent;
             let max = accent.r.max(accent.g).max(accent.b);
@@ -143,7 +165,40 @@ pub fn glow_target(app: &App) -> iced::Color {
             }
         }
         None => iced::Color::BLACK,
-    }
+    };
+    GlowState { color, center: glow_center(current_album_id(app)) }
+}
+
+/// The glow to render this frame: [`glow_from`](App::glow_from) morphing into
+/// [`glow_to`](App::glow_to) by progress [`glow_p`](App::glow_p). Rather than a straight fade
+/// (which would slide one glow bodily across the screen), the single glow blends between the two
+/// albums by animating several properties at once: it glides from the old position to the new,
+/// and its color desaturates and dims to a dark grey at the midpoint before re-saturating and
+/// brightening into the new color -- reading as a cross-fade of two glows.
+pub fn glow_blend(from: GlowState, to: GlowState, p: f32) -> GlowState {
+    /// How dim the glow gets at the midpoint (a partial fade, not all the way to black).
+    const MIN_BRIGHT: f32 = 0.2;
+    let ease = p * p * (3.0 - 2.0 * p); // smoothstep
+    let center = (from.center.0 + (to.center.0 - from.center.0) * ease, from.center.1 + (to.center.1 - from.center.1) * ease);
+    // 1 at the ends, 0 at the midpoint: drives both the desaturation and the brightness dip. The
+    // base color switches from -> to at the midpoint, where it is fully grey so the swap is unseen.
+    let m = (2.0 * p - 1.0).abs();
+    let base = if p < 0.5 { from.color } else { to.color };
+    let grey = 0.299 * base.r + 0.587 * base.g + 0.114 * base.b;
+    let bright = MIN_BRIGHT + (1.0 - MIN_BRIGHT) * m;
+    let channel = |c: f32| (grey + (c - grey) * m) * bright;
+    GlowState { color: iced::Color { r: channel(base.r), g: channel(base.g), b: channel(base.b), a: 1.0 }, center }
+}
+
+/// Whether the backdrop glow is mid-transition (or needs to start one), i.e. not settled on the
+/// current album's target glow.
+pub fn glow_animating(app: &App) -> bool {
+    app.glow_p < 1.0 || app.glow_album != current_album_id(app) || app.glow_to != current_glow(app)
+}
+
+/// The glow to render this frame: the current point of the `glow_from` -> `glow_to` blend.
+pub fn glow_now(app: &App) -> GlowState {
+    glow_blend(app.glow_from, app.glow_to, app.glow_p)
 }
 
 pub fn queue_items(album: &Album) -> Vec<QueueItem> {

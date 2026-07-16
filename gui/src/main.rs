@@ -8,7 +8,7 @@ mod model;
 mod update;
 mod view;
 
-use model::{App, View, boot, current_album_id, flow_target, glow_target};
+use model::{App, View, boot, flow_target, glow_animating};
 use phonoscule_gui::conf::{self, Conf};
 use smol::channel;
 use std::path::PathBuf;
@@ -74,8 +74,7 @@ fn subscription(app: &App) -> Subscription<Msg> {
     let watch = channel_subscription("watch-events", app.watcher.events.clone()).map(|()| Msg::Rescan);
     let rescan = iced::time::every(RESCAN_INTERVAL).map(|_| Msg::Rescan);
 
-    let glow_settled = app.glow == glow_target(app) && app.glow_seed == current_album_id(app);
-    let animating = (app.view == View::NowPlaying && app.anim_pos != flow_target(app)) || !glow_settled;
+    let animating = (app.view == View::NowPlaying && app.anim_pos != flow_target(app)) || glow_animating(app);
     let frames = if animating { iced::time::every(Duration::from_millis(16)).map(Msg::Frame) } else { Subscription::none() };
 
     Subscription::batch([player, media, watch, rescan, frames])

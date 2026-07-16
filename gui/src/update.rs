@@ -1,6 +1,8 @@
 //! The messages, and how each of them changes the model.
 
-use crate::model::{App, ScanState, View, album_runs, current_album_id, flow_target, glow_target, queue_items, run_of};
+use crate::model::{
+    App, ScanState, View, album_runs, current_album_id, current_glow, flow_target, glow_blend, queue_items, run_of,
+};
 use iced::Task;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::player;
@@ -172,32 +174,19 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.anim_pos = target;
             }
 
-            // The backdrop glow. On the same album it just fades its color towards the accent.
-            // On an album change the glow position is fixed per album, so a direct color fade
-            // would slide the glow across the screen mid-fade; instead fade the color down to
-            // black, swap the position seed while it is dark, then fade the new color up -- a
-            // cross-dissolve through black. Linear (constant speed), so the fade reads evenly:
-            // an exponential ease front-loads the drop then crawls a long near-black tail.
-            const RATE: f32 = 6.0; // color-units per second
-            // Swap the position (and start the fade-in) once the glow has dimmed to here rather
-            // than all the way to black, so the two halves overlap into a snappier handoff; low
-            // enough that the position jump under the dim glow stays inconspicuous.
-            const HANDOFF: f32 = 0.15;
-            let album = current_album_id(app);
-            let goal = if app.glow_seed == album { glow_target(app) } else { iced::Color::BLACK };
-            let max_step = RATE * dt;
-            let approach = |from: f32, to: f32| from + (to - from).clamp(-max_step, max_step);
-            app.glow = iced::Color {
-                r: approach(app.glow.r, goal.r),
-                g: approach(app.glow.g, goal.g),
-                b: approach(app.glow.b, goal.b),
-                a: 1.0,
-            };
-            // Dimmed enough during a fade-out: adopt the new album's position, so the next frames
-            // fade its color up in the new spot.
-            if app.glow_seed != album && app.glow.r.max(app.glow.g).max(app.glow.b) < HANDOFF {
-                app.glow_seed = album;
+            // The backdrop glow blends from the album we're leaving into the current one over
+            // glow_p (see glow_blend). Start a fresh blend whenever the target changes (album
+            // change, or a cover finishing loading), freezing the current on-screen glow as the
+            // new starting point so an interruption mid-blend continues smoothly.
+            const GLOW_RATE: f32 = 2.5; // blends per second (~0.4s per transition)
+            let target = current_glow(app);
+            if current_album_id(app) != app.glow_album || target != app.glow_to {
+                app.glow_from = glow_blend(app.glow_from, app.glow_to, app.glow_p);
+                app.glow_to = target;
+                app.glow_album = current_album_id(app);
+                app.glow_p = 0.0;
             }
+            app.glow_p = (app.glow_p + GLOW_RATE * dt).min(1.0);
         }
     }
     Task::none()
