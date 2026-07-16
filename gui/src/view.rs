@@ -92,7 +92,9 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
         )
         .style(button::text)
         .on_press(Msg::Toggle),
-        button(text(FA_FORWARD_STEP).font(font_awesome_solid()).size(18)).style(button::text).on_press(Msg::Next),
+        button(text(FA_FORWARD_STEP).font(font_awesome_solid()).size(18))
+            .style(button::text)
+            .on_press(Msg::Next { repeat: false }),
     ]
     .spacing(24)
     .align_y(Center);

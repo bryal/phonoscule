@@ -21,11 +21,18 @@ pub enum Msg {
     Player(player::Event),
     Media(MediaControlEvent),
     Toggle,
-    Next,
+    /// Step to the next track (End, and the on-screen button). `repeat` marks a held-key
+    /// auto-repeat, which the handler rate-limits; a fresh press or button click passes `false`.
+    Next {
+        repeat: bool,
+    },
     Prev,
     /// Restart the current track, or step to the previous one if playback is already near the
     /// start (Home). Position-dependent, so it's resolved here rather than in the key mapping.
-    PrevOrRestart,
+    /// `repeat` marks a held-key auto-repeat, rate-limited like [`Next`](Msg::Next).
+    PrevOrRestart {
+        repeat: bool,
+    },
     CoverClicked(usize),
     TrackClicked(usize),
     SeekChanged(f32),
@@ -165,11 +172,18 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             MediaControlEvent::Quit => (),
         },
         Msg::Toggle => app.send(player::Cmd::TogglePlayPause),
-        Msg::Next => app.send(player::Cmd::Next),
+        Msg::Next { repeat } => {
+            if skip_ready(app, repeat) {
+                app.send(player::Cmd::Next);
+            }
+        }
         Msg::Prev => app.send(player::Cmd::Prev),
-        Msg::PrevOrRestart => {
+        Msg::PrevOrRestart { repeat } => {
             /// Below this, Home steps back a track rather than restarting the current one.
-            const NEAR_START: Duration = Duration::from_secs(2);
+            const NEAR_START: Duration = Duration::from_millis(1500);
+            if !skip_ready(app, repeat) {
+                return Task::none();
+            }
             if app.pos < NEAR_START {
                 // Cmd::Prev steps to the previous track when playback is near the start. On a
                 // double-press the second press lands here after the first has queued a seek to
@@ -286,14 +300,28 @@ fn do_seek(app: &mut App, seek: Seek) {
     app.send(player::Cmd::Seek(target));
 }
 
+/// Whether a Home/End track skip should fire now. A fresh press (`repeat` false) always does and
+/// resets the clock; an auto-repeat only once [`SKIP_THROTTLE`] has elapsed since the last skip,
+/// so holding the key walks the queue at a steady pace instead of flooding the engine.
+fn skip_ready(app: &mut App, repeat: bool) -> bool {
+    /// Minimum spacing between successive skips from a held navigation key.
+    const SKIP_THROTTLE: Duration = Duration::from_millis(500);
+    let now = Instant::now();
+    if repeat && app.last_skip.is_some_and(|t| now.duration_since(t) < SKIP_THROTTLE) {
+        return false;
+    }
+    app.last_skip = Some(now);
+    true
+}
+
 /// Translates a key press into a message, or `None` for keys we don't bind. `repeat` marks
-/// auto-repeat from a held key: seeking honors it (hold an arrow to scrub), one-shot actions
-/// don't (holding Space must not machine-gun play/pause). Any of Ctrl/Alt/Logo suppresses the
-/// binding, so window-manager and future chorded shortcuts pass through untouched.
+/// auto-repeat from a held key: seeking and track skipping honor it (hold to scrub, or to walk the
+/// queue -- the latter rate-limited in the handler), while one-shot actions don't (holding Space
+/// must not machine-gun play/pause). Any of Ctrl/Alt/Logo suppresses the binding, so
+/// window-manager and future chorded shortcuts pass through untouched.
 ///
-/// Bindings: Space toggles play/pause; Left/Right seek by [`SEEK_STEP`]; Shift+Left/Right step to
-/// the previous/next track; Home restarts the track (or steps back near the start); End steps to
-/// the next track; Escape returns to the library.
+/// Bindings: Space toggles play/pause; Left/Right seek by [`SEEK_STEP`]; Home restarts the track
+/// (or steps back near the start); End steps to the next track; Escape returns to the library.
 pub fn key_to_msg(key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
@@ -304,11 +332,9 @@ pub fn key_to_msg(key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     match (key, modifiers.shift()) {
         (Key::Named(Named::ArrowLeft), false) => Some(Msg::Seek(Seek::By(SeekDirection::Backward, SEEK_STEP))),
         (Key::Named(Named::ArrowRight), false) => Some(Msg::Seek(Seek::By(SeekDirection::Forward, SEEK_STEP))),
-        (Key::Named(Named::ArrowLeft), true) => one_shot(Msg::Prev),
-        (Key::Named(Named::ArrowRight), true) => one_shot(Msg::Next),
         (Key::Named(Named::Space), _) => one_shot(Msg::Toggle),
-        (Key::Named(Named::Home), _) => one_shot(Msg::PrevOrRestart),
-        (Key::Named(Named::End), _) => one_shot(Msg::Next),
+        (Key::Named(Named::Home), _) => Some(Msg::PrevOrRestart { repeat }),
+        (Key::Named(Named::End), _) => Some(Msg::Next { repeat }),
         (Key::Named(Named::Escape), _) => one_shot(Msg::Show(View::Library)),
         _ => None,
     }
