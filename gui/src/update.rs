@@ -142,6 +142,10 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 if app.pos.abs_diff(app.media_pos) >= Duration::from_secs(1) {
                     push_media_playback(app);
                 }
+                // The position stream is our heartbeat: it flushes any metadata a burst of track
+                // changes left pending, so the track we settle on reaches MPRIS -- not just the
+                // first of the burst. A no-op unless something is actually dirty.
+                flush_meta(app);
             }
             player::Event::PlayState(state) => {
                 // The engine re-sends the state on every track start, unchanged; only push when
@@ -150,6 +154,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                     app.play_state = state;
                     push_media_playback(app);
                 }
+                flush_meta(app);
             }
             player::Event::QueueEnded => {
                 app.play_state = player::PlayState::Paused;
@@ -158,6 +163,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.pos = app.len.unwrap_or(Duration::ZERO);
                 app.pending_seek = None;
                 app.media.set_playback(MediaPlayback::Stopped);
+                flush_meta(app);
             }
         },
         Msg::Media(event) => match event {
