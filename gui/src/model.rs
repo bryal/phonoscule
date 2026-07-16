@@ -169,26 +169,17 @@ pub fn current_glow(app: &App) -> GlowState {
     GlowState { color, center: glow_center(current_album_id(app)) }
 }
 
-/// The glow to render this frame: [`glow_from`](App::glow_from) morphing into
-/// [`glow_to`](App::glow_to) by progress [`glow_p`](App::glow_p). Rather than a straight fade
-/// (which would slide one glow bodily across the screen), the single glow blends between the two
-/// albums by animating several properties at once: it glides from the old position to the new,
-/// and its color desaturates and dims to a dark grey at the midpoint before re-saturating and
-/// brightening into the new color -- reading as a cross-fade of two glows.
+/// Blend between two glow states by progress `p` (0 = `from`, 1 = `to`): the center glides from one position to the
+/// other while the color cross-fades, both smoothstep-eased. The color is interpolated in linear light so the midpoint
+/// stays correctly bright, rather than dipping dark the way a gamma-space lerp of the sRGB values would.
 pub fn glow_blend(from: GlowState, to: GlowState, p: f32) -> GlowState {
-    /// The per-channel level the glow blends towards at the midpoint: a dim neutral grey -- both
-    /// desaturated and dimmed, but bright enough to stay clearly visible so the glow reads as
-    /// travelling and recolouring rather than blinking out (which would look like a teleport).
-    const MIDPOINT: f32 = 0.35;
     let ease = p * p * (3.0 - 2.0 * p); // smoothstep
     let center = (from.center.0 + (to.center.0 - from.center.0) * ease, from.center.1 + (to.center.1 - from.center.1) * ease);
-    // `m` is 1 at the ends and 0 at the midpoint: the endpoint color blends towards the grey
-    // midpoint as `m` falls. The base color switches from -> to at the midpoint, where it is
-    // fully grey, so the hue swap is unseen.
-    let m = (2.0 * p - 1.0).abs();
-    let base = if p < 0.5 { from.color } else { to.color };
-    let channel = |c: f32| c * m + MIDPOINT * (1.0 - m);
-    GlowState { color: iced::Color { r: channel(base.r), g: channel(base.g), b: channel(base.b), a: 1.0 }, center }
+    let from_c = from.color.into_linear();
+    let to_c = to.color.into_linear();
+    let [r, g, b] = std::array::from_fn(|i| (1.0 - ease) * from_c[i] + ease * to_c[i]);
+    let color = iced::Color::from_linear_rgba(r, g, b, 1.0);
+    GlowState { color, center }
 }
 
 /// Whether the backdrop glow is mid-transition (or needs to start one), i.e. not settled on the

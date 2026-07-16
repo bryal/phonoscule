@@ -178,7 +178,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // glow_p (see glow_blend). Start a fresh blend whenever the target changes (album
             // change, or a cover finishing loading), freezing the current on-screen glow as the
             // new starting point so an interruption mid-blend continues smoothly.
-            const GLOW_RATE: f32 = 2.5; // blends per second (~0.4s per transition)
+            const GLOW_RATE: f32 = 1.5; // blends per second (1/x s per transition)
             let target = current_glow(app);
             if current_album_id(app) != app.glow_album || target != app.glow_to {
                 app.glow_from = glow_blend(app.glow_from, app.glow_to, app.glow_p);

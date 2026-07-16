@@ -15,7 +15,7 @@ pub fn glow_uniform(color: iced::Color, center: (f32, f32), viewport: &Viewport)
     /// The glow's radius, as a fraction of the viewport's larger dimension.
     const RADIUS: f32 = 0.80;
     /// Peak brightness of the glow.
-    const INTENSITY: f32 = 0.30;
+    const INTENSITY: f32 = 0.25;
 
     let size = viewport.physical_size();
     let (w, h) = (size.width as f32, size.height as f32);
