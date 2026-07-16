@@ -13,7 +13,7 @@
 
 use embedded_io_adapters::futures_03::FromFutures;
 use embedded_io_async::{Read as _, Seek as _, SeekFrom};
-use futures::StreamExt;
+use futures::{StreamExt, stream};
 use phonoscule::{
     io::Skippable,
     metadata::{Metadata, StaticMetadata},
@@ -109,12 +109,12 @@ const COVER_SIZE: u32 = 512;
 /// (or early, if the scan task fails); dropping it cancels the scan.
 pub fn scan(options: ScanOptions) -> impl Stream<Item = ScanEvent> + Send {
     let (tx, rx) = channel::bounded(64);
-    // Drive the scan on its own thread with a thread-local `block_on` rather than the global
-    // executor -- keeping the heavy (and no-longer-`Send`-constrained) scanning off the GUI's
-    // shared executor. The thread exits when the scan finishes, or early when the receiver is
-    // dropped and the sends start failing (a cancelled scan).
-    std::thread::spawn(move || smol::block_on(drive(options, tx)));
-    rx
+    // `drive` fans two concurrent phases into `tx`. Rather than spawn it, fold it into the
+    // returned stream: a non-yielding "driver" (running `drive` to completion) selected with the
+    // receiver. iced then drives the whole scan on its own executor whenever it polls this stream
+    // (via `Task::run`) -- no task or thread of ours -- and dropping the stream cancels the scan.
+    let driver = stream::once(drive(options, tx)).filter_map(|()| async { None::<ScanEvent> }).boxed();
+    stream::select(driver, rx)
 }
 
 /// How many directories have their tags read, and how many covers are decoded, at once.
