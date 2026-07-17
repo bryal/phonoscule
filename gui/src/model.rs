@@ -6,6 +6,7 @@ use iced::Task;
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::{media, player, watcher};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,7 +15,24 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Library,
-    NowPlaying,
+    Player,
+}
+
+impl View {
+    /// The next/previous view in tab order, wrapping around -- what Tab / Shift-Tab select.
+    pub fn next(self) -> Self {
+        match self {
+            View::Library => View::Player,
+            View::Player => View::Library,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            View::Library => View::Player,
+            View::Player => View::Library,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +62,14 @@ pub struct App {
     pub scan: ScanState,
     pub albums: Vec<Album>,
     pub view: View,
+    /// The album highlighted in the library grid, as an index into `albums`. Clicking a cover or
+    /// arrow-key navigation moves it; Space queues it, Ctrl+Space plays it. Clamped against
+    /// `albums.len()` on use, since a rescan can shrink the list under it.
+    pub selected: usize,
+    /// Columns the library grid last laid out. The count depends on the window width and so is
+    /// only known at layout time; the view caches it here (see `library_view`) for keyboard
+    /// up/down navigation, which runs in `update` with no layout to consult.
+    pub grid_cols: Cell<usize>,
     pub queue: Vec<QueueItem>,
     pub current: usize,
     pub play_state: player::PlayState,
@@ -189,6 +215,8 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             scan: ScanState::Scanning,
             albums: vec![],
             view: View::Library,
+            selected: 0,
+            grid_cols: Cell::new(1),
             queue: vec![],
             current: 0,
             play_state: player::PlayState::Paused,

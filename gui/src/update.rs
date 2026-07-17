@@ -23,6 +23,15 @@ pub enum Msg {
     /// moment between hover and click and the cover is ready (or nearly) by the time the flow shows
     /// it. Idempotent -- a hover that never becomes a click just ages back out of the LRU.
     PreloadAlbum(usize),
+    /// Highlight an album in the library grid (a cover click, which -- unlike the play bubble --
+    /// only selects; playing is Ctrl+Space or the bubble).
+    SelectAlbum(usize),
+    /// Move the library grid's selection one step in a direction (arrow keys).
+    SelectMove(Dir),
+    /// Play the selected album, replacing the queue with it (Ctrl+Space); as its play bubble does.
+    PlaySelected,
+    /// Append the selected album to the queue (Space); as its enqueue bubble does.
+    QueueSelected,
     Player(player::Event),
     Media(media::Control),
     Toggle,
@@ -66,6 +75,15 @@ pub enum Seek {
 pub enum SeekDir {
     Forward,
     Backward,
+}
+
+/// A direction to move the library grid's selection.
+#[derive(Debug, Clone, Copy)]
+pub enum Dir {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
@@ -112,19 +130,12 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         },
         Msg::Show(v) => app.view = v,
-        Msg::PlayAlbum(ix) => {
-            let items = queue_items(&app.albums[ix]);
-            app.send(player::Cmd::SetQueue { tracks: items.iter().map(|i| i.path.clone()).collect(), start: 0 });
-            app.queue = items;
-            app.current = 0;
-            app.anim_pos = 0.0;
-            app.view = View::NowPlaying;
-        }
-        Msg::QueueAlbum(ix) => {
-            let items = queue_items(&app.albums[ix]);
-            app.send(player::Cmd::Append { tracks: items.iter().map(|i| i.path.clone()).collect() });
-            app.queue.extend(items);
-        }
+        Msg::PlayAlbum(ix) => play_album(app, ix),
+        Msg::QueueAlbum(ix) => queue_album(app, ix),
+        Msg::PlaySelected => play_album(app, app.selected),
+        Msg::QueueSelected => queue_album(app, app.selected),
+        Msg::SelectAlbum(ix) => app.selected = ix,
+        Msg::SelectMove(dir) => move_selection(app, dir),
         Msg::PreloadAlbum(ix) => {
             if let Some((id, file)) = app.albums.get(ix).and_then(|a| a.cover.as_ref()).map(|c| (c.id, c.file.clone())) {
                 return app.hires.query(id, file);
@@ -269,6 +280,59 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
     Task::none()
 }
 
+/// Replaces the queue with the album at `ix` and switches to the player view. No-op if the index
+/// is out of range -- a rescan can shrink the list under a stale selection.
+fn play_album(app: &mut App, ix: usize) {
+    let Some(album) = app.albums.get(ix) else { return };
+    let items = queue_items(album);
+    app.send(player::Cmd::SetQueue { tracks: items.iter().map(|i| i.path.clone()).collect(), start: 0 });
+    app.queue = items;
+    app.current = 0;
+    app.anim_pos = 0.0;
+    app.view = View::Player;
+}
+
+/// Appends the album at `ix` to the queue. No-op if the index is out of range.
+fn queue_album(app: &mut App, ix: usize) {
+    let Some(album) = app.albums.get(ix) else { return };
+    let items = queue_items(album);
+    app.send(player::Cmd::Append { tracks: items.iter().map(|i| i.path.clone()).collect() });
+    app.queue.extend(items);
+}
+
+/// Moves the library grid selection one cell in `dir`, clamped to the album list and the grid's
+/// current column count (cached by the view).
+fn move_selection(app: &mut App, dir: Dir) {
+    let n = app.albums.len();
+    if n == 0 {
+        return;
+    }
+    let cols = app.grid_cols.get().max(1);
+    app.selected = next_selection(app.selected.min(n - 1), n, cols, dir);
+}
+
+/// The grid index one step from `cur` in `dir`, given `n` albums in `cols` columns. Up/Down move by
+/// a row; Left/Right by one album, crossing row boundaries. Up from the top row and Down from the
+/// last row stay put; Down into a shorter final row that has no cell in this column lands on the
+/// last album. Assumes `n > 0`, `cols >= 1`, and `cur < n`.
+fn next_selection(cur: usize, n: usize, cols: usize, dir: Dir) -> usize {
+    match dir {
+        Dir::Left => cur.saturating_sub(1),
+        Dir::Right => (cur + 1).min(n - 1),
+        Dir::Up => cur.checked_sub(cols).unwrap_or(cur),
+        Dir::Down => {
+            let below = cur + cols;
+            if below < n {
+                below
+            } else if cur / cols < (n - 1) / cols {
+                n - 1
+            } else {
+                cur
+            }
+        }
+    }
+}
+
 /// Options for a periodic re-scan: skip re-decoding all the cover art we already hold.
 fn rescan_options(app: &App) -> library::ScanOptions {
     library::ScanOptions {
@@ -379,28 +443,86 @@ fn skip_interval(held: Duration) -> Duration {
     Duration::from_secs(1) / per_sec
 }
 
-/// Translates a key press into a message, or `None` for keys we don't bind. `repeat` marks
-/// auto-repeat from a held key: seeking and track skipping honor it (hold to scrub, or to walk the
-/// queue -- the latter rate-limited in the handler), while one-shot actions don't (holding Space
-/// must not machine-gun play/pause). Any of Ctrl/Alt/Logo suppresses the binding, so
-/// window-manager and future chorded shortcuts pass through untouched.
+/// Translates a key press into a message for the current `view`, or `None` for keys we don't bind.
+/// `repeat` marks auto-repeat from a held key: continuous actions honor it (seek/scrub, walking the
+/// queue, moving the grid selection), while one-shot ones don't (holding Space must not machine-gun
+/// play/pause or re-queue an album every frame). Alt/Logo always pass through to the window manager.
 ///
-/// Bindings: Space toggles play/pause; Left/Right seek by [`SEEK_STEP`]; Home restarts the track
-/// (or steps back near the start); End steps to the next track; Escape returns to the library.
-pub fn key_to_msg(key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
+/// Global: Tab / Shift-Tab cycle the view tabs; `l`/`p` jump to Library/Player; Escape returns to
+/// the library. In the library: arrow keys move the grid selection, Space queues the selected
+/// album, Ctrl+Space plays it. In the player: Left/Right seek by [`SEEK_STEP`], Space toggles
+/// play/pause, Home restarts the track (or steps back near the start), End steps to the next track.
+pub fn key_to_msg(view: View, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
-    if modifiers.control() || modifiers.alt() || modifiers.logo() {
+    // Alt/Logo aren't bound anywhere; leave them (and their chords) to the window manager.
+    if modifiers.alt() || modifiers.logo() {
         return None;
     }
     let one_shot = |msg| if repeat { None } else { Some(msg) };
-    match (key, modifiers.shift()) {
-        (Key::Named(Named::ArrowLeft), false) => Some(Msg::Seek(Seek::By(SeekDir::Backward, SEEK_STEP))),
-        (Key::Named(Named::ArrowRight), false) => Some(Msg::Seek(Seek::By(SeekDir::Forward, SEEK_STEP))),
-        (Key::Named(Named::Space), _) => one_shot(Msg::Toggle),
-        (Key::Named(Named::Home), _) => Some(Msg::PrevOrRestart { repeat }),
-        (Key::Named(Named::End), _) => Some(Msg::Next { repeat }),
-        (Key::Named(Named::Escape), _) => one_shot(Msg::Show(View::Library)),
-        _ => None,
+
+    // View-independent navigation takes precedence over the per-view bindings below.
+    match (&key, modifiers.shift(), modifiers.control()) {
+        (Key::Named(Named::Tab), false, false) => return one_shot(Msg::Show(view.next())),
+        (Key::Named(Named::Tab), true, false) => return one_shot(Msg::Show(view.prev())),
+        (Key::Named(Named::Escape), _, false) => return one_shot(Msg::Show(View::Library)),
+        (Key::Character(c), false, false) if c.as_str() == "l" => return one_shot(Msg::Show(View::Library)),
+        (Key::Character(c), false, false) if c.as_str() == "p" => return one_shot(Msg::Show(View::Player)),
+        _ => {}
+    }
+
+    match view {
+        View::Library => match (key, modifiers.control()) {
+            (Key::Named(Named::ArrowLeft), false) => Some(Msg::SelectMove(Dir::Left)),
+            (Key::Named(Named::ArrowRight), false) => Some(Msg::SelectMove(Dir::Right)),
+            (Key::Named(Named::ArrowUp), false) => Some(Msg::SelectMove(Dir::Up)),
+            (Key::Named(Named::ArrowDown), false) => Some(Msg::SelectMove(Dir::Down)),
+            (Key::Named(Named::Space), false) => one_shot(Msg::QueueSelected),
+            (Key::Named(Named::Space), true) => one_shot(Msg::PlaySelected),
+            _ => None,
+        },
+        // The player view binds no Ctrl chords of its own.
+        View::Player if modifiers.control() => None,
+        View::Player => match key {
+            Key::Named(Named::ArrowLeft) => Some(Msg::Seek(Seek::By(SeekDir::Backward, SEEK_STEP))),
+            Key::Named(Named::ArrowRight) => Some(Msg::Seek(Seek::By(SeekDir::Forward, SEEK_STEP))),
+            Key::Named(Named::Space) => one_shot(Msg::Toggle),
+            Key::Named(Named::Home) => Some(Msg::PrevOrRestart { repeat }),
+            Key::Named(Named::End) => Some(Msg::Next { repeat }),
+            _ => None,
+        },
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    // A 13-album grid laid out 5 columns wide: rows [0..4], [5..9], [10..12] (a short last row).
+    const N: usize = 13;
+    const COLS: usize = 5;
+
+    #[test]
+    fn horizontal_selection_is_linear_and_clamped() {
+        assert_eq!(next_selection(0, N, COLS, Dir::Left), 0, "left saturates at the first album");
+        assert_eq!(next_selection(5, N, COLS, Dir::Left), 4, "left crosses the row boundary");
+        assert_eq!(next_selection(4, N, COLS, Dir::Right), 5, "right crosses the row boundary");
+        assert_eq!(next_selection(N - 1, N, COLS, Dir::Right), N - 1, "right clamps at the last album");
+    }
+
+    #[test]
+    fn vertical_selection_moves_by_a_row() {
+        assert_eq!(next_selection(2, N, COLS, Dir::Up), 2, "up from the top row stays put");
+        assert_eq!(next_selection(7, N, COLS, Dir::Up), 2, "up moves back one row, same column");
+        assert_eq!(next_selection(2, N, COLS, Dir::Down), 7, "down moves forward one row, same column");
+        assert_eq!(next_selection(7, N, COLS, Dir::Down), 12, "down into a full cell below");
+    }
+
+    #[test]
+    fn down_into_a_short_last_row_lands_on_the_last_album() {
+        // Album 9 (row 1, col 4) has no cell directly below -- the last row ends at 12 (col 2).
+        assert_eq!(next_selection(9, N, COLS, Dir::Down), N - 1, "no cell below: land on the last album");
+        // Album 11 is already in the last row: down stays put.
+        assert_eq!(next_selection(11, N, COLS, Dir::Down), 11, "down from the last row stays put");
     }
 }

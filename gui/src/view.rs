@@ -1,4 +1,4 @@
-//! Rendering the model: the library browser and the now-playing (Cover Flow) views.
+//! Rendering the model: the library browser and the player (Cover Flow) views.
 
 use crate::model::{App, ScanState, View, album_runs, glow_now, run_of};
 use crate::update::Msg;
@@ -37,12 +37,12 @@ pub fn style(_app: &App, theme: &Theme) -> iced::theme::Style {
 pub fn view(app: &App) -> Element<'_, Msg> {
     let body = match app.view {
         View::Library => library_view(app),
-        View::NowPlaying => now_playing_view(app),
+        View::Player => player_view(app),
     };
     // The nav tabs float over the top-left as bare shadowed text, so the body can use the full
     // window height (the covers may touch the top on a short window); the player floats over the
     // bottom. Both sit above the body, over the backdrop glow.
-    let tabs = row![tab(app, "Library", View::Library), tab(app, "Now Playing", View::NowPlaying)].spacing(20);
+    let tabs = row![tab(app, "Library", View::Library), tab(app, "Player", View::Player)].spacing(20);
     let tabs = container(tabs).padding(iced::Padding { top: 10.0, right: 12.0, bottom: 0.0, left: 12.0 });
     let glow = glow_now(app);
     let mut layers: Vec<Element<'_, Msg>> = vec![background::background(glow.color, glow.center).into(), body, tabs.into()];
@@ -146,6 +146,9 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         // doesn't leave a bare right margin.
         let width = size.width - 2.0 * PADDING;
         let cols = (((width + SPACING) / (CARD_SIDE + SPACING)) as usize).max(1);
+        // Cache the column count for keyboard up/down navigation, which runs in `update` and has no
+        // layout to consult (see `App::grid_cols`).
+        app.grid_cols.set(cols);
         let side = ((width - SPACING * (cols - 1) as f32) / cols as f32).floor().max(CARD_SIDE / 2.0);
         let mut grid = column![].spacing(24).padding(iced::Padding {
             // Clear the floating nav tabs at the top.
@@ -157,7 +160,8 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         for (row_ix, albums) in app.albums.chunks(cols).enumerate() {
             let mut r = row![].spacing(SPACING);
             for (col_ix, album) in albums.iter().enumerate() {
-                r = r.push(album_card(row_ix * cols + col_ix, album, side));
+                let ix = row_ix * cols + col_ix;
+                r = r.push(album_card(ix, album, side, ix == app.selected));
             }
             grid = grid.push(r);
         }
@@ -191,7 +195,7 @@ const PLAYER_BAR_HEIGHT: f32 = 152.0;
 /// Where the library grid starts, leaving the floating nav tabs clear with a gap below them.
 const TAB_BAR_HEIGHT: f32 = 60.0;
 
-fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
+fn album_card(ix: usize, album: &Album, side: f32, selected: bool) -> Element<'_, Msg> {
     let cover: Element<'_, Msg> = match &album.cover {
         Some(c) => image(c.handle.clone()).width(side).height(side).content_fit(iced::ContentFit::Cover).into(),
         None => container(text(&album.title).size(16).center())
@@ -214,7 +218,17 @@ fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
     )
     .align_right(Fill)
     .padding(8);
-    let cover = hover(button(cover).padding(0).style(button::text).on_press(Msg::PlayAlbum(ix)), bubbles);
+    // A left click only selects (playing is the play bubble or Ctrl+Space); a constant-width ring,
+    // transparent unless selected, marks the highlight without shifting the grid's layout.
+    let cover = hover(button(cover).padding(0).style(button::text).on_press(Msg::SelectAlbum(ix)), bubbles);
+    let cover = container(cover).style(move |_theme| container::Style {
+        border: iced::Border {
+            color: if selected { Color::WHITE } else { Color::TRANSPARENT },
+            width: 2.0,
+            radius: 3.0.into(),
+        },
+        ..container::Style::default()
+    });
     column![cover, text(&album.title).size(15), text(&album.artist).size(13).style(text::secondary),]
         .spacing(4)
         .width(side)
@@ -244,7 +258,7 @@ fn bubble(label: impl Into<Element<'static, Msg>>, msg: Msg) -> Element<'static,
         .into()
 }
 
-fn now_playing_view(app: &App) -> Element<'_, Msg> {
+fn player_view(app: &App) -> Element<'_, Msg> {
     if app.queue.is_empty() {
         return container(text("Play or queue an album from the library")).center(Fill).into();
     }

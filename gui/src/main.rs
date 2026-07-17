@@ -90,13 +90,15 @@ fn subscription(app: &App) -> Subscription<Msg> {
     let watch = watch_subscription(app);
     let rescan = iced::time::every(RESCAN_INTERVAL).map(|_| Msg::Rescan);
 
-    let animating = (app.view == View::NowPlaying && app.anim_pos != flow_target(app)) || glow_animating(app);
+    let animating = (app.view == View::Player && app.anim_pos != flow_target(app)) || glow_animating(app);
     let frames = if animating { iced::time::every(Duration::from_millis(16)).map(Msg::Frame) } else { Subscription::none() };
 
     // `listen` yields only keyboard events a focused widget ignored, so shortcuts never shadow a
-    // widget's own key handling (e.g. arrow keys while the seek bar has focus).
-    let keys = keyboard::listen().filter_map(|event| match event {
-        keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => key_to_msg(key, modifiers, repeat),
+    // widget's own key handling (e.g. arrow keys while the seek bar has focus). Bindings depend on
+    // the active view, captured here (Copy) so the closure stays 'static.
+    let view = app.view;
+    let keys = keyboard::listen().filter_map(move |event| match event {
+        keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => key_to_msg(view, key, modifiers, repeat),
         _ => None,
     });
 
