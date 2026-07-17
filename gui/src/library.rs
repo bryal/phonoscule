@@ -97,25 +97,26 @@ pub struct ScanOptions {
     pub covers_dir: Option<PathBuf>,
 }
 
-/// The default location of the tag cache: `$XDG_CACHE_HOME/phonoscule.library.json`, falling
-/// back to `~/.cache/phonoscule.library.json`.
+/// The default location of the tag cache: `<cache>/phonoscule/library.json`.
 pub fn default_cache_file() -> Option<PathBuf> {
-    Some(cache_home()?.join("phonoscule.library.json"))
+    Some(cache_dir()?.join("library.json"))
 }
 
-/// The default thumbnail cache directory. The edge size is in the name, so bumping [`THUMB`]
-/// starts a fresh directory rather than reading mismatched files.
+/// The default thumbnail cache directory: `<cache>/phonoscule/covers.<THUMB>`. The edge size is
+/// in the name, so bumping [`THUMB`] starts a fresh directory rather than reading mismatched files.
 pub fn default_covers_dir() -> Option<PathBuf> {
-    Some(cache_home()?.join(format!("phonoscule.covers.{THUMB}")))
+    Some(cache_dir()?.join(format!("covers.{THUMB}")))
 }
 
-/// `$XDG_CACHE_HOME`, falling back to `~/.cache`.
-fn cache_home() -> Option<PathBuf> {
-    std::env::var("XDG_CACHE_HOME")
+/// Our cache directory, gathering every persistent cache under one roof:
+/// `$XDG_CACHE_HOME/phonoscule`, falling back to `~/.cache/phonoscule`.
+fn cache_dir() -> Option<PathBuf> {
+    let home = std::env::var("XDG_CACHE_HOME")
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| Some(std::env::home_dir()?.join(".cache")))
+        .or_else(|| Some(std::env::home_dir()?.join(".cache")))?;
+    Some(home.join("phonoscule"))
 }
 
 /// Cover thumbnails are downscaled to fit this square (center-cropped, like the iPod did). Sized
