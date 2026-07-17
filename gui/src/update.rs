@@ -252,6 +252,7 @@ fn rescan_options(app: &App) -> library::ScanOptions {
         root: app.conf.music_dir.clone(),
         known_covers: app.albums.iter().filter_map(|a| a.cover.as_ref().map(|c| c.id)).collect(),
         cache_file: library::default_cache_file(),
+        covers_dir: library::default_covers_dir(),
     }
 }
 

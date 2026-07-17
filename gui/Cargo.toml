@@ -15,6 +15,9 @@ anyhow = "1.0"
 toml_edit = "0.25"
 shellexpand = "3.1"
 futures = "0.3.32"
+# iced's image `Handle` stores its pixels as a `bytes::Bytes` (a shared, ref-counted buffer); we
+# name the type to hand a cheap clone to the cover-flow GPU upload without copying the pixels.
+bytes = "1.12"
 smol                 = { workspace = true }
 embedded-io-adapters = { workspace = true }
 embedded-io-async    = { workspace = true }

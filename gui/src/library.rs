@@ -55,10 +55,12 @@ pub struct TrackInfo {
 pub struct CoverArt {
     /// Stable content-derived id (image file path + mtime).
     pub id: u64,
-    /// The (absolute) image file this was decoded from, e.g. for pointing other programs at it.
+    /// The (absolute) image file this was decoded from, e.g. for pointing other programs at it
+    /// and (later) decoding a higher-resolution version on demand.
     pub file: Arc<PathBuf>,
-    pub size: (u32, u32),
-    pub rgba: Arc<Vec<u8>>,
+    /// The thumbnail: [`THUMB`]²  RGBA, as an `Rgba` handle. The pixels live here (in the handle's
+    /// shared, ref-counted buffer), so this is the only in-memory copy -- the grid renders the
+    /// handle directly, and the cover flow reads the pixels back out of its `Rgba` variant.
     pub handle: iced::widget::image::Handle,
     /// The cover's most distinct color, e.g. for theming the surroundings after it.
     pub accent: iced::Color,
@@ -66,7 +68,7 @@ pub struct CoverArt {
 
 impl fmt::Debug for CoverArt {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("CoverArt").field("id", &self.id).field("file", &self.file).field("size", &self.size).finish()
+        f.debug_struct("CoverArt").field("id", &self.id).field("file", &self.file).finish()
     }
 }
 
@@ -89,21 +91,36 @@ pub struct ScanOptions {
     pub known_covers: HashSet<u64>,
     /// Where tags are cached between scans. `None` disables persistence.
     pub cache_file: Option<PathBuf>,
+    /// Directory holding the raw decoded thumbnails, keyed by cover id. Reading one back is a
+    /// plain file read -- no image decoding -- so warm launches are fast even in debug builds.
+    /// `None` disables the cache (always decode from source).
+    pub covers_dir: Option<PathBuf>,
 }
 
 /// The default location of the tag cache: `$XDG_CACHE_HOME/phonoscule.library.json`, falling
 /// back to `~/.cache/phonoscule.library.json`.
 pub fn default_cache_file() -> Option<PathBuf> {
-    let cache_home = std::env::var("XDG_CACHE_HOME")
+    Some(cache_home()?.join("phonoscule.library.json"))
+}
+
+/// The default thumbnail cache directory. The edge size is in the name, so bumping [`THUMB`]
+/// starts a fresh directory rather than reading mismatched files.
+pub fn default_covers_dir() -> Option<PathBuf> {
+    Some(cache_home()?.join(format!("phonoscule.covers.{THUMB}")))
+}
+
+/// `$XDG_CACHE_HOME`, falling back to `~/.cache`.
+fn cache_home() -> Option<PathBuf> {
+    std::env::var("XDG_CACHE_HOME")
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| Some(std::env::home_dir()?.join(".cache")))?;
-    Some(cache_home.join("phonoscule.library.json"))
+        .or_else(|| Some(std::env::home_dir()?.join(".cache")))
 }
 
-/// Cover art is downscaled to fit this square (center-cropped, like the iPod did).
-const COVER_SIZE: u32 = 512;
+/// Cover thumbnails are downscaled to fit this square (center-cropped, like the iPod did). Sized
+/// for the library grid; the now-playing view decodes a higher-resolution version on demand.
+pub const THUMB: u32 = 384;
 
 /// Scans `root`, streaming results as they are found. The stream ends after [`ScanEvent::Done`]
 /// (or early, if the scan task fails); dropping it cancels the scan.
@@ -216,17 +233,25 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
         drop(cover_tx); // lets the cover phase finish
     };
 
+    // Best-effort: make the thumbnail cache directory once, up front.
+    if let Some(dir) = &options.covers_dir {
+        let _ = smol::fs::create_dir_all(dir).await;
+    }
+    let covers_dir = options.covers_dir.as_deref();
     let covers_phase = async {
         // Pinned on the stack: the channel receiver (hence the whole chain) is not `Unpin`.
         let mut covers = std::pin::pin!(
             cover_rx
-                .map(|(ids, path, mtime)| async move { (ids, stable_id((&path, mtime)), load_cover(path).await) })
+                .map(|(ids, path, mtime)| {
+                    let id = stable_id((&path, mtime));
+                    async move { (ids, id, load_cover(path, covers_dir, id).await) }
+                })
                 .buffer_unordered(concurrency())
         );
-        while let Some((ids, cover_id, cover)) = covers.next().await {
-            let Some((file, size, rgba, accent)) = cover else { continue };
-            let handle = iced::widget::image::Handle::from_rgba(size.0, size.1, rgba.clone());
-            let art = CoverArt { id: cover_id, file: Arc::new(file), size, rgba: Arc::new(rgba), handle, accent };
+        while let Some((ids, id, cover)) = covers.next().await {
+            let Some((file, rgba, accent)) = cover else { continue };
+            let handle = iced::widget::image::Handle::from_rgba(THUMB, THUMB, rgba);
+            let art = CoverArt { id, file: Arc::new(file), handle, accent };
             if tx.send(ScanEvent::Cover { albums: ids, art }).await.is_err() {
                 return;
             }
@@ -358,36 +383,66 @@ async fn read_tags(path: &Path) -> Option<StaticMetadata> {
     }
 }
 
-/// Decodes a cover image, downscaled to [`COVER_SIZE`], on the blocking thread pool (so calls
-/// can proceed in parallel regardless of executor threads). Also returns the absolute path and
-/// the accent color.
-async fn load_cover(path: PathBuf) -> Option<(PathBuf, (u32, u32), Vec<u8>, iced::Color)> {
+/// Number of bytes in a cached thumbnail: [`THUMB`]²  RGB.
+const THUMB_RGB_LEN: usize = (THUMB * THUMB * 3) as usize;
+
+/// Loads a cover thumbnail as [`THUMB`]²  RGBA, plus its accent color and absolute path. Reads the
+/// raw cached thumbnail when present -- a plain file read, no image decoding, so this is fast even
+/// in debug builds. Otherwise decodes and downscales the source on the blocking pool (parallel
+/// regardless of executor threads) and caches the result for next time.
+async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64) -> Option<(PathBuf, Vec<u8>, iced::Color)> {
     // Absolute, so consumers (e.g. the MPRIS art URL) don't depend on our working directory.
     let file = smol::fs::canonicalize(path).await.ok()?;
-    smol::unblock(move || {
-        let img = match image::open(&file) {
-            Ok(img) => img,
-            Err(e) => {
-                log::warn!("could not decode cover {file:?}: {e}");
-                return None;
-            }
-        };
-        let rgba = img.resize_to_fill(COVER_SIZE, COVER_SIZE, image::imageops::FilterType::Triangle).into_rgba8();
-        let size = rgba.dimensions();
-        let rgba = rgba.into_raw();
-        let accent = accent_color(&rgba);
-        Some((file, size, rgba, accent))
-    })
-    .await
+    let cache_path = covers_dir.map(|dir| dir.join(format!("{id:016x}")));
+
+    if let Some(cache_path) = &cache_path
+        && let Ok(rgb) = smol::fs::read(cache_path).await
+        && rgb.len() == THUMB_RGB_LEN
+    {
+        let accent = accent_color(&rgb);
+        return Some((file, rgb_to_rgba(&rgb), accent));
+    }
+
+    let decode_file = file.clone();
+    let rgb = smol::unblock(move || decode_thumbnail(&decode_file)).await?;
+    if let Some(cache_path) = &cache_path
+        && let Err(e) = smol::fs::write(cache_path, &rgb).await
+    {
+        // Best-effort: a failed write just means we decode again next launch.
+        log::warn!("could not cache thumbnail {cache_path:?}: {e}");
+    }
+    let accent = accent_color(&rgb);
+    Some((file, rgb_to_rgba(&rgb), accent))
+}
+
+/// Decodes an image file and downscales it to [`THUMB`]²  RGB, center-cropped to a square.
+fn decode_thumbnail(file: &Path) -> Option<Vec<u8>> {
+    match image::open(file) {
+        Ok(img) => Some(img.resize_to_fill(THUMB, THUMB, image::imageops::FilterType::Triangle).into_rgb8().into_raw()),
+        Err(e) => {
+            log::warn!("could not decode cover {file:?}: {e}");
+            None
+        }
+    }
+}
+
+/// Expands packed RGB triplets to the RGBA quartets iced and wgpu want (fully opaque).
+fn rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
+    for px in rgb.chunks_exact(3) {
+        rgba.extend_from_slice(px);
+        rgba.push(u8::MAX);
+    }
+    rgba
 }
 
 /// Picks the image's most distinct color: dominant among saturated, reasonably bright pixels,
 /// falling back towards the most common color for near-grayscale images.
-pub fn accent_color(rgba: &[u8]) -> iced::Color {
+pub fn accent_color(rgb: &[u8]) -> iced::Color {
     // Histogram over a coarsely quantized (4 bits per channel) color space, accumulating exact
     // sums per bucket so the winner keeps its true shade.
     let mut buckets = vec![[0u64; 4]; 16 * 16 * 16];
-    for px in rgba.chunks_exact(4).step_by(7) {
+    for px in rgb.chunks_exact(3).step_by(7) {
         let (r, g, b) = (px[0] as u64, px[1] as u64, px[2] as u64);
         let bucket = &mut buckets[((r >> 4 << 8) | (g >> 4 << 4) | (b >> 4)) as usize];
         *bucket = [bucket[0] + 1, bucket[1] + r, bucket[2] + g, bucket[3] + b];
@@ -518,15 +573,15 @@ mod test {
     #[test]
     fn accent_prefers_the_saturated_color() {
         // Mostly dull gray, with a strong red minority: the red should win.
-        let mut rgba = Vec::new();
+        let mut rgb = Vec::new();
         for i in 0..10_000 {
             if i % 4 == 0 {
-                rgba.extend([200u8, 16, 16, 255]);
+                rgb.extend([200u8, 16, 16]);
             } else {
-                rgba.extend([90u8, 90, 90, 255]);
+                rgb.extend([90u8, 90, 90]);
             }
         }
-        let accent = accent_color(&rgba);
+        let accent = accent_color(&rgb);
         assert!(accent.r > 0.5 && accent.g < 0.2 && accent.b < 0.2, "{accent:?}");
     }
 
@@ -534,16 +589,16 @@ mod test {
     fn accent_ignores_a_dominant_bright_near_neutral() {
         // Mostly bright, slightly warm near-white (like skin filling a cover), with a modest
         // amount of vivid red spread over a few different shades: the red must still win.
-        let mut rgba = Vec::new();
+        let mut rgb = Vec::new();
         for i in 0..10_000 {
             match i % 20 {
-                0 => rgba.extend([204u8, 24, 24, 255]),
-                1 => rgba.extend([232u8, 40, 32, 255]),
-                2 => rgba.extend([176u8, 16, 40, 255]),
-                _ => rgba.extend([235u8, 225, 218, 255]),
+                0 => rgb.extend([204u8, 24, 24]),
+                1 => rgb.extend([232u8, 40, 32]),
+                2 => rgb.extend([176u8, 16, 40]),
+                _ => rgb.extend([235u8, 225, 218]),
             }
         }
-        let accent = accent_color(&rgba);
+        let accent = accent_color(&rgb);
         assert!(accent.r > 0.5 && accent.g < 0.3 && accent.b < 0.3, "{accent:?}");
     }
 
@@ -556,8 +611,12 @@ mod test {
             std::fs::write(root.join(dir).join("track.wav"), wav_bytes(title, "Artist", dir)).unwrap();
         }
         let cache_file = root.join("cache.json");
-        let options =
-            || ScanOptions { root: root.clone(), known_covers: Default::default(), cache_file: Some(cache_file.clone()) };
+        let options = || ScanOptions {
+            root: root.clone(),
+            known_covers: Default::default(),
+            cache_file: Some(cache_file.clone()),
+            covers_dir: None,
+        };
 
         // Initial scan populates the cache.
         let mut albums = Vec::new();

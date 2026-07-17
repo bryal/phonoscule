@@ -111,6 +111,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             root: conf.music_dir.clone(),
             known_covers: Default::default(),
             cache_file: library::default_cache_file(),
+            covers_dir: library::default_covers_dir(),
         };
         let scan = Task::run(library::scan(options), Msg::Library);
         // Run the media worker for the whole session, on iced's executor; it pushes to the OS and

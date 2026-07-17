@@ -13,7 +13,6 @@ use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle};
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
 
 /// Distance from the center (in item units) where covers start fading out...
 const FADE_START: f32 = 1.0;
@@ -111,8 +110,12 @@ impl<Message> shader::Program<Message> for CoverFlow<Message> {
         for (ix, d) in order {
             let cover = self.covers[ix].as_ref();
             let id = cover.map(|c| c.id).unwrap_or(PLACEHOLDER_ID);
-            if let Some(c) = cover {
-                uploads.push(Upload { id: c.id, size: c.size, rgba: c.rgba.clone() });
+            // The thumbnail pixels live in the cover's iced handle; clone the ref-counted buffer
+            // (cheap) so the upload owns it. Skipped once the texture is already cached.
+            if let Some(c) = cover
+                && let iced::widget::image::Handle::Rgba { width, height, pixels, .. } = &c.handle
+            {
+                uploads.push(Upload { id: c.id, size: (*width, *height), pixels: pixels.clone() });
             }
             let model = model(d);
             let brightness = 1.0 - 0.4 * d.abs().min(1.0);
@@ -226,7 +229,7 @@ struct Draw {
 struct Upload {
     id: u64,
     size: (u32, u32),
-    rgba: Arc<Vec<u8>>,
+    pixels: bytes::Bytes,
 }
 
 impl fmt::Debug for Upload {
@@ -448,7 +451,7 @@ impl Pipeline {
         if self.textures.contains_key(&upload.id) {
             return;
         }
-        let bind = make_texture_bind(device, queue, &self.texture_layout, upload.size, &upload.rgba, &self.sampler);
+        let bind = make_texture_bind(device, queue, &self.texture_layout, upload.size, &upload.pixels, &self.sampler);
         self.textures.insert(upload.id, bind);
     }
 }
