@@ -6,6 +6,7 @@ use iced::Task;
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::{media, player, watcher};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -60,6 +61,11 @@ pub struct App {
     /// When the current held Home/End press began, so its auto-repeat can accelerate the longer
     /// it's held (see `skip_interval`). Reset on each fresh press.
     pub hold_start: Option<Instant>,
+    /// High-resolution cover art (FULL² RGBA) for the now-playing cover flow, decoded on demand
+    /// in a window around `current` and evicted outside it (see `refresh_full_res`). Keyed by
+    /// cover id; a `None` entry marks a decode in flight. Bounded by the window, so -- unlike the
+    /// thumbnails -- it needn't scale with the library.
+    pub full_res: HashMap<u64, Option<bytes::Bytes>>,
     /// Animated Cover Flow position, chasing `current`.
     pub anim_pos: f32,
     /// The backdrop glow transitions between two album states: `glow_from` -> `glow_to` as
@@ -100,6 +106,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             pending_seek: None,
             last_skip: None,
             hold_start: None,
+            full_res: HashMap::new(),
             anim_pos: 0.0,
             glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
             glow_to: GlowState { color: iced::Color::BLACK, center: glow_center(0) },

@@ -123,6 +123,26 @@ fn cache_dir() -> Option<PathBuf> {
 /// for the library grid; the now-playing view decodes a higher-resolution version on demand.
 pub const THUMB: u32 = 320;
 
+/// The higher-resolution edge the now-playing cover flow decodes on demand (see [`full_res`]),
+/// for the focused covers when the window is run full-screen.
+pub const FULL: u32 = 1024;
+
+/// Decodes a cover to [`FULL`]²  RGBA, for the now-playing view. On-demand and uncached (unlike
+/// the thumbnails): a handful are loaded around the current track and dropped as it moves on.
+pub async fn full_res(file: PathBuf) -> Option<bytes::Bytes> {
+    smol::unblock(move || match image::open(&file) {
+        Ok(img) => {
+            let rgba = img.resize_to_fill(FULL, FULL, image::imageops::FilterType::Triangle).into_rgba8().into_raw();
+            Some(bytes::Bytes::from(rgba))
+        }
+        Err(e) => {
+            log::warn!("could not decode cover {file:?}: {e}");
+            None
+        }
+    })
+    .await
+}
+
 /// Scans `root`, streaming results as they are found. The stream ends after [`ScanEvent::Done`]
 /// (or early, if the scan task fails); dropping it cancels the scan.
 pub fn scan(options: ScanOptions) -> impl Stream<Item = ScanEvent> + Send {

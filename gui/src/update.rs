@@ -7,6 +7,9 @@ use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::{media, player};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -39,6 +42,12 @@ pub enum Msg {
     /// A relative or absolute seek, from the keyboard or the OS media keys (the seek *bar* uses
     /// SeekChanged/SeekReleased instead, since a drag is a stream of absolute fractions).
     Seek(Seek),
+    /// A high-resolution cover finished decoding (`None` if the decode failed), for the cover
+    /// flow's on-demand window (see `refresh_full_res`).
+    FullResLoaded {
+        id: u64,
+        pixels: Option<bytes::Bytes>,
+    },
     Frame(Instant),
 }
 
@@ -125,6 +134,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 // the whole idle gap (which would jump the animation far in a single step).
                 app.last_frame = Instant::now();
                 publish_media(app);
+                // The playing album moved, so slide the cover flow's high-res window with it.
+                return refresh_full_res(app);
             }
             player::Event::Progress(t) => {
                 // While a seek is settling, ignore reports until playback reaches (roughly) the
@@ -215,6 +226,17 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::Seek(seek) => do_seek(app, seek),
+        Msg::FullResLoaded { id, pixels } => {
+            // Store it, unless the window moved on and evicted the slot while it decoded.
+            match (app.full_res.get_mut(&id), pixels) {
+                (Some(slot @ None), Some(loaded)) => *slot = Some(loaded),
+                // A failed decode: forget the slot so the cover falls back to its thumbnail.
+                (Some(_), None) => {
+                    app.full_res.remove(&id);
+                }
+                _ => (),
+            }
+        }
         Msg::Frame(now) => {
             // Clamp to ~one frame: after an idle stretch (frames only run while animating) the
             // gap since the last frame would otherwise lurch every animation forward at once.
@@ -273,6 +295,67 @@ fn publish_media(app: &App) {
         player::PlayState::Paused => media::Playback::Paused,
     };
     app.media.publish(media::Snapshot { meta, state, position: app.pos });
+}
+
+/// Cover-flow high-res window thresholds, in album runs from the playing album:
+/// `(low-water, refill target, evict boundary)`. Asymmetric because skipping forward is more
+/// common than back; the small refill (a few covers per batch) keeps a burst of decodes and GPU
+/// uploads from spiking a frame; and the evict boundary sits outside the refill so bouncing back
+/// and forth doesn't repeatedly reload the same covers at the edge.
+struct Window {
+    low: usize,
+    refill: usize,
+    evict: usize,
+}
+const BEHIND: Window = Window { low: 8, refill: 11, evict: 15 };
+const AHEAD: Window = Window { low: 10, refill: 14, evict: 19 };
+
+/// Slides the cover flow's high-res window to the current album: evicts covers beyond the keep
+/// range, and -- when a side has drained below its low-water -- queues decodes to refill it.
+/// Returns the batch of decode tasks (empty if nothing to load).
+fn refresh_full_res(app: &mut App) -> Task<Msg> {
+    let runs = album_runs(&app.queue);
+    if runs.is_empty() {
+        app.full_res.clear();
+        return Task::none();
+    }
+    let center = run_of(&runs, app.current);
+    let last = runs.len() - 1;
+
+    // Owned snapshot of each run's cover (id + source file) within the widest range we touch (the
+    // evict boundary), so `full_res` can be mutated below without holding a borrow of the queue.
+    let lo = center.saturating_sub(BEHIND.evict);
+    let hi = (center + AHEAD.evict).min(last);
+    let window: Vec<(usize, u64, Arc<PathBuf>)> = (lo..=hi)
+        .filter_map(|r| {
+            let cover = app.queue.get(runs[r].start)?.cover.as_ref()?;
+            Some((r, cover.id, cover.file.clone()))
+        })
+        .collect();
+
+    // Evict everything outside the keep range.
+    let keep: HashSet<u64> = window.iter().map(|&(_, id, _)| id).collect();
+    app.full_res.retain(|id, _| keep.contains(id));
+
+    // Refill a side only once it has drained below its low-water (hysteresis: no reload on small
+    // moves), and only out to its refill target -- plus the current cover, always.
+    let behind = window.iter().filter(|&&(r, id, _)| r < center && app.full_res.contains_key(&id)).count();
+    let ahead = window.iter().filter(|&&(r, id, _)| r > center && app.full_res.contains_key(&id)).count();
+    let refill_behind = behind < BEHIND.low;
+    let refill_ahead = ahead < AHEAD.low;
+
+    let mut tasks = Vec::new();
+    for &(r, id, ref file) in &window {
+        let wanted = r == center
+            || (refill_behind && r < center && r + BEHIND.refill >= center)
+            || (refill_ahead && r > center && r <= center + AHEAD.refill);
+        if wanted && !app.full_res.contains_key(&id) {
+            app.full_res.insert(id, None);
+            let file = (**file).clone();
+            tasks.push(Task::perform(library::full_res(file), move |pixels| Msg::FullResLoaded { id, pixels }));
+        }
+    }
+    Task::batch(tasks)
 }
 
 /// How close a reported position must be to a pending seek's target to count as "arrived", after

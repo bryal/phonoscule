@@ -5,14 +5,28 @@
 //! and receives a message with the clicked item's queue index. Rendering uses no depth buffer;
 //! quads are drawn back-to-front (iced's custom-primitive render pass has no depth attachment).
 
-use crate::library::CoverArt;
+use crate::library::FULL;
 use glam::{Mat4, Vec3};
 use iced::mouse;
 use iced::wgpu;
 use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
+
+/// A cover to show in the flow: the always-resident thumbnail (the LOD placeholder) and, once the
+/// app has decoded it, the higher-resolution version to swap in (see `refresh_full_res`).
+pub struct FlowCover {
+    pub id: u64,
+    pub thumb: iced::widget::image::Handle,
+    pub full: Option<bytes::Bytes>,
+}
+
+/// GPU texture cache key: a cover id plus whether it's the high-res tier. Keying on the tier lets
+/// a cover's full-res upload coexist with (and be preferred over) its thumbnail, so the LOD swap
+/// is just "draw the full-res key once it exists".
+type TexKey = (u64, bool);
+const PLACEHOLDER_KEY: TexKey = (PLACEHOLDER_ID, false);
 
 /// Distance from the center (in item units) where covers start fading out...
 const FADE_START: f32 = 1.0;
@@ -38,7 +52,7 @@ const TILT: f32 = 1.1;
 const PLACEHOLDER_ID: u64 = u64::MAX;
 
 pub fn cover_flow<Message>(
-    covers: Vec<Option<CoverArt>>,
+    covers: Vec<Option<FlowCover>>,
     position: f32,
     glow: iced::Color,
     glow_center: (f32, f32),
@@ -51,7 +65,7 @@ pub fn cover_flow<Message>(
 }
 
 pub struct CoverFlow<Message> {
-    covers: Vec<Option<CoverArt>>,
+    covers: Vec<Option<FlowCover>>,
     position: f32,
     /// The backdrop's glow color and center: reflections fade towards the backdrop, so they must
     /// evaluate the same glow (see the shader).
@@ -108,14 +122,15 @@ impl<Message> shader::Program<Message> for CoverFlow<Message> {
         let mut draws = Vec::with_capacity(order.len());
         let mut uploads = Vec::new();
         for (ix, d) in order {
-            let cover = self.covers[ix].as_ref();
-            let id = cover.map(|c| c.id).unwrap_or(PLACEHOLDER_ID);
-            // The thumbnail pixels live in the cover's iced handle; clone the ref-counted buffer
-            // (cheap) so the upload owns it. Skipped once the texture is already cached.
-            if let Some(c) = cover
-                && let iced::widget::image::Handle::Rgba { width, height, pixels, .. } = &c.handle
-            {
-                uploads.push(Upload { id: c.id, size: (*width, *height), pixels: pixels.clone() });
+            // Prefer the high-res tier when it's loaded, else the thumbnail (LOD); an item with no
+            // cover at all falls back to the placeholder texture. Queue the pixels for upload (a
+            // cheap ref-counted clone) -- `prepare` skips it if that key is already on the GPU.
+            let (texture, upload) = match self.covers[ix].as_ref() {
+                Some(c) => cover_texture(c),
+                None => (PLACEHOLDER_KEY, None),
+            };
+            if let Some(upload) = upload {
+                uploads.push(upload);
             }
             let model = model(d);
             let brightness = 1.0 - 0.4 * d.abs().min(1.0);
@@ -125,7 +140,7 @@ impl<Message> shader::Program<Message> for CoverFlow<Message> {
             // happens in the fragment shader.
             instances.push(Instance::new(model * Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)), 1.0, brightness, fade));
             instances.push(Instance::new(model, 0.0, brightness, fade));
-            draws.push(Draw { texture: id, instances: first..first + 2 });
+            draws.push(Draw { texture, instances: first..first + 2 });
         }
         Flow { view_proj, glow: self.glow, glow_center: self.glow_center, instances, draws, uploads }
     }
@@ -222,19 +237,34 @@ impl Instance {
 
 #[derive(Debug)]
 struct Draw {
-    texture: u64,
+    texture: TexKey,
     instances: std::ops::Range<u32>,
 }
 
 struct Upload {
-    id: u64,
+    key: TexKey,
     size: (u32, u32),
     pixels: bytes::Bytes,
 }
 
 impl fmt::Debug for Upload {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Upload").field("id", &self.id).field("size", &self.size).finish()
+        f.debug_struct("Upload").field("key", &self.key).field("size", &self.size).finish()
+    }
+}
+
+/// Chooses which tier to draw for a cover -- high-res if loaded, else the thumbnail -- returning
+/// its texture key and the pixels to upload (a cheap ref-counted clone). `prepare` skips the
+/// upload if that key is already resident.
+fn cover_texture(cover: &FlowCover) -> (TexKey, Option<Upload>) {
+    if let Some(full) = &cover.full {
+        let key = (cover.id, true);
+        (key, Some(Upload { key, size: (FULL, FULL), pixels: full.clone() }))
+    } else if let iced::widget::image::Handle::Rgba { width, height, pixels, .. } = &cover.thumb {
+        let key = (cover.id, false);
+        (key, Some(Upload { key, size: (*width, *height), pixels: pixels.clone() }))
+    } else {
+        (PLACEHOLDER_KEY, None)
     }
 }
 
@@ -263,6 +293,10 @@ impl shader::Primitive for Flow {
         for upload in &self.uploads {
             pipeline.upload_texture(device, queue, upload);
         }
+        // Drop textures not drawn this frame, so VRAM tracks the visible carousel rather than
+        // every cover ever shown -- important now that full-res tiers are 4 MiB each.
+        let live: HashSet<TexKey> = self.draws.iter().map(|d| d.texture).collect();
+        pipeline.textures.retain(|key, _| live.contains(key));
         queue.write_buffer(&pipeline.uniforms, 0, bytemuck::cast_slice(&self.view_proj.to_cols_array()));
         // Same glow parameters as the backdrop, so the reflections' floor matches it exactly.
         let glow = crate::background::glow_uniform(self.glow, self.glow_center, viewport);
@@ -297,7 +331,7 @@ pub struct Pipeline {
     sampler: wgpu::Sampler,
     texture_layout: wgpu::BindGroupLayout,
     /// GPU texture cache, keyed by [`CoverArt::id`].
-    textures: HashMap<u64, wgpu::BindGroup>,
+    textures: HashMap<TexKey, wgpu::BindGroup>,
     placeholder: wgpu::BindGroup,
 }
 
@@ -448,11 +482,11 @@ impl shader::Pipeline for Pipeline {
 
 impl Pipeline {
     fn upload_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, upload: &Upload) {
-        if self.textures.contains_key(&upload.id) {
+        if self.textures.contains_key(&upload.key) {
             return;
         }
         let bind = make_texture_bind(device, queue, &self.texture_layout, upload.size, &upload.pixels, &self.sampler);
-        self.textures.insert(upload.id, bind);
+        self.textures.insert(upload.key, bind);
     }
 }
 
