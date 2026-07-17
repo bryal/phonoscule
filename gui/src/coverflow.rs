@@ -13,13 +13,15 @@ use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::sync::Arc;
 
 /// A cover to show in the flow: the always-resident thumbnail (the LOD placeholder) and, once the
-/// app has decoded it, the higher-resolution version to swap in (see `refresh_full_res`).
+/// app has decoded it, the higher-resolution version to swap in (see `ensure_hires`). The high-res
+/// bitmap is shared straight from the global cache (`Arc<[u8]>`), not copied.
 pub struct FlowCover {
     pub id: u64,
     pub thumb: iced::widget::image::Handle,
-    pub full: Option<bytes::Bytes>,
+    pub full: Option<Arc<[u8]>>,
 }
 
 /// GPU texture cache key: a cover id plus whether it's the high-res tier. Keying on the tier lets
@@ -244,12 +246,31 @@ struct Draw {
 struct Upload {
     key: TexKey,
     size: (u32, u32),
-    pixels: bytes::Bytes,
+    pixels: Pixels,
 }
 
 impl fmt::Debug for Upload {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Upload").field("key", &self.key).field("size", &self.size).finish()
+    }
+}
+
+/// The pixels for a texture upload, from whichever tier we're drawing. The thumbnail lives in
+/// iced's image `Handle` (which stores it as `bytes::Bytes`), so we hand that buffer straight to
+/// the GPU; the high-res tier is our own `Arc<[u8]>` from the global cache. Both clones are cheap
+/// ref-count bumps -- naming each in its own variant keeps a per-frame pixel copy off the table,
+/// and confines the `bytes` dependency to the one buffer iced hands us in that type.
+enum Pixels {
+    Thumb(bytes::Bytes),
+    Full(Arc<[u8]>),
+}
+
+impl Pixels {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Pixels::Thumb(pixels) => pixels,
+            Pixels::Full(pixels) => pixels,
+        }
     }
 }
 
@@ -259,10 +280,10 @@ impl fmt::Debug for Upload {
 fn cover_texture(cover: &FlowCover) -> (TexKey, Option<Upload>) {
     if let Some(full) = &cover.full {
         let key = (cover.id, true);
-        (key, Some(Upload { key, size: (FULL, FULL), pixels: full.clone() }))
+        (key, Some(Upload { key, size: (FULL, FULL), pixels: Pixels::Full(full.clone()) }))
     } else if let iced::widget::image::Handle::Rgba { width, height, pixels, .. } = &cover.thumb {
         let key = (cover.id, false);
-        (key, Some(Upload { key, size: (*width, *height), pixels: pixels.clone() }))
+        (key, Some(Upload { key, size: (*width, *height), pixels: Pixels::Thumb(pixels.clone()) }))
     } else {
         (PLACEHOLDER_KEY, None)
     }
@@ -294,7 +315,7 @@ impl shader::Primitive for Flow {
             pipeline.upload_texture(device, queue, upload);
         }
         // Drop textures not drawn this frame, so VRAM tracks the visible carousel rather than
-        // every cover ever shown -- important now that full-res tiers are 4 MiB each.
+        // every cover ever shown -- important since full-res tiers are ~3 MiB each.
         let live: HashSet<TexKey> = self.draws.iter().map(|d| d.texture).collect();
         pipeline.textures.retain(|key, _| live.contains(key));
         queue.write_buffer(&pipeline.uniforms, 0, bytemuck::cast_slice(&self.view_proj.to_cols_array()));
@@ -485,7 +506,7 @@ impl Pipeline {
         if self.textures.contains_key(&upload.key) {
             return;
         }
-        let bind = make_texture_bind(device, queue, &self.texture_layout, upload.size, &upload.pixels, &self.sampler);
+        let bind = make_texture_bind(device, queue, &self.texture_layout, upload.size, upload.pixels.as_slice(), &self.sampler);
         self.textures.insert(upload.key, bind);
     }
 }

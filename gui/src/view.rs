@@ -247,16 +247,16 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
     if app.queue.is_empty() {
         return container(text("Play or queue an album from the library")).center(Fill).into();
     }
-    // One FlowCover per album run: its resident thumbnail, plus the high-res version if the
-    // window has decoded it (see `refresh_full_res`). The thumbnail is always there, so the flow
-    // shows the cover immediately and sharpens once full-res arrives.
+    // One FlowCover per album run: its resident thumbnail, plus the high-res version if the global
+    // cache holds it (see `ensure_hires`). The thumbnail is always there, so the flow shows the
+    // cover immediately and sharpens once full-res arrives.
     let covers = album_runs(&app.queue)
         .iter()
         .map(|run| {
             app.queue[run.start].cover.as_ref().map(|c| FlowCover {
                 id: c.id,
                 thumb: c.handle.clone(),
-                full: app.full_res.get(&c.id).and_then(|slot| slot.clone()),
+                full: app.hires.get(c.id),
             })
         })
         .collect();

@@ -6,8 +6,9 @@ use iced::Task;
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::{media, player, watcher};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,11 +62,14 @@ pub struct App {
     /// When the current held Home/End press began, so its auto-repeat can accelerate the longer
     /// it's held (see `skip_interval`). Reset on each fresh press.
     pub hold_start: Option<Instant>,
-    /// High-resolution cover art (FULL² RGBA) for the now-playing cover flow, decoded on demand
-    /// in a window around `current` and evicted outside it (see `refresh_full_res`). Keyed by
-    /// cover id; a `None` entry marks a decode in flight. Bounded by the window, so -- unlike the
-    /// thumbnails -- it needn't scale with the library.
-    pub full_res: HashMap<u64, Option<bytes::Bytes>>,
+    /// High-resolution cover art (FULL² RGBA) for the now-playing cover flow. The flow keeps a
+    /// small window around `current` resident (see `ensure_hires`), but this cache outlives that
+    /// window: it retains recently-played covers under an LRU bound, so hopping back to an album
+    /// played moments ago shows its full-res cover instantly instead of decoding again.
+    pub hires: HiResCache,
+    /// Cover ids whose high-res decode is in flight, so `ensure_hires` doesn't launch a second one
+    /// for a cover already being loaded.
+    pub hires_pending: HashSet<u64>,
     /// Animated Cover Flow position, chasing `current`.
     pub anim_pos: f32,
     /// The backdrop glow transitions between two album states: `glow_from` -> `glow_to` as
@@ -84,6 +88,68 @@ pub struct App {
 pub struct GlowState {
     pub color: iced::Color,
     pub center: (f32, f32),
+}
+
+/// How many decoded high-res covers [`HiResCache`] keeps. At FULL² RGBA (~3 MiB each) this bounds
+/// its footprint near 240 MiB -- and only a session that plays that many *distinct* albums reaches
+/// it; a typical one holds far fewer. Enough to blanket a favorite genre or playlist, so bouncing
+/// among its albums never re-decodes a cover.
+pub const HIRES_CAP: usize = 80;
+
+/// A least-recently-used cache of decoded high-res covers (FULL² RGBA), shared across every album
+/// that plays. The cover flow ensures a small window around the current album is resident (see
+/// [`ensure_hires`](crate::update)); this cache holds those covers and a good many recently-played
+/// others, up to [`HIRES_CAP`], so revisiting an album is instant. Bitmaps are `Arc<[u8]>`, so a
+/// cached cover and the cover flow's copy of it are one allocation, not two.
+pub struct HiResCache {
+    /// `id -> (pixels, tick when last used)`. A monotonic tick, not a wall clock, orders entries
+    /// for eviction -- the update loop's state transitions are pure and have no clock to read.
+    entries: HashMap<u64, (Arc<[u8]>, u64)>,
+    tick: u64,
+}
+
+impl HiResCache {
+    pub fn new() -> Self {
+        HiResCache { entries: HashMap::new(), tick: 0 }
+    }
+
+    /// The cover for `id`, if resident, as a cheap ref-counted clone. Does not promote it: the view
+    /// calls this every frame, and promotion is [`touch`](Self::touch)'s job (once per album move).
+    pub fn get(&self, id: u64) -> Option<Arc<[u8]>> {
+        self.entries.get(&id).map(|(pixels, _)| pixels.clone())
+    }
+
+    /// Marks a resident cover as just-used (moving it to the front of the eviction order) and
+    /// reports whether it was resident at all -- which is how `ensure_hires` decides if a decode is
+    /// still needed. Keeping the on-screen window touched keeps eviction falling on colder covers.
+    pub fn touch(&mut self, id: u64) -> bool {
+        if let Some((_, used)) = self.entries.get_mut(&id) {
+            self.tick += 1;
+            *used = self.tick;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Inserts a freshly decoded cover, evicting the least-recently-used entries once over
+    /// [`HIRES_CAP`].
+    pub fn insert(&mut self, id: u64, pixels: Arc<[u8]>) {
+        self.tick += 1;
+        self.entries.insert(id, (pixels, self.tick));
+        while self.entries.len() > HIRES_CAP {
+            // The cap is small and inserts are infrequent (one per album entering the window), so a
+            // linear scan for the oldest beats maintaining a separate ordered index.
+            let Some((&oldest, _)) = self.entries.iter().min_by_key(|(_, (_, used))| *used) else { break };
+            self.entries.remove(&oldest);
+        }
+    }
+}
+
+impl Default for HiResCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
@@ -106,7 +172,8 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             pending_seek: None,
             last_skip: None,
             hold_start: None,
-            full_res: HashMap::new(),
+            hires: HiResCache::new(),
+            hires_pending: HashSet::new(),
             anim_pos: 0.0,
             glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
             glow_to: GlowState { color: iced::Color::BLACK, center: glow_center(0) },

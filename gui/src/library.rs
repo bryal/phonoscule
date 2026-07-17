@@ -120,20 +120,27 @@ fn cache_dir() -> Option<PathBuf> {
 }
 
 /// Cover thumbnails are downscaled to fit this square (center-cropped, like the iPod did). Sized
-/// for the library grid; the now-playing view decodes a higher-resolution version on demand.
-pub const THUMB: u32 = 320;
+/// for the library grid; the now-playing view decodes a higher-resolution version on demand. Also
+/// the LOD placeholder the cover flow shows until full-res arrives, so it's large enough that the
+/// sharpening swap is subtle even full-screen.
+pub const THUMB: u32 = 360;
 
-/// The higher-resolution edge the now-playing cover flow decodes on demand (see [`full_res`]),
-/// for the focused covers when the window is run full-screen.
-pub const FULL: u32 = 1024;
+/// The higher-resolution edge the now-playing cover flow decodes on demand (see [`full_res`]), for
+/// the focused covers when the window is run full-screen. Short of a true 4K-panel edge on
+/// purpose: it halves the per-cover memory and decode time versus 1024² while staying crisp enough
+/// that the difference isn't visible at the sizes the flow actually draws.
+pub const FULL: u32 = 900;
 
-/// Decodes a cover to [`FULL`]²  RGBA, for the now-playing view. On-demand and uncached (unlike
-/// the thumbnails): a handful are loaded around the current track and dropped as it moves on.
-pub async fn full_res(file: PathBuf) -> Option<bytes::Bytes> {
+/// Decodes a cover to [`FULL`]²  RGBA (~3 MiB), for the now-playing view. Decoded on demand around
+/// the current track and handed to the global high-res cache, which retains a bounded, LRU-managed
+/// set of them -- so it needn't scale with the library. Its own bitmap is an `Arc<[u8]>` (never
+/// shared with iced, unlike the thumbnails), so the cache and the cover flow's GPU upload reference
+/// the same allocation rather than copying.
+pub async fn full_res(file: PathBuf) -> Option<Arc<[u8]>> {
     smol::unblock(move || match image::open(&file) {
         Ok(img) => {
             let rgba = img.resize_to_fill(FULL, FULL, image::imageops::FilterType::Triangle).into_rgba8().into_raw();
-            Some(bytes::Bytes::from(rgba))
+            Some(Arc::<[u8]>::from(rgba))
         }
         Err(e) => {
             log::warn!("could not decode cover {file:?}: {e}");

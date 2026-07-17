@@ -15,8 +15,10 @@ anyhow = "1.0"
 toml_edit = "0.25"
 shellexpand = "3.1"
 futures = "0.3.32"
-# iced's image `Handle` stores its pixels as a `bytes::Bytes` (a shared, ref-counted buffer); we
-# name the type to hand a cheap clone to the cover-flow GPU upload without copying the pixels.
+# iced's image `Handle` stores its pixels as a `bytes::Bytes` (a shared, ref-counted buffer, which
+# iced already pulls in transitively); we name the type only to hand a cheap clone of the thumbnail
+# to the cover-flow GPU upload without copying. Our own high-res buffers use `Arc<[u8]>` instead, so
+# this stays confined to the one buffer iced hands us in this type.
 bytes = "1.12"
 smol                 = { workspace = true }
 embedded-io-adapters = { workspace = true }
