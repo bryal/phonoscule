@@ -21,7 +21,9 @@ embedded-io-async    = { workspace = true }
 log                  = { workspace = true, features = ["std"] }
 simple_logger        = { workspace = true }
 url = "2.5.8"
-souvlaki = "0.8.3"
+# A small bespoke MPRIS server built on zbus directly (see media.rs). zbus is already in the tree
+# (iced pulls it), and the default async-io runtime matches iced's smol executor.
+zbus = "5.17"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 notify = "8.2"

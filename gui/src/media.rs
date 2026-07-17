@@ -1,17 +1,20 @@
-//! OS media integration via souvlaki: MPRIS on Linux (media keys, `playerctl -p phonoscule`,
-//! desktop media widgets), SystemMediaTransportControls on Windows.
+//! OS media integration: a small bespoke MPRIS server on the D-Bus session bus, giving us media
+//! keys, `playerctl -p phonoscule`, and desktop media widgets. Built directly on zbus rather than
+//! via a wrapper crate, so updates reach the bus the instant we push them (no polling loop) and
+//! we implement only the subset of MPRIS we actually use. Linux / D-Bus only.
 //!
 //! The update loop [`publish`](Media::publish)es a [`Snapshot`] of the now-playing state on every
-//! change; a long-running [`MediaWorker`] coalesces bursts of them down to the latest before
-//! pushing to the OS. souvlaki's D-Bus service digests updates only ~1/s, so pushing every track
-//! flashed past while scrubbing the queue would just back its queue up (and lag, or stall
-//! shutdown). Coalescing lives entirely in the worker, so the update loop just fires and forgets.
+//! change; the [`MediaWorker`] coalesces bursts of them down to the latest before applying them to
+//! the served interface, so scrubbing the queue with a held key emits a handful of `properties
+//! changed` signals rather than one per track. Control requests from the bus (play/pause/next/...)
+//! arrive back as [`Control`] events on [`Media::events`].
 
 use smol::channel;
-use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig};
+use std::collections::HashMap;
 use std::time::Duration;
+use zbus::zvariant::{ObjectPath, Value};
 
-/// A snapshot of the now-playing state to show on the OS media integration.
+/// A snapshot of the now-playing state to reflect on the bus.
 #[derive(Clone, PartialEq)]
 pub struct Snapshot {
     /// The track's metadata, or `None` when nothing is loaded.
@@ -25,7 +28,7 @@ pub struct Meta {
     pub title: String,
     pub album: String,
     pub artist: String,
-    /// A `file://` URL to the cover image, for the OS to display.
+    /// A `file://` URL to the cover image, for the desktop to display.
     pub cover_url: Option<String>,
     pub duration: Option<Duration>,
 }
@@ -37,118 +40,290 @@ pub enum Playback {
     Stopped,
 }
 
+/// A control request from the bus (a media key, `playerctl`, or a widget button).
+#[derive(Debug, Clone)]
+pub enum Control {
+    Play,
+    Pause,
+    Toggle,
+    Stop,
+    Next,
+    Prev,
+    /// Relative seek by this signed microsecond offset (MPRIS `Seek`).
+    Seek(i64),
+    /// Absolute seek to this position (MPRIS `SetPosition`).
+    SetPosition(Duration),
+}
+
 /// Handle the update loop keeps: publishes state changes and receives control events.
 pub struct Media {
     updates: channel::Sender<Snapshot>,
-    pub events: channel::Receiver<MediaControlEvent>,
+    pub events: channel::Receiver<Control>,
     active: bool,
 }
 
 impl Media {
-    /// Whether OS media integration is actually up.
+    /// Whether the MPRIS service actually came up (a session bus was reachable).
     pub fn active(&self) -> bool {
         self.active
     }
 
     /// Publish the latest now-playing state. Never blocks (the channel is unbounded); the worker
-    /// coalesces a burst of these down to the latest before pushing (see [`MediaWorker::run`]).
+    /// coalesces a burst of these down to the latest before applying it (see [`MediaWorker::run`]).
     pub fn publish(&self, snapshot: Snapshot) {
         // Fails only once the worker is gone (app shutting down).
         let _ = self.updates.try_send(snapshot);
     }
 }
 
-/// Owns the OS media handle and pushes coalesced updates to it; [`run`](MediaWorker::run) is a
-/// long-running task. Kept separate from [`Media`] so it can be moved onto the executor while the
-/// handle stays with the update loop.
+/// Owns the served MPRIS connection and applies coalesced updates to it; [`run`](MediaWorker::run)
+/// is a long-running task. Kept separate from [`Media`] so it can move onto the executor.
 pub struct MediaWorker {
-    controls: Option<MediaControls>,
+    connection: Option<zbus::Connection>,
     updates: channel::Receiver<Snapshot>,
 }
 
 impl MediaWorker {
-    /// Coalesce bursts of published snapshots down to the latest and push it, no more than ~once a
-    /// second. Parks when idle; ends when the update channel closes (the app is shutting down).
+    /// Coalesce bursts of published snapshots down to the latest and apply it to the served
+    /// interface, emitting the change signals. Parks when idle; ends when the update channel
+    /// closes (the app is shutting down).
     pub async fn run(self) {
-        /// Minimum spacing between pushes: souvlaki's D-Bus service digests updates at about this
-        /// rate, so a faster push just backs up its queue.
-        const MIN_INTERVAL: Duration = Duration::from_secs(1);
+        /// Minimum spacing between applied updates. zbus emits in real time, so this isn't about
+        /// keeping up -- it just collapses the fastest scrub through the queue into a couple of
+        /// signals rather than one per track, while staying prompt.
+        const MIN_INTERVAL: Duration = Duration::from_millis(50);
 
-        let MediaWorker { controls, updates } = self;
-        let Some(mut controls) = controls else { return };
-        let mut pushed_meta: Option<Meta> = None;
+        let Some(connection) = self.connection else { return };
+        let iface = match connection.object_server().interface::<_, PlayerInterface>(OBJECT_PATH).await {
+            Ok(iface) => iface,
+            Err(e) => {
+                log::warn!("MPRIS player interface missing: {e}");
+                return;
+            }
+        };
+
+        let mut shown_meta: Option<Meta> = None;
+        let mut shown_state: Option<Playback> = None;
         loop {
             // Park until something changes, then take everything already queued behind it -- only
             // the last snapshot of a burst matters.
-            let Ok(mut snapshot) = updates.recv().await else { return };
-            while let Ok(next) = updates.try_recv() {
+            let Ok(mut snapshot) = self.updates.recv().await else { return };
+            while let Ok(next) = self.updates.try_recv() {
                 snapshot = next;
             }
 
-            // Metadata is comparatively expensive and rarely changes between position ticks, so
-            // push it only when it actually differs from what the OS already has.
-            if snapshot.meta != pushed_meta {
-                if let Some(meta) = &snapshot.meta {
-                    let metadata = MediaMetadata {
-                        title: Some(&meta.title),
-                        album: Some(&meta.album),
-                        artist: Some(&meta.artist),
-                        cover_url: meta.cover_url.as_deref(),
-                        duration: meta.duration,
-                    };
-                    if let Err(e) = controls.set_metadata(metadata) {
-                        log::warn!("failed to update media metadata: {e:?}");
-                    }
-                }
-                pushed_meta = snapshot.meta.clone();
+            let mut player = iface.get_mut().await;
+            player.state = snapshot.clone();
+            let emitter = iface.signal_emitter();
+            // Metadata and status are signalled only when they actually change (Metadata is
+            // comparatively heavy, and clients that redraw on it don't want a signal per position
+            // tick). Position is read on demand, not signalled, per the MPRIS spec.
+            if snapshot.meta != shown_meta {
+                let _ = player.metadata_changed(emitter).await;
+                shown_meta = snapshot.meta.clone();
             }
-
-            let progress = Some(MediaPosition(snapshot.position));
-            let playback = match snapshot.state {
-                Playback::Playing => MediaPlayback::Playing { progress },
-                Playback::Paused => MediaPlayback::Paused { progress },
-                Playback::Stopped => MediaPlayback::Stopped,
-            };
-            if let Err(e) = controls.set_playback(playback) {
-                log::warn!("failed to update media playback state: {e:?}");
+            if Some(snapshot.state) != shown_state {
+                let _ = player.playback_status_changed(emitter).await;
+                shown_state = Some(snapshot.state);
             }
+            drop(player);
 
-            // Hold off before the next push; anything arriving during the wait coalesces into it.
+            // Hold off before the next apply; anything arriving during the wait coalesces into it.
             smol::Timer::after(MIN_INTERVAL).await;
         }
     }
 }
 
+/// The single object every MPRIS player exposes its two interfaces at.
+const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
+
 pub fn start() -> (Media, MediaWorker) {
     start_named("Phonoscule", "phonoscule")
 }
 
-fn start_named(display_name: &str, dbus_name: &str) -> (Media, MediaWorker) {
+fn start_named(identity: &str, bus_name: &str) -> (Media, MediaWorker) {
+    let (update_tx, update_rx) = channel::unbounded();
     let (event_tx, event_rx) = channel::unbounded();
-    let controls = MediaControls::new(PlatformConfig {
-        display_name,
-        dbus_name,
-        // Only used on Windows, where the media controls need a window handle; plumbing one out
-        // of iced is a problem for the day this runs there.
-        hwnd: None,
-    })
-    .and_then(|mut controls| {
-        controls.attach(move |event| {
-            // Unbounded: only fails when the app is gone.
-            let _ = event_tx.try_send(event);
-        })?;
-        Ok(controls)
-    });
-    let controls = match controls {
-        Ok(controls) => Some(controls),
+    // Build the connection now (a session-bus socket is cheap to open) so `active` is known and
+    // the worker just has to push updates.
+    let connection = match smol::block_on(serve(identity, bus_name, event_tx)) {
+        Ok(connection) => Some(connection),
         Err(e) => {
-            log::warn!("no OS media integration: {e:?}");
+            log::warn!("no OS media integration: {e}");
             None
         }
     };
-    let active = controls.is_some();
-    let (update_tx, update_rx) = channel::unbounded();
-    (Media { updates: update_tx, events: event_rx, active }, MediaWorker { controls, updates: update_rx })
+    let active = connection.is_some();
+    (Media { updates: update_tx, events: event_rx, active }, MediaWorker { connection, updates: update_rx })
+}
+
+/// Registers the two MPRIS interfaces on the session bus under `org.mpris.MediaPlayer2.<bus_name>`.
+async fn serve(identity: &str, bus_name: &str, events: channel::Sender<Control>) -> zbus::Result<zbus::Connection> {
+    let root = RootInterface { identity: identity.to_string() };
+    let player = PlayerInterface { events, state: Snapshot { meta: None, state: Playback::Stopped, position: Duration::ZERO } };
+    zbus::connection::Builder::session()?
+        .name(format!("org.mpris.MediaPlayer2.{bus_name}"))?
+        .serve_at(OBJECT_PATH, root)?
+        .serve_at(OBJECT_PATH, player)?
+        .build()
+        .await
+}
+
+/// The `org.mpris.MediaPlayer2` root interface: identity and the (unsupported) app-level actions.
+struct RootInterface {
+    identity: String,
+}
+
+#[zbus::interface(name = "org.mpris.MediaPlayer2")]
+impl RootInterface {
+    fn raise(&self) {}
+    fn quit(&self) {}
+
+    #[zbus(property)]
+    fn can_quit(&self) -> bool {
+        false
+    }
+    #[zbus(property)]
+    fn can_raise(&self) -> bool {
+        false
+    }
+    #[zbus(property)]
+    fn has_track_list(&self) -> bool {
+        false
+    }
+    #[zbus(property)]
+    fn identity(&self) -> &str {
+        &self.identity
+    }
+    #[zbus(property)]
+    fn supported_uri_schemes(&self) -> Vec<String> {
+        vec![]
+    }
+    #[zbus(property)]
+    fn supported_mime_types(&self) -> Vec<String> {
+        vec![]
+    }
+}
+
+/// The `org.mpris.MediaPlayer2.Player` interface: the transport controls and now-playing state.
+struct PlayerInterface {
+    events: channel::Sender<Control>,
+    state: Snapshot,
+}
+
+impl PlayerInterface {
+    fn send(&self, control: Control) {
+        // Unbounded: only fails when the app is gone.
+        let _ = self.events.try_send(control);
+    }
+}
+
+#[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+impl PlayerInterface {
+    fn next(&self) {
+        self.send(Control::Next);
+    }
+    fn previous(&self) {
+        self.send(Control::Prev);
+    }
+    fn pause(&self) {
+        self.send(Control::Pause);
+    }
+    fn play_pause(&self) {
+        self.send(Control::Toggle);
+    }
+    fn stop(&self) {
+        self.send(Control::Stop);
+    }
+    fn play(&self) {
+        self.send(Control::Play);
+    }
+    fn seek(&self, offset: i64) {
+        self.send(Control::Seek(offset));
+    }
+    fn set_position(&self, _track: ObjectPath<'_>, position: i64) {
+        if let Ok(micros) = u64::try_from(position) {
+            self.send(Control::SetPosition(Duration::from_micros(micros)));
+        }
+    }
+    fn open_uri(&self, _uri: String) {}
+
+    #[zbus(property)]
+    fn playback_status(&self) -> &'static str {
+        match self.state.state {
+            Playback::Playing => "Playing",
+            Playback::Paused => "Paused",
+            Playback::Stopped => "Stopped",
+        }
+    }
+
+    #[zbus(property)]
+    fn metadata(&self) -> HashMap<&'static str, Value<'static>> {
+        let mut dict = HashMap::new();
+        // A valid, stable track id -- required for SetPosition; we only ever have one "track".
+        let trackid = ObjectPath::try_from("/org/mpris/MediaPlayer2/track").expect("valid path");
+        dict.insert("mpris:trackid", Value::new(trackid));
+        if let Some(meta) = &self.state.meta {
+            if let Some(duration) = meta.duration {
+                dict.insert("mpris:length", Value::new(duration.as_micros() as i64));
+            }
+            if let Some(url) = &meta.cover_url {
+                dict.insert("mpris:artUrl", Value::new(url.clone()));
+            }
+            dict.insert("xesam:title", Value::new(meta.title.clone()));
+            dict.insert("xesam:artist", Value::new(vec![meta.artist.clone()]));
+            dict.insert("xesam:album", Value::new(meta.album.clone()));
+        }
+        dict
+    }
+
+    #[zbus(property)]
+    fn position(&self) -> i64 {
+        i64::try_from(self.state.position.as_micros()).unwrap_or(0)
+    }
+
+    #[zbus(property)]
+    fn rate(&self) -> f64 {
+        1.0
+    }
+    #[zbus(property)]
+    fn minimum_rate(&self) -> f64 {
+        1.0
+    }
+    #[zbus(property)]
+    fn maximum_rate(&self) -> f64 {
+        1.0
+    }
+    #[zbus(property)]
+    fn volume(&self) -> f64 {
+        1.0
+    }
+    #[zbus(property)]
+    fn set_volume(&self, _volume: f64) {}
+    #[zbus(property)]
+    fn can_go_next(&self) -> bool {
+        true
+    }
+    #[zbus(property)]
+    fn can_go_previous(&self) -> bool {
+        true
+    }
+    #[zbus(property)]
+    fn can_play(&self) -> bool {
+        true
+    }
+    #[zbus(property)]
+    fn can_pause(&self) -> bool {
+        true
+    }
+    #[zbus(property)]
+    fn can_seek(&self) -> bool {
+        true
+    }
+    #[zbus(property)]
+    fn can_control(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -186,8 +361,8 @@ mod test {
             state: Playback::Playing,
             position: Duration::ZERO,
         });
-        // Give the worker and the service thread a moment to push and register.
-        std::thread::sleep(Duration::from_millis(500));
+        // Give the worker a moment to apply the update.
+        std::thread::sleep(Duration::from_millis(300));
 
         // What we published is visible on the bus...
         let status = Command::new("busctl").args(["--user", "get-property", &mpris, PATH, PLAYER, "PlaybackStatus"]).output();
@@ -207,6 +382,6 @@ mod test {
             smol::Timer::after(Duration::from_secs(3)).await;
             None
         }));
-        assert!(matches!(event, Some(MediaControlEvent::Toggle | MediaControlEvent::Pause)), "{event:?}");
+        assert!(matches!(event, Some(Control::Toggle)), "{event:?}");
     }
 }

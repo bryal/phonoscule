@@ -7,7 +7,6 @@ use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::{media, player};
-use souvlaki::{MediaControlEvent, MediaPosition, SeekDirection};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -19,7 +18,7 @@ pub enum Msg {
     PlayAlbum(usize),
     QueueAlbum(usize),
     Player(player::Event),
-    Media(MediaControlEvent),
+    Media(media::Control),
     Toggle,
     /// Step to the next track (End, and the on-screen button). `repeat` marks a held-key
     /// auto-repeat, which the handler rate-limits; a fresh press or button click passes `false`.
@@ -47,8 +46,14 @@ pub enum Msg {
 /// of the track.
 #[derive(Debug, Clone, Copy)]
 pub enum Seek {
-    By(SeekDirection, Duration),
+    By(SeekDir, Duration),
     ToStart,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SeekDir {
+    Forward,
+    Backward,
 }
 
 pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
@@ -148,28 +153,24 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.media.publish(media::Snapshot { meta: None, state: media::Playback::Stopped, position: app.pos });
             }
         },
-        Msg::Media(event) => match event {
-            MediaControlEvent::Play => match app.play_state {
+        Msg::Media(control) => match control {
+            media::Control::Play => match app.play_state {
                 player::PlayState::Paused => app.send(player::Cmd::TogglePlayPause),
                 player::PlayState::Playing => (),
             },
             // We have no stopped-with-a-track-open state; pausing is the closest thing.
-            MediaControlEvent::Pause | MediaControlEvent::Stop => match app.play_state {
+            media::Control::Pause | media::Control::Stop => match app.play_state {
                 player::PlayState::Playing => app.send(player::Cmd::TogglePlayPause),
                 player::PlayState::Paused => (),
             },
-            MediaControlEvent::Toggle => app.send(player::Cmd::TogglePlayPause),
-            MediaControlEvent::Next => app.send(player::Cmd::Next),
-            MediaControlEvent::Previous => app.send(player::Cmd::Prev),
-            MediaControlEvent::Seek(direction) => do_seek(app, Seek::By(direction, Duration::from_secs(5))),
-            MediaControlEvent::SeekBy(direction, dt) => do_seek(app, Seek::By(direction, dt)),
-            MediaControlEvent::SetPosition(MediaPosition(t)) => app.send(player::Cmd::Seek(t)),
-            // No volume control (yet): playback follows the system volume.
-            MediaControlEvent::SetVolume(_) => (),
-            MediaControlEvent::OpenUri(_) => (),
-            // TODO: raise the window (needs a runtime window task in iced).
-            MediaControlEvent::Raise => (),
-            MediaControlEvent::Quit => (),
+            media::Control::Toggle => app.send(player::Cmd::TogglePlayPause),
+            media::Control::Next => app.send(player::Cmd::Next),
+            media::Control::Prev => app.send(player::Cmd::Prev),
+            media::Control::Seek(offset) => {
+                let dir = if offset >= 0 { SeekDir::Forward } else { SeekDir::Backward };
+                do_seek(app, Seek::By(dir, Duration::from_micros(offset.unsigned_abs())));
+            }
+            media::Control::SetPosition(t) => app.send(player::Cmd::Seek(t)),
         },
         Msg::Toggle => app.send(player::Cmd::TogglePlayPause),
         Msg::Next { repeat } => {
@@ -283,8 +284,8 @@ const SEEK_SETTLE: Duration = Duration::from_secs(1);
 /// same round-trip-lagged position. Relative seeks saturate at zero and clamp to the track length.
 fn do_seek(app: &mut App, seek: Seek) {
     let target = match seek {
-        Seek::By(SeekDirection::Forward, dt) => app.pos.saturating_add(dt),
-        Seek::By(SeekDirection::Backward, dt) => app.pos.saturating_sub(dt),
+        Seek::By(SeekDir::Forward, dt) => app.pos.saturating_add(dt),
+        Seek::By(SeekDir::Backward, dt) => app.pos.saturating_sub(dt),
         Seek::ToStart => Duration::ZERO,
     };
     let target = app.len.map_or(target, |len| target.min(len));
@@ -338,8 +339,8 @@ pub fn key_to_msg(key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     }
     let one_shot = |msg| if repeat { None } else { Some(msg) };
     match (key, modifiers.shift()) {
-        (Key::Named(Named::ArrowLeft), false) => Some(Msg::Seek(Seek::By(SeekDirection::Backward, SEEK_STEP))),
-        (Key::Named(Named::ArrowRight), false) => Some(Msg::Seek(Seek::By(SeekDirection::Forward, SEEK_STEP))),
+        (Key::Named(Named::ArrowLeft), false) => Some(Msg::Seek(Seek::By(SeekDir::Backward, SEEK_STEP))),
+        (Key::Named(Named::ArrowRight), false) => Some(Msg::Seek(Seek::By(SeekDir::Forward, SEEK_STEP))),
         (Key::Named(Named::Space), _) => one_shot(Msg::Toggle),
         (Key::Named(Named::Home), _) => Some(Msg::PrevOrRestart { repeat }),
         (Key::Named(Named::End), _) => Some(Msg::Next { repeat }),
