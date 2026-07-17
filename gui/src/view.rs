@@ -196,12 +196,16 @@ const PLAYER_BAR_HEIGHT: f32 = 152.0;
 const TAB_BAR_HEIGHT: f32 = 60.0;
 
 fn album_card(ix: usize, album: &Album, side: f32, selected: bool) -> Element<'_, Msg> {
+    // The card sits inside a constant pad so the selection highlight can frame it; the cover shrinks
+    // to keep each card's footprint exactly `side`, so highlighting never reflows the grid.
+    const PAD: f32 = 6.0;
+    let inner = (side - 2.0 * PAD).max(1.0);
     let cover: Element<'_, Msg> = match &album.cover {
-        Some(c) => image(c.handle.clone()).width(side).height(side).content_fit(iced::ContentFit::Cover).into(),
+        Some(c) => image(c.handle.clone()).width(inner).height(inner).content_fit(iced::ContentFit::Cover).into(),
         None => container(text(&album.title).size(16).center())
-            .width(side)
-            .height(side)
-            .center(side)
+            .width(inner)
+            .height(inner)
+            .center(inner)
             .style(container::rounded_box)
             .into(),
     };
@@ -218,20 +222,20 @@ fn album_card(ix: usize, album: &Album, side: f32, selected: bool) -> Element<'_
     )
     .align_right(Fill)
     .padding(8);
-    // A left click only selects (playing is the play bubble or Ctrl+Space); a constant-width ring,
-    // transparent unless selected, marks the highlight without shifting the grid's layout.
+    // A left click only selects (playing is the play bubble or Ctrl+Space).
     let cover = hover(button(cover).padding(0).style(button::text).on_press(Msg::SelectAlbum(ix)), bubbles);
-    let cover = container(cover).style(move |_theme| container::Style {
-        border: iced::Border {
-            color: if selected { Color::WHITE } else { Color::TRANSPARENT },
-            width: 2.0,
-            radius: 3.0.into(),
-        },
-        ..container::Style::default()
-    });
-    column![cover, text(&album.title).size(15), text(&album.artist).size(13).style(text::secondary),]
+    let card = column![cover, text(&album.title).size(15), text(&album.artist).size(13).style(text::secondary)]
         .spacing(4)
-        .width(side)
+        .width(inner);
+    // The selected card gets a weak-primary backdrop; unselected cards render no background, so the
+    // constant pad is the only footprint either way.
+    container(card)
+        .padding(PAD)
+        .style(move |theme: &Theme| container::Style {
+            background: selected.then(|| iced::Background::Color(theme.extended_palette().primary.weak.color)),
+            border: iced::border::rounded(6.0),
+            ..container::Style::default()
+        })
         .into()
 }
 
