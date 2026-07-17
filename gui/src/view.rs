@@ -224,15 +224,20 @@ fn album_card(ix: usize, album: &Album, side: f32, selected: bool) -> Element<'_
     .padding(8);
     // A left click only selects (playing is the play bubble or Ctrl+Space).
     let cover = hover(button(cover).padding(0).style(button::text).on_press(Msg::SelectAlbum(ix)), bubbles);
-    let card = column![cover, text(&album.title).size(15), text(&album.artist).size(13).style(text::secondary)]
-        .spacing(4)
-        .width(inner);
-    // The selected card gets a weak-primary backdrop; unselected cards render no background, so the
-    // constant pad is the only footprint either way.
+    // Artist is dimmer than the title but not as faint as `text::secondary`, which the selection
+    // backdrop washes out (see below).
+    let artist = text(&album.artist)
+        .size(13)
+        .style(|theme: &Theme| text::Style { color: Some(Color { a: 0.8, ..theme.palette().text }) });
+    let card = column![cover, text(&album.title).size(15), artist].spacing(4).width(inner);
+    // The selected card gets a translucent weak-primary backdrop -- see-through enough that the
+    // black grid darkens it and the artist text keeps its contrast. Unselected cards draw no
+    // background, so the constant pad is the only footprint either way.
     container(card)
         .padding(PAD)
         .style(move |theme: &Theme| container::Style {
-            background: selected.then(|| iced::Background::Color(theme.extended_palette().primary.weak.color)),
+            background: selected
+                .then(|| iced::Background::Color(Color { a: 0.5, ..theme.extended_palette().primary.weak.color })),
             border: iced::border::rounded(6.0),
             ..container::Style::default()
         })
