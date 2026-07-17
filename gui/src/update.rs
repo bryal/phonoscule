@@ -47,6 +47,9 @@ pub enum Msg {
     PrevOrRestart {
         repeat: bool,
     },
+    /// Jump playback to the start of the previous / next album run in the queue (PageUp/PageDown).
+    PrevAlbum,
+    NextAlbum,
     CoverClicked(usize),
     TrackClicked(usize),
     SeekChanged(f32),
@@ -209,6 +212,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::Prev => app.send(player::Cmd::Prev),
+        Msg::PrevAlbum => jump_album(app, -1),
+        Msg::NextAlbum => jump_album(app, 1),
         Msg::PrevOrRestart { repeat } => {
             /// Below this, Home steps back a track rather than restarting the current one.
             const NEAR_START: Duration = Duration::from_millis(1500);
@@ -298,6 +303,16 @@ fn queue_album(app: &mut App, ix: usize) {
     let items = queue_items(album);
     app.send(player::Cmd::Append { tracks: items.iter().map(|i| i.path.clone()).collect() });
     app.queue.extend(items);
+}
+
+/// Jumps playback to the start of the album run `delta` steps from the current one (-1 previous,
+/// +1 next). No-op past either end of the queue.
+fn jump_album(app: &App, delta: isize) {
+    let runs = album_runs(&app.queue);
+    let target = run_of(&runs, app.current) as isize + delta;
+    if let Some(run) = usize::try_from(target).ok().and_then(|ix| runs.get(ix)) {
+        app.send(player::Cmd::JumpTo(run.start));
+    }
 }
 
 /// Moves the library grid selection one cell in `dir`, clamped to the album list and the grid's
@@ -451,7 +466,8 @@ fn skip_interval(held: Duration) -> Duration {
 /// Global: Tab / Shift-Tab cycle the view tabs; `l`/`p` jump to Library/Player; Escape returns to
 /// the library. In the library: arrow keys move the grid selection, Space queues the selected
 /// album, Ctrl+Space plays it. In the player: Left/Right seek by [`SEEK_STEP`], Space toggles
-/// play/pause, Home restarts the track (or steps back near the start), End steps to the next track.
+/// play/pause, Home restarts the track (or steps back near the start), End steps to the next track,
+/// PageUp/PageDown jump to the previous/next album in the queue.
 pub fn key_to_msg(view: View, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
@@ -489,6 +505,9 @@ pub fn key_to_msg(view: View, key: Key, modifiers: Modifiers, repeat: bool) -> O
             Key::Named(Named::Space) => one_shot(Msg::Toggle),
             Key::Named(Named::Home) => Some(Msg::PrevOrRestart { repeat }),
             Key::Named(Named::End) => Some(Msg::Next { repeat }),
+            // One album per press: a held key mustn't fly through the whole queue.
+            Key::Named(Named::PageUp) => one_shot(Msg::PrevAlbum),
+            Key::Named(Named::PageDown) => one_shot(Msg::NextAlbum),
             _ => None,
         },
     }
