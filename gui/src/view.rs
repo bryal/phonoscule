@@ -2,7 +2,7 @@
 
 use crate::model::{App, ScanState, View, album_runs, glow_now, run_of};
 use crate::update::Msg;
-use iced::widget::{button, column, container, hover, image, responsive, row, scrollable, slider, stack, text};
+use iced::widget::{button, column, container, hover, image, mouse_area, responsive, row, scrollable, slider, stack, text};
 use iced::{Center, Color, Element, Fill, Theme, color};
 use phonoscule_gui::background;
 use phonoscule_gui::coverflow::{FlowCover, cover_flow};
@@ -201,12 +201,13 @@ fn album_card(ix: usize, album: &Album, side: f32) -> Element<'_, Msg> {
             .style(container::rounded_box)
             .into(),
     };
-    // Action bubbles along the cover's right edge, shown only while hovering the cover.
+    // Action bubbles along the cover's right edge, shown only while hovering the cover. Entering
+    // the play bubble preloads the high-res cover, hiding its decode behind the hover-to-click gap.
     let play = text(FA_PLAY).font(font_awesome_solid()).size(12);
     let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(14);
     let bubbles = container(
         column![
-            bubble(container(play).center(Fill), Msg::PlayAlbum(ix)),
+            mouse_area(bubble(container(play).center(Fill), Msg::PlayAlbum(ix))).on_enter(Msg::PreloadAlbum(ix)),
             bubble(container(enqueue).center(Fill), Msg::QueueAlbum(ix)),
         ]
         .spacing(6),

@@ -18,6 +18,11 @@ pub enum Msg {
     Show(View),
     PlayAlbum(usize),
     QueueAlbum(usize),
+    /// Warm the global cache with an album's high-res cover ahead of a likely play: the library
+    /// grid fires this when the cursor enters an album's play bubble, so the decode overlaps the
+    /// moment between hover and click and the cover is ready (or nearly) by the time the flow shows
+    /// it. Idempotent -- a hover that never becomes a click just ages back out of the LRU.
+    PreloadAlbum(usize),
     Player(player::Event),
     Media(media::Control),
     Toggle,
@@ -119,6 +124,11 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             let items = queue_items(&app.albums[ix]);
             app.send(player::Cmd::Append { tracks: items.iter().map(|i| i.path.clone()).collect() });
             app.queue.extend(items);
+        }
+        Msg::PreloadAlbum(ix) => {
+            if let Some((id, file)) = app.albums.get(ix).and_then(|a| a.cover.as_ref()).map(|c| (c.id, c.file.clone())) {
+                return app.hires.query(id, file);
+            }
         }
         Msg::Player(event) => match event {
             player::Event::TrackStarted { ix, len } => {
