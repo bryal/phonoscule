@@ -120,7 +120,7 @@ fn cache_home() -> Option<PathBuf> {
 
 /// Cover thumbnails are downscaled to fit this square (center-cropped, like the iPod did). Sized
 /// for the library grid; the now-playing view decodes a higher-resolution version on demand.
-pub const THUMB: u32 = 384;
+pub const THUMB: u32 = 320;
 
 /// Scans `root`, streaming results as they are found. The stream ends after [`ScanEvent::Done`]
 /// (or early, if the scan task fails); dropping it cancels the scan.
