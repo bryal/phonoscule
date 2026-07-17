@@ -256,7 +256,7 @@ fn now_playing_view(app: &App) -> Element<'_, Msg> {
             app.queue[run.start].cover.as_ref().map(|c| FlowCover {
                 id: c.id,
                 thumb: c.handle.clone(),
-                full: app.hires.get(c.id),
+                full: app.hires.peek(c.id),
             })
         })
         .collect();

@@ -67,9 +67,6 @@ pub struct App {
     /// window: it retains recently-played covers under an LRU bound, so hopping back to an album
     /// played moments ago shows its full-res cover instantly instead of decoding again.
     pub hires: HiResCache,
-    /// Cover ids whose high-res decode is in flight, so `ensure_hires` doesn't launch a second one
-    /// for a cover already being loaded.
-    pub hires_pending: HashSet<u64>,
     /// Animated Cover Flow position, chasing `current`.
     pub anim_pos: f32,
     /// The backdrop glow transitions between two album states: `glow_from` -> `glow_to` as
@@ -97,44 +94,53 @@ pub struct GlowState {
 pub const HIRES_CAP: usize = 80;
 
 /// A least-recently-used cache of decoded high-res covers (FULL² RGBA), shared across every album
-/// that plays. The cover flow ensures a small window around the current album is resident (see
-/// [`ensure_hires`](crate::update)); this cache holds those covers and a good many recently-played
+/// that plays. Demand-driven in the style of a query-compilation cache: callers [`query`] a cover
+/// and the cache fetches-or-decodes behind the scenes, memoizing the result; there is no manual
+/// get-then-insert. It holds the covers around the current album and a good many recently-played
 /// others, up to [`HIRES_CAP`], so revisiting an album is instant. Bitmaps are `Arc<[u8]>`, so a
 /// cached cover and the cover flow's copy of it are one allocation, not two.
+///
+/// [`query`]: HiResCache::query
 pub struct HiResCache {
     /// `id -> (pixels, tick when last used)`. A monotonic tick, not a wall clock, orders entries
     /// for eviction -- the update loop's state transitions are pure and have no clock to read.
     entries: HashMap<u64, (Arc<[u8]>, u64)>,
+    /// Cover ids whose decode is in flight, so a repeated [`query`](Self::query) doesn't launch a
+    /// second decode of the same cover.
+    pending: HashSet<u64>,
     tick: u64,
 }
 
 impl HiResCache {
     pub fn new() -> Self {
-        HiResCache { entries: HashMap::new(), tick: 0 }
+        HiResCache { entries: HashMap::new(), pending: HashSet::new(), tick: 0 }
     }
 
-    /// The cover for `id`, if resident, as a cheap ref-counted clone. Does not promote it: the view
-    /// calls this every frame, and promotion is [`touch`](Self::touch)'s job (once per album move).
-    pub fn get(&self, id: u64) -> Option<Arc<[u8]>> {
-        self.entries.get(&id).map(|(pixels, _)| pixels.clone())
-    }
-
-    /// Marks a resident cover as just-used (moving it to the front of the eviction order) and
-    /// reports whether it was resident at all -- which is how `ensure_hires` decides if a decode is
-    /// still needed. Keeping the on-screen window touched keeps eviction falling on colder covers.
-    pub fn touch(&mut self, id: u64) -> bool {
-        if let Some((_, used)) = self.entries.get_mut(&id) {
-            self.tick += 1;
-            *used = self.tick;
-            true
-        } else {
-            false
+    /// Demands the high-res cover for `id`, decoded from `file`. Query-compilation style: if it's
+    /// already cached this just promotes it in the LRU (the view reads the pixels via [`peek`]);
+    /// otherwise the decode runs behind the scenes and lands back through [`complete`], which
+    /// memoizes it. Deduplicated -- a cover already resident or already decoding yields
+    /// [`Task::none`] -- so callers can query their whole window every album move without tracking
+    /// what's loaded or in flight.
+    ///
+    /// [`peek`]: HiResCache::peek
+    /// [`complete`]: HiResCache::complete
+    pub fn query(&mut self, id: u64, file: Arc<PathBuf>) -> Task<Msg> {
+        // Resident: promote and done. Already decoding: let the in-flight decode land. (`touch`
+        // short-circuits the `insert`, so a resident cover is never marked pending.)
+        if self.touch(id) || !self.pending.insert(id) {
+            return Task::none();
         }
+        let file = (*file).clone();
+        Task::perform(library::full_res(file), move |pixels| Msg::HiResLoaded { id, pixels })
     }
 
-    /// Inserts a freshly decoded cover, evicting the least-recently-used entries once over
-    /// [`HIRES_CAP`].
-    pub fn insert(&mut self, id: u64, pixels: Arc<[u8]>) {
+    /// Absorbs the result of a [`query`](Self::query)'s decode: clears the in-flight mark and, on
+    /// success, memoizes the cover (evicting the least-recently-used if now over [`HIRES_CAP`]). A
+    /// failed decode (`None`) simply leaves the cover on its thumbnail.
+    pub fn complete(&mut self, id: u64, pixels: Option<Arc<[u8]>>) {
+        self.pending.remove(&id);
+        let Some(pixels) = pixels else { return };
         self.tick += 1;
         self.entries.insert(id, (pixels, self.tick));
         while self.entries.len() > HIRES_CAP {
@@ -142,6 +148,26 @@ impl HiResCache {
             // linear scan for the oldest beats maintaining a separate ordered index.
             let Some((&oldest, _)) = self.entries.iter().min_by_key(|(_, (_, used))| *used) else { break };
             self.entries.remove(&oldest);
+        }
+    }
+
+    /// The cover for `id`, if resident, as a cheap ref-counted clone. A non-promoting probe for the
+    /// view, which calls it every frame and must render *something* (the thumbnail) when a cover
+    /// isn't loaded yet -- promotion is [`query`](Self::query)'s job, once per album move.
+    pub fn peek(&self, id: u64) -> Option<Arc<[u8]>> {
+        self.entries.get(&id).map(|(pixels, _)| pixels.clone())
+    }
+
+    /// Marks a resident cover as just-used, moving it to the front of the eviction order, and
+    /// reports whether it was resident at all. Keeping the on-screen window touched on every query
+    /// keeps eviction falling on colder, off-screen covers.
+    fn touch(&mut self, id: u64) -> bool {
+        if let Some((_, used)) = self.entries.get_mut(&id) {
+            self.tick += 1;
+            *used = self.tick;
+            true
+        } else {
+            false
         }
     }
 }
@@ -173,7 +199,6 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             last_skip: None,
             hold_start: None,
             hires: HiResCache::new(),
-            hires_pending: HashSet::new(),
             anim_pos: 0.0,
             glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
             glow_to: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
@@ -299,4 +324,57 @@ pub fn queue_items(album: &Album) -> Vec<QueueItem> {
             cover: album.cover.clone(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn pixels(byte: u8) -> Arc<[u8]> {
+        Arc::from(vec![byte])
+    }
+
+    /// The oldest entry is evicted when the cache overflows -- but a `touch` (as every on-screen
+    /// query does) makes an entry the freshest, so the window survives while colder covers go.
+    #[test]
+    fn evicts_the_least_recently_used() {
+        let mut cache = HiResCache::new();
+        for id in 0..HIRES_CAP as u64 {
+            cache.complete(id, Some(pixels(0)));
+        }
+        // Refresh the oldest entry, then overflow by one.
+        assert!(cache.touch(0));
+        cache.complete(HIRES_CAP as u64, Some(pixels(1)));
+
+        assert_eq!(cache.entries.len(), HIRES_CAP);
+        assert!(cache.peek(0).is_some(), "the touched entry must survive");
+        assert!(cache.peek(1).is_none(), "the now-oldest entry must be evicted");
+        assert!(cache.peek(HIRES_CAP as u64).is_some(), "the newcomer must be resident");
+    }
+
+    /// `peek` is a probe, not a use: hammering it must not protect an entry from eviction (only
+    /// `query`, via `touch`, promotes -- once per album move, not once per frame).
+    #[test]
+    fn peek_does_not_promote() {
+        let mut cache = HiResCache::new();
+        for id in 0..HIRES_CAP as u64 {
+            cache.complete(id, Some(pixels(0)));
+        }
+        for _ in 0..5 {
+            assert!(cache.peek(0).is_some());
+        }
+        cache.complete(HIRES_CAP as u64, Some(pixels(1)));
+        assert!(cache.peek(0).is_none(), "peek must not have promoted the oldest entry");
+    }
+
+    /// A failed decode clears the in-flight mark but stores nothing, leaving the cover on its
+    /// thumbnail -- and lets a later query retry it rather than being deduplicated forever.
+    #[test]
+    fn failed_decode_stores_nothing_and_reopens_the_query() {
+        let mut cache = HiResCache::new();
+        cache.pending.insert(9);
+        cache.complete(9, None);
+        assert!(cache.peek(9).is_none());
+        assert!(!cache.pending.contains(&9), "a failed decode must clear the pending mark");
+    }
 }

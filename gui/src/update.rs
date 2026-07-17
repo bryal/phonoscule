@@ -224,15 +224,10 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::Seek(seek) => do_seek(app, seek),
-        Msg::HiResLoaded { id, pixels } => {
-            app.hires_pending.remove(&id);
-            // Cache it even if the window has since moved past this album: keeping it resident is
-            // the whole point (a hop back is then instant). A failed decode (None) just leaves the
-            // cover on its thumbnail. The cache's LRU bound retires it in time either way.
-            if let Some(pixels) = pixels {
-                app.hires.insert(id, pixels);
-            }
-        }
+        // The cache absorbs its own query's result: memoized if it decoded, forgotten if it
+        // failed. Kept even if the window has moved past this album -- a later hop back is then
+        // instant, and the LRU bound retires it in time regardless.
+        Msg::HiResLoaded { id, pixels } => app.hires.complete(id, pixels),
         Msg::Frame(now) => {
             // Clamp to ~one frame: after an idle stretch (frames only run while animating) the
             // gap since the last frame would otherwise lurch every animation forward at once.
@@ -301,10 +296,10 @@ fn publish_media(app: &App) {
 const ENSURE_PREV: usize = 8;
 const ENSURE_NEXT: usize = 10;
 
-/// Ensures the high-res covers around the playing album are loaded, decoding any the global cache
-/// doesn't already hold and touching the ones it does -- so the on-screen window stays hottest in
-/// the LRU and eviction falls on colder, off-screen covers first. Returns the batch of decode tasks
-/// (empty if everything needed is already resident or in flight).
+/// Queries the high-res cache for the covers around the playing album, so it decodes the ones it
+/// doesn't already hold and keeps the on-screen window hot in its LRU. The cache owns all the
+/// fetch-or-decode bookkeeping (see [`HiResCache::query`](crate::model::HiResCache::query)); this
+/// just declares the window. Returns the batch of resulting decode tasks (empty if all resident).
 fn ensure_hires(app: &mut App) -> Task<Msg> {
     let runs = album_runs(&app.queue);
     if runs.is_empty() {
@@ -317,17 +312,10 @@ fn ensure_hires(app: &mut App) -> Task<Msg> {
 
     let mut tasks = Vec::new();
     for run in &runs[lo..=hi] {
-        // Copy the id and ref-count the path out of the queue borrow before touching the cache.
-        let Some((id, file)) = app.queue.get(run.start).and_then(|it| it.cover.as_ref()).map(|c| (c.id, c.file.clone())) else {
-            continue;
-        };
-        // Resident: promote it, done. Otherwise mark it pending -- and if it wasn't already, decode
-        // it. (`touch` short-circuits the `insert`, so a resident cover is never marked pending.)
-        if app.hires.touch(id) || !app.hires_pending.insert(id) {
-            continue;
+        // Copy the id and ref-count the path out of the queue borrow before querying the cache.
+        if let Some((id, file)) = app.queue.get(run.start).and_then(|it| it.cover.as_ref()).map(|c| (c.id, c.file.clone())) {
+            tasks.push(app.hires.query(id, file));
         }
-        let file = (*file).clone();
-        tasks.push(Task::perform(library::full_res(file), move |pixels| Msg::HiResLoaded { id, pixels }));
     }
     Task::batch(tasks)
 }
