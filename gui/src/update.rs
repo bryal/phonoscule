@@ -47,7 +47,8 @@ pub enum Msg {
     PrevOrRestart {
         repeat: bool,
     },
-    /// Jump playback to the start of the previous / next album run in the queue (PageUp/PageDown).
+    /// Jump between albums in the queue (PageUp/PageDown). PageUp restarts the current album, or
+    /// steps to the previous one if already at its first track; PageDown jumps to the next album.
     PrevAlbum,
     NextAlbum,
     CoverClicked(usize),
@@ -212,8 +213,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::Prev => app.send(player::Cmd::Prev),
-        Msg::PrevAlbum => jump_album(app, -1),
-        Msg::NextAlbum => jump_album(app, 1),
+        Msg::PrevAlbum => prev_album(app),
+        Msg::NextAlbum => next_album(app),
         Msg::PrevOrRestart { repeat } => {
             /// Below this, Home steps back a track rather than restarting the current one.
             const NEAR_START: Duration = Duration::from_millis(1500);
@@ -305,12 +306,25 @@ fn queue_album(app: &mut App, ix: usize) {
     app.queue.extend(items);
 }
 
-/// Jumps playback to the start of the album run `delta` steps from the current one (-1 previous,
-/// +1 next). No-op past either end of the queue.
-fn jump_album(app: &App, delta: isize) {
+/// PageUp: restart the current album, or -- if playback is already at its first track -- step to
+/// the previous album. Mirrors Home's restart-or-step behavior at album granularity. No-op before
+/// the first album.
+fn prev_album(app: &App) {
     let runs = album_runs(&app.queue);
-    let target = run_of(&runs, app.current) as isize + delta;
-    if let Some(run) = usize::try_from(target).ok().and_then(|ix| runs.get(ix)) {
+    let cur = run_of(&runs, app.current);
+    let target = match runs.get(cur) {
+        Some(run) if run.start == app.current => cur.checked_sub(1),
+        _ => Some(cur),
+    };
+    if let Some(run) = target.and_then(|ix| runs.get(ix)) {
+        app.send(player::Cmd::JumpTo(run.start));
+    }
+}
+
+/// PageDown: jump to the start of the next album. No-op past the last album.
+fn next_album(app: &App) {
+    let runs = album_runs(&app.queue);
+    if let Some(run) = runs.get(run_of(&runs, app.current) + 1) {
         app.send(player::Cmd::JumpTo(run.start));
     }
 }
@@ -467,7 +481,7 @@ fn skip_interval(held: Duration) -> Duration {
 /// the library. In the library: arrow keys move the grid selection, Space queues the selected
 /// album, Ctrl+Space plays it. In the player: Left/Right seek by [`SEEK_STEP`], Space toggles
 /// play/pause, Home restarts the track (or steps back near the start), End steps to the next track,
-/// PageUp/PageDown jump to the previous/next album in the queue.
+/// PageUp restarts the album (or steps to the previous one), PageDown jumps to the next album.
 pub fn key_to_msg(view: View, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
