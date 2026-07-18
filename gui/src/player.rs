@@ -33,10 +33,13 @@ const CHUNK: usize = 512;
 
 #[derive(Debug, Clone)]
 pub enum Cmd {
-    /// Replace the queue and start playing at index `start`.
+    /// Replace the queue, opening the track at index `start` in the given state: `Playing` starts
+    /// playback, `Paused` readies the track (its length is reported) without starting -- how a
+    /// restored session comes back up.
     SetQueue {
         tracks: Vec<PathBuf>,
         start: usize,
+        play: PlayState,
     },
     /// Append to the queue without interrupting playback.
     Append {
@@ -140,11 +143,11 @@ async fn player_loop(cmd_rx: channel::Receiver<Cmd>, events: channel::Sender<Eve
         play_state: &mut PlayState,
     ) -> AfterCmd {
         match cmd {
-            Cmd::SetQueue { tracks, start } => {
+            Cmd::SetQueue { tracks, start, play } => {
                 *queue = tracks;
                 *ix = min(start, queue.len());
                 *start_at = 0;
-                *play_state = PlayState::Playing;
+                *play_state = play;
                 AfterCmd::Reopen
             }
             Cmd::Append { tracks } => {

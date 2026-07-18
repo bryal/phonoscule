@@ -10,7 +10,7 @@ mod view;
 
 use model::{App, View, boot, flow_target, glow_animating};
 use phonoscule_gui::conf::{self, Conf};
-use phonoscule_gui::watcher;
+use phonoscule_gui::{playlist, watcher};
 use smol::channel;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -42,8 +42,9 @@ fn main() -> anyhow::Result<()> {
     let arg_conf_path = args.next().map(PathBuf::from);
     anyhow::ensure!(args.next().is_none(), "expected at most one argument: a path to a config file");
     let conf = smol::block_on(Conf::load(conf::locate(arg_conf_path)))?;
+    let playlist = smol::block_on(playlist::load(playlist::default_file()));
 
-    let app = iced::application(boot(conf), update, view)
+    let app = iced::application(boot(conf, playlist), update, view)
         .title("Phonoscule")
         .subscription(subscription)
         .theme(theme)

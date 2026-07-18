@@ -5,7 +5,7 @@ use futures::StreamExt;
 use iced::Task;
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
-use phonoscule_gui::{media, player, watcher};
+use phonoscule_gui::{media, player, playlist, watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -214,10 +214,10 @@ impl Default for HiResCache {
     }
 }
 
-pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
+pub fn boot(conf: Conf, playlist: playlist::SavedPlaylist) -> impl Fn() -> (App, Task<Msg>) {
     move || {
         let (media, media_worker) = media::start();
-        let app = App {
+        let mut app = App {
             engine: player::start(),
             media,
             watcher: watcher::start(&conf.music_dir),
@@ -244,6 +244,32 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             glow_p: 1.0,
             last_frame: Instant::now(),
         };
+        // Restore the previous session's queue, paused at its current track: the engine opens the
+        // track (reporting its length for the seek bar) and waits. The items carry their tags but
+        // no cover art yet -- the scan below re-attaches covers by album id as it reports them.
+        let saved = playlist.clone();
+        app.queue = saved
+            .items
+            .into_iter()
+            .map(|item| QueueItem {
+                path: item.path,
+                album_id: item.album_id,
+                title: item.title,
+                artist: item.artist,
+                album: item.album,
+                cover: None,
+            })
+            .collect();
+        app.current = saved.current;
+        // Rest the cover flow on the current album rather than sweeping to it from the far end.
+        app.anim_pos = flow_target(&app);
+        if !app.queue.is_empty() {
+            app.send(player::Cmd::SetQueue {
+                tracks: app.queue.iter().map(|item| item.path.clone()).collect(),
+                start: app.current,
+                play: player::PlayState::Paused,
+            });
+        }
         let options = library::ScanOptions {
             root: conf.music_dir.clone(),
             known_covers: Default::default(),

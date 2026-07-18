@@ -7,7 +7,7 @@ use crate::model::{
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use phonoscule_gui::library::{self, Album};
-use phonoscule_gui::{media, player};
+use phonoscule_gui::{media, player, playlist};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -133,9 +133,12 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             for item in app.queue.iter_mut().filter(|i| albums.contains(&i.album_id)) {
                 item.cover = Some(art.clone());
             }
-            // The playing track's cover art may just have arrived.
+            // The playing track's cover art may just have arrived -- notably right after boot,
+            // when a restored queue's covers all hydrate through the scan. Re-publish it, and
+            // (re)fill the cover flow's high-res window that TrackStarted found coverless.
             if app.queue.get(app.current).is_some_and(|item| albums.contains(&item.album_id)) {
                 publish_media(app);
+                return ensure_hires(app);
             }
         }
         Msg::Library(library::ScanEvent::Done { album_ids }) => {
@@ -152,8 +155,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         },
         Msg::Show(v) => app.view = v,
-        Msg::PlayAlbum(ix) => play_album(app, ix),
-        Msg::QueueAlbum(ix) => queue_album(app, ix),
+        Msg::PlayAlbum(ix) => return play_album(app, ix),
+        Msg::QueueAlbum(ix) => return queue_album(app, ix),
         Msg::PreloadAlbum(ix) => return preload_cover(app, ix),
         Msg::AlbumSelected(selected) => app.selected = selected,
         Msg::OpenTrackMenu(ix) => {
@@ -176,14 +179,15 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.send(player::Cmd::Append { tracks: vec![item.path.clone()] });
                 app.queue.push(item);
                 // Step onto the next track, so successive presses queue an album run.
-                return menu_step(app, MenuDir::Down);
+                let step = menu_step(app, MenuDir::Down);
+                return Task::batch([step, save_playlist(app)]);
             }
         }
         Msg::MenuPlay => {
             if let Some(menu) = app.track_menu {
                 app.track_menu = None;
                 if let Some(item) = track_item(app, menu.album, menu.selected) {
-                    play_items(app, vec![item]);
+                    return play_items(app, vec![item]);
                 }
             }
         }
@@ -191,7 +195,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // Playing switches to the player view; the menu has served its purpose.
             app.track_menu = None;
             if let Some(item) = track_item(app, album, track) {
-                play_items(app, vec![item]);
+                return play_items(app, vec![item]);
             }
         }
         Msg::QueueTrack { album, track } => {
@@ -200,6 +204,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             if let Some(item) = track_item(app, album, track) {
                 app.send(player::Cmd::Append { tracks: vec![item.path.clone()] });
                 app.queue.push(item);
+                return save_playlist(app);
             }
         }
         Msg::Player(event) => match event {
@@ -214,8 +219,9 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 // the whole idle gap (which would jump the animation far in a single step).
                 app.last_frame = Instant::now();
                 publish_media(app);
-                // The playing album moved, so ensure the cover flow's high-res window around it.
-                return ensure_hires(app);
+                // The playing album moved: ensure the cover flow's high-res window around it, and
+                // remember the new position for the next restore.
+                return Task::batch([ensure_hires(app), save_playlist(app)]);
             }
             player::Event::Progress(t) => {
                 // While a seek is settling, ignore reports until playback reaches (roughly) the
@@ -344,28 +350,49 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
 }
 
 /// Replaces the queue with the given items and switches to the player view, playing from the top.
-fn play_items(app: &mut App, items: Vec<QueueItem>) {
-    app.send(player::Cmd::SetQueue { tracks: items.iter().map(|i| i.path.clone()).collect(), start: 0 });
+/// Returns the playlist save task.
+fn play_items(app: &mut App, items: Vec<QueueItem>) -> Task<Msg> {
+    let play = player::PlayState::Playing;
+    app.send(player::Cmd::SetQueue { tracks: items.iter().map(|i| i.path.clone()).collect(), start: 0, play });
     app.queue = items;
     app.current = 0;
     app.anim_pos = 0.0;
     app.view = View::Player;
+    save_playlist(app)
 }
 
 /// Replaces the queue with the album at `ix` and switches to the player view. No-op if the index
 /// is out of range -- a rescan can shrink the list under a stale selection.
-fn play_album(app: &mut App, ix: usize) {
-    let Some(album) = app.albums.get(ix) else { return };
+fn play_album(app: &mut App, ix: usize) -> Task<Msg> {
+    let Some(album) = app.albums.get(ix) else { return Task::none() };
     let items = queue_items(album);
-    play_items(app, items);
+    play_items(app, items)
 }
 
 /// Appends the album at `ix` to the queue. No-op if the index is out of range.
-fn queue_album(app: &mut App, ix: usize) {
-    let Some(album) = app.albums.get(ix) else { return };
+fn queue_album(app: &mut App, ix: usize) -> Task<Msg> {
+    let Some(album) = app.albums.get(ix) else { return Task::none() };
     let items = queue_items(album);
     app.send(player::Cmd::Append { tracks: items.iter().map(|i| i.path.clone()).collect() });
     app.queue.extend(items);
+    save_playlist(app)
+}
+
+/// Snapshots the queue and current track to disk, fire-and-forget (see the playlist module).
+/// Returned by everything that changes either, so a crash or an exit at any point loses nothing.
+fn save_playlist(app: &App) -> Task<Msg> {
+    let items = app
+        .queue
+        .iter()
+        .map(|i| playlist::SavedItem {
+            path: i.path.clone(),
+            album_id: i.album_id,
+            title: i.title.clone(),
+            artist: i.artist.clone(),
+            album: i.album.clone(),
+        })
+        .collect();
+    Task::future(playlist::save(playlist::default_file(), playlist::SavedPlaylist::new(items, app.current))).discard()
 }
 
 /// The queue item for one track of the album at `album`, or `None` if either index is out of
