@@ -15,20 +15,32 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
-/// A cover to show in the flow: the always-resident thumbnail (the LOD placeholder) and, once the
-/// app has decoded it, the higher-resolution version to swap in (see `ensure_hires`). The high-res
-/// bitmap is shared straight from the global cache (`Arc<[u8]>`), not copied.
+/// A cover to show in the flow, at whatever detail is available: the album's accent color (known
+/// from the persisted index before any pixels load), the thumbnail, and the on-demand high-res
+/// version (see `ensure_hires`) -- the best resident tier is drawn. The high-res bitmap is shared
+/// straight from the global cache (`Arc<[u8]>`), not copied.
 pub struct FlowCover {
+    /// The cover art's id when pixels exist; otherwise any stable stand-in (the album id) -- it
+    /// only namespaces the texture cache.
     pub id: u64,
-    pub thumb: iced::widget::image::Handle,
+    pub thumb: Option<iced::widget::image::Handle>,
+    pub accent: Option<iced::Color>,
     pub full: Option<Arc<[u8]>>,
 }
 
-/// GPU texture cache key: a cover id plus whether it's the high-res tier. Keying on the tier lets
-/// a cover's full-res upload coexist with (and be preferred over) its thumbnail, so the LOD swap
-/// is just "draw the full-res key once it exists".
-type TexKey = (u64, bool);
-const PLACEHOLDER_KEY: TexKey = (PLACEHOLDER_ID, false);
+/// GPU texture cache key: a cover id plus its detail tier. Keying on the tier lets a cover's
+/// uploads coexist, so an LOD swap is just "draw the better key once it exists".
+type TexKey = (u64, Tier);
+const PLACEHOLDER_KEY: TexKey = (PLACEHOLDER_ID, Tier::Accent);
+
+/// The detail tiers a cover can be drawn at, lowest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Tier {
+    /// A solid quad of the album's accent color: the zeroth level of detail, before any pixels.
+    Accent,
+    Thumb,
+    Full,
+}
 
 /// Distance from the center (in item units) where covers start fading out...
 const FADE_START: f32 = 1.0;
@@ -263,6 +275,8 @@ impl fmt::Debug for Upload {
 enum Pixels {
     Thumb(bytes::Bytes),
     Full(Arc<[u8]>),
+    /// A single RGBA pixel: the accent-colored zeroth tier stretches it over the whole quad.
+    Solid([u8; 4]),
 }
 
 impl Pixels {
@@ -270,20 +284,29 @@ impl Pixels {
         match self {
             Pixels::Thumb(pixels) => pixels,
             Pixels::Full(pixels) => pixels,
+            Pixels::Solid(pixel) => pixel,
         }
     }
 }
 
-/// Chooses which tier to draw for a cover -- high-res if loaded, else the thumbnail -- returning
-/// its texture key and the pixels to upload (a cheap ref-counted clone). `prepare` skips the
-/// upload if that key is already resident.
+/// Chooses which tier to draw for a cover -- the best of high-res, thumbnail, and accent color --
+/// returning its texture key and the pixels to upload (a cheap ref-counted clone or a single
+/// pixel). `prepare` skips the upload if that key is already resident.
 fn cover_texture(cover: &FlowCover) -> (TexKey, Option<Upload>) {
     if let Some(full) = &cover.full {
-        let key = (cover.id, true);
+        let key = (cover.id, Tier::Full);
         (key, Some(Upload { key, size: (FULL, FULL), pixels: Pixels::Full(full.clone()) }))
-    } else if let iced::widget::image::Handle::Rgba { width, height, pixels, .. } = &cover.thumb {
-        let key = (cover.id, false);
+    } else if let Some(iced::widget::image::Handle::Rgba { width, height, pixels, .. }) = &cover.thumb {
+        let key = (cover.id, Tier::Thumb);
         (key, Some(Upload { key, size: (*width, *height), pixels: Pixels::Thumb(pixels.clone()) }))
+    } else if let Some(accent) = cover.accent {
+        // Dimmed by the same factor as the grid's fallback tiles, so the two zeroth LODs match.
+        let level = |c: f32| (0.55 * c * 255.0).round() as u8;
+        let key = (cover.id, Tier::Accent);
+        (
+            key,
+            Some(Upload { key, size: (1, 1), pixels: Pixels::Solid([level(accent.r), level(accent.g), level(accent.b), 255]) }),
+        )
     } else {
         (PLACEHOLDER_KEY, None)
     }

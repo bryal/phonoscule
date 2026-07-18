@@ -487,17 +487,23 @@ fn player_view(app: &App) -> Element<'_, Msg> {
     if app.queue.is_empty() {
         return container(text("Play or queue an album from the library")).center(Fill).into();
     }
-    // One FlowCover per album run: its resident thumbnail, plus the high-res version if the global
-    // cache holds it (see `ensure_hires`). The thumbnail is always there, so the flow shows the
-    // cover immediately and sharpens once full-res arrives.
+    // One FlowCover per album run, at whatever detail exists yet: the accent color (known from
+    // the index before any pixels), the thumbnail once loaded, and the high-res version if the
+    // global cache holds it (see `ensure_hires`) -- the flow draws the best tier and sharpens as
+    // better ones arrive. Only an album with nothing known at all falls to the grey placeholder.
     let covers = album_runs(&app.queue)
         .iter()
         .map(|run| {
-            app.queue[run.start].cover.as_ref().map(|c| FlowCover {
-                id: c.id,
-                thumb: c.handle.clone(),
-                full: app.hires.peek(c.id),
-            })
+            let item = &app.queue[run.start];
+            match (&item.cover, item.accent) {
+                (None, None) => None,
+                (cover, accent) => Some(FlowCover {
+                    id: cover.as_ref().map_or(item.album_id, |c| c.id),
+                    thumb: cover.as_ref().map(|c| c.handle.clone()),
+                    accent,
+                    full: cover.as_ref().and_then(|c| app.hires.peek(c.id)),
+                }),
+            }
         })
         .collect();
     // The reflections' floor fade must match the rendered backdrop; the covers are lifted clear
