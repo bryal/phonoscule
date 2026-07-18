@@ -41,22 +41,25 @@ pub enum ScanState {
 }
 
 /// A modal open over the current view; at most one at a time, by construction.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Modal {
     /// An album's track menu (see [`TrackMenu`]).
     Tracks(TrackMenu),
     /// The player actions menu (shuffle, and eventually export and friends), opened from the
     /// player bar's ellipsis button.
     Actions,
+    /// A searchable filter picker (see [`Picker`]), opened from the library's filter bar.
+    Picker(Picker),
 }
 
 impl Modal {
     /// The payload-free kind, for contexts that only care which modal is up (the keyboard
     /// subscription identity, which must not churn as a menu's selection moves).
-    pub fn kind(self) -> ModalKind {
+    pub fn kind(&self) -> ModalKind {
         match self {
             Modal::Tracks(_) => ModalKind::Tracks,
             Modal::Actions => ModalKind::Actions,
+            Modal::Picker(_) => ModalKind::Picker,
         }
     }
 }
@@ -65,7 +68,31 @@ impl Modal {
 pub enum ModalKind {
     Tracks,
     Actions,
+    Picker,
 }
+
+/// What a [`Picker`] picks a filter value for. Genres join once the metadata layer knows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerSubject {
+    Artist,
+}
+
+/// An open filter picker: a search query over the subject's values, the values currently matching
+/// it (recomputed as the query changes, ranked like the album search), and the keyboard selection
+/// as a slot index -- slot 0 is the standing "(all)" entry that clears the filter, slot `n + 1` is
+/// `matches[n]`.
+#[derive(Debug, Clone)]
+pub struct Picker {
+    pub subject: PickerSubject,
+    pub query: String,
+    pub matches: Vec<String>,
+    pub selected: usize,
+}
+
+/// Widget ids of the picker's search input (so opening it can focus the field) and its list's
+/// scrollable (so keyboard navigation can snap it to the selection).
+pub const PICKER_INPUT_ID: &str = "picker-input";
+pub const PICKER_SCROLL_ID: &str = "picker-list";
 
 /// The open track menu: which album (an index into [`App::albums`]) and which of its tracks the
 /// keyboard selection sits on (Up/Down move it; Space queues, Ctrl+Space or Enter plays).
@@ -98,6 +125,13 @@ pub struct App {
     pub conf: Conf,
     pub scan: ScanState,
     pub albums: Vec<Album>,
+    /// The library filter: which albums the grid shows, of everything in `albums`.
+    pub filter: Filter,
+    /// The filtered view of `albums` the grid displays: indices into it, in display order
+    /// (alphabetical like `albums`; a search re-ranks by match quality). Derived state -- kept
+    /// fresh by [`refresh_filter`] on every filter change and scan event. Grid messages carry
+    /// indices into THIS list.
+    pub filtered: Vec<usize>,
     pub view: View,
     /// The library grid's selection, externalized from the grid widget (whose own state drops
     /// with the view) so it survives switching views. Purely a persistence mirror: the widget
@@ -254,6 +288,8 @@ pub fn boot(conf: Conf, restored: playlist::Restored) -> impl Fn() -> (App, Task
             conf: conf.clone(),
             scan: ScanState::Scanning,
             albums: vec![],
+            filter: Filter::default(),
+            filtered: vec![],
             view: View::Library,
             selected: None,
             modal: None,
@@ -330,11 +366,87 @@ impl App {
 
     /// The open track menu, if that is the modal that's up.
     pub fn track_menu(&self) -> Option<TrackMenu> {
-        match self.modal {
-            Some(Modal::Tracks(menu)) => Some(menu),
+        match &self.modal {
+            Some(Modal::Tracks(menu)) => Some(*menu),
             _ => None,
         }
     }
+}
+
+/// The library filter's inputs: an exact artist (picked from the searchable picker) and a fuzzy
+/// album-title search, ANDed together. Genre joins once the metadata layer knows it.
+#[derive(Debug, Clone, Default)]
+pub struct Filter {
+    pub artist: Option<String>,
+    pub search: String,
+}
+
+/// Recomputes [`App::filtered`] from the filter inputs: albums by the picked artist (if any)
+/// whose titles contain every whitespace-split word of the search (case-insensitively). Album
+/// order (alphabetical) is kept, except that a non-empty search re-ranks by [`search_rank`] --
+/// the sort is stable, so ties stay alphabetical.
+pub fn refresh_filter(app: &mut App) {
+    let mut scored: Vec<(usize, usize)> = app
+        .albums
+        .iter()
+        .enumerate()
+        .filter(|(_, album)| app.filter.artist.as_ref().is_none_or(|artist| album.artist == *artist))
+        .filter_map(|(ix, album)| Some((ix, search_rank(&album.title, &app.filter.search)?)))
+        .collect();
+    scored.sort_by(|(_, a), (_, b)| b.cmp(a));
+    app.filtered = scored.into_iter().map(|(ix, _)| ix).collect();
+}
+
+/// Ranks `candidate` against a fuzzy search: `None` unless it contains every whitespace-split
+/// word of `query` (case-insensitively); otherwise the length of the longest common substring
+/// with the full query, so contiguous hits ("dark side" as a phrase) outrank scattered ones. An
+/// empty query matches everything at rank 0.
+pub fn search_rank(candidate: &str, query: &str) -> Option<usize> {
+    let query = query.to_lowercase();
+    if query.split_whitespace().next().is_none() {
+        return Some(0);
+    }
+    let candidate = candidate.to_lowercase();
+    query.split_whitespace().all(|word| candidate.contains(word)).then(|| lcs_len(&candidate, &query))
+}
+
+/// The length in bytes of the longest common substring of `a` and `b`: the classic quadratic
+/// table, one rolling row. Both inputs are short (titles and queries), so this is microseconds.
+fn lcs_len(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut row = vec![0usize; b.len() + 1];
+    let mut best = 0;
+    for &ca in a {
+        // Walk right-to-left so `row[j - 1]` still holds the previous row's value.
+        for j in (1..=b.len()).rev() {
+            row[j] = if ca == b[j - 1] { row[j - 1] + 1 } else { 0 };
+            best = best.max(row[j]);
+        }
+    }
+    best
+}
+
+/// The values the picker for `subject` searches over: every distinct value in the library,
+/// sorted. (The albums list is sorted by artist, but artists repeat per album.)
+pub fn picker_options(app: &App, subject: PickerSubject) -> Vec<String> {
+    let values: std::collections::BTreeSet<&String> = match subject {
+        PickerSubject::Artist => app.albums.iter().map(|album| &album.artist).collect(),
+    };
+    values.into_iter().cloned().collect()
+}
+
+/// The picker's matches for its current query: the subject's values ranked like the album search
+/// (every word contained; longest common substring breaks ties, stably).
+pub fn picker_matches(app: &App, subject: PickerSubject, query: &str) -> Vec<String> {
+    let mut scored: Vec<(String, usize)> = picker_options(app, subject)
+        .into_iter()
+        .filter_map(|value| {
+            let rank = search_rank(&value, query)?;
+            Some((value, rank))
+        })
+        .collect();
+    scored.sort_by(|(_, a), (_, b)| b.cmp(a));
+    scored.into_iter().map(|(value, _)| value).collect()
 }
 
 /// The engine-facing form of the queue: each track's path plus its album grouping key, which
@@ -500,5 +612,14 @@ mod test {
         cache.complete(9, None);
         assert!(cache.peek(9).is_none());
         assert!(!cache.pending.contains(&9), "a failed decode must clear the pending mark");
+    }
+
+    #[test]
+    fn search_ranks_contiguous_matches_higher() {
+        assert_eq!(search_rank("The Dark Side of the Moon", ""), Some(0), "an empty query matches everything");
+        assert_eq!(search_rank("The Dark Side of the Moon", "dark side"), Some(9), "a phrase hit scores its full length");
+        assert_eq!(search_rank("Darkness on the Far Side", "dark side"), Some(5), "scattered words score the longest run");
+        assert_eq!(search_rank("The Wall", "dark side"), None, "every word must be contained");
+        assert_eq!(search_rank("MONO no aware", "mono"), Some(4), "matching is case-insensitive");
     }
 }

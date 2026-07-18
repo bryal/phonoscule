@@ -1,9 +1,13 @@
 //! Rendering the model: the library browser and the player (Cover Flow) views.
 
-use crate::model::{App, Modal, ScanState, TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of};
+use crate::model::{
+    App, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, ScanState, TRACK_MENU_SCROLL_ID, View, album_runs,
+    glow_now, run_of,
+};
 use crate::update::{Grouping, Msg, Promotion, Scope};
 use iced::widget::{
     button, center, column, container, hover, image, mouse_area, opaque, responsive, row, scrollable, slider, stack, text,
+    text_input,
 };
 use iced::{Center, Color, Element, Fill, Theme, color};
 use phonoscule_gui::album_grid::album_grid;
@@ -52,14 +56,19 @@ pub fn view(app: &App) -> Element<'_, Msg> {
     let tabs = container(tabs).padding(iced::Padding { top: 10.0, right: 12.0, bottom: 0.0, left: 12.0 });
     let glow = glow_now(app);
     let mut layers: Vec<Element<'_, Msg>> = vec![background::background(glow.color, glow.center).into(), body, tabs.into()];
+    // The library's filter bar floats top-right, opposite the tabs.
+    if app.view == View::Library && !app.albums.is_empty() {
+        layers.push(filter_bar(app));
+    }
     if let Some(bar) = player_bar(app) {
         layers.push(container(bar).center_x(Fill).align_bottom(Fill).into());
     }
-    // Modals float over everything (tabs and player bar included); the track menu belongs to the
-    // library view, the actions menu to either.
-    let modal = match app.modal {
+    // Modals float over everything (tabs and player bar included); the track menu and the filter
+    // picker belong to the library view, the actions menu to either.
+    let modal = match &app.modal {
         Some(Modal::Tracks(_)) if app.view == View::Library => track_menu_modal(app),
         Some(Modal::Actions) => Some(actions_modal(app)),
+        Some(Modal::Picker(picker)) if app.view == View::Library => Some(picker_modal(picker)),
         _ => None,
     };
     if let Some(modal) = modal {
@@ -189,20 +198,101 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         .on_menu(Msg::OpenTrackMenu)
         // The track menu is modal: its opaque backdrop only blocks clicks, this blocks the rest.
         .interactive(app.modal.is_none());
-    for (ix, album) in app.albums.iter().enumerate() {
-        grid = grid.push(album_cover(ix, album), &album.title, &album.artist);
+    // The grid shows the filtered view of the library; its cell indices (which every grid message
+    // carries) are indices into `app.filtered`.
+    for (cell, &ix) in app.filtered.iter().enumerate() {
+        let album = &app.albums[ix];
+        grid = grid.push(album_cover(cell, album), &album.title, &album.artist);
     }
-    match app.scan {
-        // The scan status floats over the grid rather than claiming layout space; rescans
-        // (the watcher, the periodic poll) must not shift the albums around.
-        ScanState::Scanning => {
-            let status = inactive_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, 0.7);
-            // Sits just above the player bar (when there is one).
-            let padding = iced::Padding { top: 12.0, right: 12.0, bottom: bottom_clearance.max(12.0), left: 12.0 };
-            stack![grid, container(status).center_x(Fill).align_bottom(Fill).padding(padding)].into()
+    let mut layers: Vec<Element<'_, Msg>> = vec![grid.into()];
+    if app.filtered.is_empty() {
+        layers.push(container(inactive_text("No albums match the filter", 16.0, 0.8)).center(Fill).into());
+    }
+    // The scan status floats over the grid rather than claiming layout space; rescans (the
+    // watcher, the periodic poll) must not shift the albums around.
+    if app.scan == ScanState::Scanning {
+        let status = inactive_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, 0.7);
+        // Sits just above the player bar (when there is one).
+        let padding = iced::Padding { top: 12.0, right: 12.0, bottom: bottom_clearance.max(12.0), left: 12.0 };
+        layers.push(container(status).center_x(Fill).align_bottom(Fill).padding(padding).into());
+    }
+    stack(layers).into()
+}
+
+/// The library's filter bar, floating top-right opposite the nav tabs: an artist chip opening the
+/// searchable picker, the fuzzy album-title search, and play/queue-all buttons acting on every
+/// album currently matching, in displayed order.
+fn filter_bar(app: &App) -> Element<'_, Msg> {
+    let chip_label = app.filter.artist.as_deref().unwrap_or("All artists");
+    let chip = button(text(chip_label).size(13))
+        .style(|_theme, status| {
+            let alpha = match status {
+                button::Status::Hovered | button::Status::Pressed => 0.9,
+                button::Status::Active | button::Status::Disabled => 0.6,
+            };
+            button::Style {
+                background: Some(iced::Background::Color(Color { a: alpha, ..Color::BLACK })),
+                text_color: Color::WHITE,
+                border: iced::border::rounded(13.0),
+                ..button::Style::default()
+            }
+        })
+        .padding([5, 12])
+        .on_press(Msg::OpenPicker(PickerSubject::Artist));
+    let search = text_input("Search albums…", &app.filter.search).on_input(Msg::SearchChanged).size(13).width(210);
+    let enabled = !app.filtered.is_empty();
+    let play = text(FA_PLAY).font(font_awesome_solid()).size(13);
+    let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(15);
+    let bar = row![
+        chip,
+        search,
+        button(play).style(button::text).on_press_maybe(enabled.then_some(Msg::PlayAll)),
+        button(enqueue).style(button::text).on_press_maybe(enabled.then_some(Msg::QueueAll)),
+    ]
+    .spacing(8)
+    .align_y(Center);
+    container(bar).align_right(Fill).padding(iced::Padding { top: 8.0, right: 12.0, bottom: 0.0, left: 12.0 }).into()
+}
+
+/// The searchable filter picker (see [`Picker`]): its query field is focused on open, so typing
+/// filters immediately -- and arrows and Enter pass through the field, so keyboard picking works
+/// without leaving it. Slot 0 is the standing "(all)" entry clearing the filter. Hovering a row
+/// moves the selection; a click or Enter picks. Dismissal like the other modals.
+fn picker_modal(picker: &Picker) -> Element<'_, Msg> {
+    let placeholder = match picker.subject {
+        PickerSubject::Artist => "Search artists…",
+    };
+    let input = text_input(placeholder, &picker.query)
+        .id(PICKER_INPUT_ID)
+        .on_input(Msg::PickerQuery)
+        .on_submit(Msg::PickerPick)
+        .size(14);
+
+    let mut list = column![].spacing(2);
+    for (slot, value) in std::iter::once(None).chain(picker.matches.iter().map(Some)).enumerate() {
+        let label: Element<'_, Msg> = match value {
+            Some(value) => text(value).size(14).into(),
+            None => text("(all)").size(14).style(text::secondary).into(),
+        };
+        let selected = slot == picker.selected;
+        let entry = container(label).width(Fill).padding([4, 8]).style(move |_theme| container::Style {
+            background: selected.then(|| iced::Background::Color(color!(0xffffff, 0.1))),
+            border: iced::border::rounded(6.0),
+            ..container::Style::default()
+        });
+        list = list.push(mouse_area(entry).on_enter(Msg::PickerHover(slot)).on_press(Msg::PickerChoose(slot)));
+    }
+    let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
+    let list = scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar)).id(PICKER_SCROLL_ID);
+
+    let panel = container(column![input, list].spacing(10)).padding(14).width(340).max_height(480).style(|theme: &Theme| {
+        container::Style {
+            background: Some(iced::Background::Color(Color { a: 0.97, ..theme.extended_palette().primary.weak.color })),
+            border: iced::Border { color: color!(0xffffff, 0.1), width: 1.0, radius: 10.0.into() },
+            ..container::Style::default()
         }
-        ScanState::Complete => grid.into(),
-    }
+    });
+    opaque(mouse_area(center(opaque(panel))).on_press(Msg::CloseModal))
 }
 
 /// The track menu for the album the open [`Modal::Tracks`] points at: a centered modal listing its tracks,

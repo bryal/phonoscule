@@ -1,8 +1,9 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{
-    App, Modal, ModalKind, QueueItem, ScanState, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id,
-    current_glow, entries, flow_target, glow_blend, queue_items, run_of,
+    App, Modal, ModalKind, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, ScanState,
+    TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow, entries, flow_target, glow_blend,
+    picker_matches, queue_items, refresh_filter, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -25,8 +26,30 @@ pub enum Msg {
     /// it. Idempotent -- a hover that never becomes a click just ages back out of the LRU.
     PreloadAlbum(usize),
     /// The library grid's selection changed; store it so it survives view switches (the grid's
-    /// own state drops with the view -- see `AlbumGrid::selected`).
+    /// own state drops with the view -- see `AlbumGrid::selected`). Like every grid message, the
+    /// index is into the *filtered* album list.
     AlbumSelected(Option<usize>),
+    /// The album-title search field changed: refresh the filtered grid.
+    SearchChanged(String),
+    /// Play all albums matching the current filter, in their displayed order, replacing the queue.
+    PlayAll,
+    /// Append all albums matching the current filter, in their displayed order, to the queue.
+    QueueAll,
+    /// Open the searchable filter picker for the given subject (a filter-bar chip), focusing its
+    /// search field.
+    OpenPicker(PickerSubject),
+    /// The picker's search field changed: re-rank its matches and reset the selection to the top.
+    PickerQuery(String),
+    /// Move the picker's keyboard selection one slot up or down (arrow keys -- they pass through
+    /// the focused search field, so this works while typing).
+    PickerMove(MenuDir),
+    /// The cursor entered a picker row: move the selection there.
+    PickerHover(usize),
+    /// Pick the picker row under the mouse (a click).
+    PickerChoose(usize),
+    /// Pick the picker's selected row (Enter -- via the search field's on_submit while it has
+    /// focus, or the key binding otherwise).
+    PickerPick,
     /// Open the modal listing an album's tracks (the card's list bubble, a left-click on its
     /// cover, or Enter on the selection), to play or queue tracks individually.
     OpenTrackMenu(usize),
@@ -154,6 +177,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
             let ix = app.albums.partition_point(|a| key(a) <= key(&album));
             app.albums.insert(ix, album);
+            refresh_filter(app);
         }
         Msg::Library(library::ScanEvent::Cover { albums, art }) => {
             for album in app.albums.iter_mut().filter(|a| albums.contains(&a.id)) {
@@ -174,6 +198,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             let ids: std::collections::HashSet<u64> = album_ids.into_iter().collect();
             app.albums.retain(|album| ids.contains(&album.id));
             app.scan = ScanState::Complete;
+            refresh_filter(app);
         }
         Msg::Rescan => match app.scan {
             // The running scan will pick changes up anyway.
@@ -184,14 +209,81 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         },
         Msg::Show(v) => app.view = v,
-        Msg::PlayAlbum(ix) => return play_album(app, ix),
-        Msg::QueueAlbum(ix) => return queue_album(app, ix),
-        Msg::PreloadAlbum(ix) => return preload_cover(app, ix),
+        // Grid messages carry indices into the filtered list: resolve them to real album indices
+        // here, at the boundary, so everything downstream (the track menu included) speaks real
+        // indices.
+        Msg::PlayAlbum(cell) => {
+            if let Some(ix) = shown_album(app, cell) {
+                return play_album(app, ix);
+            }
+        }
+        Msg::QueueAlbum(cell) => {
+            if let Some(ix) = shown_album(app, cell) {
+                return queue_album(app, ix);
+            }
+        }
+        Msg::PreloadAlbum(cell) => {
+            if let Some(ix) = shown_album(app, cell) {
+                return preload_cover(app, ix);
+            }
+        }
         Msg::AlbumSelected(selected) => app.selected = selected,
-        Msg::OpenTrackMenu(ix) => {
-            app.modal = Some(Modal::Tracks(TrackMenu { album: ix, selected: 0 }));
-            // A play from the menu is likely imminent: warm the album's high-res cover.
-            return preload_cover(app, ix);
+        Msg::OpenTrackMenu(cell) => {
+            if let Some(ix) = shown_album(app, cell) {
+                app.modal = Some(Modal::Tracks(TrackMenu { album: ix, selected: 0 }));
+                // A play from the menu is likely imminent: warm the album's high-res cover.
+                return preload_cover(app, ix);
+            }
+        }
+        Msg::SearchChanged(search) => {
+            app.filter.search = search;
+            // The old selection would silently point at a different album in the new list.
+            app.selected = None;
+            refresh_filter(app);
+        }
+        Msg::PlayAll => {
+            let items: Vec<QueueItem> = app.filtered.iter().flat_map(|&ix| queue_items(&app.albums[ix])).collect();
+            if !items.is_empty() {
+                return play_items(app, items);
+            }
+        }
+        Msg::QueueAll => {
+            let items: Vec<QueueItem> = app.filtered.iter().flat_map(|&ix| queue_items(&app.albums[ix])).collect();
+            if !items.is_empty() {
+                app.send(player::Cmd::Append { tracks: entries(&items) });
+                app.queue.extend(items);
+                return save_playlist(app);
+            }
+        }
+        Msg::OpenPicker(subject) => {
+            let matches = picker_matches(app, subject, "");
+            app.modal = Some(Modal::Picker(Picker { subject, query: String::new(), matches, selected: 0 }));
+            // Focus the search field, so typing starts filtering immediately.
+            use iced::advanced::widget;
+            return widget::operate(widget::operation::focusable::focus(widget::Id::new(PICKER_INPUT_ID)));
+        }
+        Msg::PickerQuery(query) => {
+            let Some(Modal::Picker(picker)) = &app.modal else { return Task::none() };
+            let matches = picker_matches(app, picker.subject, &query);
+            if let Some(Modal::Picker(picker)) = &mut app.modal {
+                picker.query = query;
+                picker.matches = matches;
+                picker.selected = 0;
+            }
+            return snap_picker(0.0);
+        }
+        Msg::PickerMove(dir) => return picker_step(app, dir),
+        // No snap, unlike PickerMove: the cursor is already on the row it selected.
+        Msg::PickerHover(slot) => {
+            if let Some(Modal::Picker(picker)) = &mut app.modal {
+                picker.selected = slot;
+            }
+        }
+        Msg::PickerChoose(slot) => pick_filter(app, slot),
+        Msg::PickerPick => {
+            if let Some(Modal::Picker(picker)) = &app.modal {
+                pick_filter(app, picker.selected);
+            }
         }
         Msg::OpenActionsMenu => app.modal = Some(Modal::Actions),
         Msg::CloseModal => app.modal = None,
@@ -478,7 +570,7 @@ fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope, promotion: Pro
         return Task::none();
     }
     // Shuffling from the actions menu: the action dismisses it.
-    if let Some(Modal::Actions) = app.modal {
+    if matches!(app.modal, Some(Modal::Actions)) {
         app.modal = None;
     }
     let scope = match (scope, promotion, app.current, app.play_state) {
@@ -549,6 +641,53 @@ fn shuffle<T>(items: &mut [T]) {
         // The modulo bias is immaterial at queue sizes.
         items.swap(i, (next() % (i as u64 + 1)) as usize);
     }
+}
+
+/// Resolves a grid message's index (into the filtered list) to a real album index, or `None` for
+/// a stale cell (the filter can change under an in-flight message).
+fn shown_album(app: &App, cell: usize) -> Option<usize> {
+    app.filtered.get(cell).copied()
+}
+
+/// Applies the picker's slot `slot` to the filter: slot 0 (the standing "(all)" entry) clears it,
+/// slot `n + 1` picks `matches[n]`. Closes the picker, drops the grid selection (it indexes the
+/// filtered list, which is about to change), and refreshes the grid.
+fn pick_filter(app: &mut App, slot: usize) {
+    let Some(Modal::Picker(picker)) = &app.modal else { return };
+    let value = match slot.checked_sub(1) {
+        None => None,
+        Some(n) => match picker.matches.get(n) {
+            Some(value) => Some(value.clone()),
+            None => return, // a stale slot; keep the picker open
+        },
+    };
+    match picker.subject {
+        PickerSubject::Artist => app.filter.artist = value,
+    }
+    app.modal = None;
+    app.selected = None;
+    refresh_filter(app);
+}
+
+/// Moves the picker's keyboard selection one slot, clamped to its entries ("(all)" plus the
+/// matches), and snaps the list so the selection stays in view -- proportional, like the track
+/// menu (see `menu_step`).
+fn picker_step(app: &mut App, dir: MenuDir) -> Task<Msg> {
+    let Some(Modal::Picker(picker)) = &mut app.modal else { return Task::none() };
+    let last = picker.matches.len(); // slots run 0..=len
+    picker.selected = match dir {
+        MenuDir::Up => picker.selected.saturating_sub(1),
+        MenuDir::Down => (picker.selected + 1).min(last),
+    };
+    let fraction = if last > 0 { picker.selected as f32 / last as f32 } else { 0.0 };
+    snap_picker(fraction)
+}
+
+/// Snaps the picker's list to the given relative position.
+fn snap_picker(fraction: f32) -> Task<Msg> {
+    use iced::advanced::widget;
+    let to = widget::operation::scrollable::RelativeOffset { x: None, y: Some(fraction) };
+    widget::operate(widget::operation::scrollable::snap_to(widget::Id::new(PICKER_SCROLL_ID), to))
 }
 
 /// The queue item for one track of the album at `album`, or `None` if either index is out of
@@ -775,6 +914,18 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
                     scope: if ctrl { Scope::All } else { Scope::Others },
                     promotion: Promotion::Auto,
                 }),
+                _ => None,
+            };
+        }
+        // The filter picker: its focused search field captures typing (and Enter, via on_submit);
+        // arrows pass through it, so the list navigates while typing. Escape reaches here once the
+        // field is unfocused (the field captures the first press to unfocus itself).
+        Some(ModalKind::Picker) => {
+            return match key {
+                Key::Named(Named::Escape) if !modifiers.control() => one_shot(Msg::CloseModal),
+                Key::Named(Named::ArrowUp) if modifiers.is_empty() => Some(Msg::PickerMove(MenuDir::Up)),
+                Key::Named(Named::ArrowDown) if modifiers.is_empty() => Some(Msg::PickerMove(MenuDir::Down)),
+                Key::Named(Named::Enter) if modifiers.is_empty() => one_shot(Msg::PickerPick),
                 _ => None,
             };
         }

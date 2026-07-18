@@ -100,10 +100,12 @@ fn subscription(app: &App) -> Subscription<Msg> {
     // that state in with `with` (it hashes the value, so the subscription rebuilds whenever it
     // changes and never goes stale).
     let keys =
-        keyboard::listen().with((app.view, app.modal.map(Modal::kind))).filter_map(|((view, modal), event)| match event {
-            keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => key_to_msg(view, modal, key, modifiers, repeat),
-            _ => None,
-        });
+        keyboard::listen().with((app.view, app.modal.as_ref().map(Modal::kind))).filter_map(
+            |((view, modal), event)| match event {
+                keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => key_to_msg(view, modal, key, modifiers, repeat),
+                _ => None,
+            },
+        );
 
     Subscription::batch([player, media, watch, rescan, frames, keys])
 }
