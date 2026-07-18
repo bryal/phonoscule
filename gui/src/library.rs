@@ -328,6 +328,18 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
         }
     }
 
+    // Order the jobs the way the grid sorts albums (artist, then album title), so covers stream
+    // into the visible top of an unscrolled library first instead of in walk order. The keys come
+    // from the tag cache -- already loaded, no file reads -- so this is exact for everything seen
+    // before; new directories (a cache miss) fall back to their name, which usually approximates
+    // the artist anyway.
+    jobs.sort_by_cached_key(|job| {
+        job.files.first().and_then(|file| cache.files.get(&file.path)).map_or_else(
+            || (job.dir.file_name().unwrap_or_default().to_string_lossy().to_lowercase(), String::new()),
+            |entry| (entry.artist.to_lowercase(), entry.album.to_lowercase()),
+        )
+    });
+
     // Phases 2 & 3 run concurrently: tag reading emits albums per directory and queues that
     // directory's cover; cover decoding streams in whenever ready. Sends only fail when the
     // receiver is gone (scan cancelled), which also cancels these phases via `return`.
