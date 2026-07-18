@@ -231,9 +231,10 @@ fn cache_dir() -> Option<PathBuf> {
 
 /// Cover thumbnails are downscaled to fit this square (center-cropped, like the iPod did). Sized
 /// for the library grid; the now-playing view decodes a higher-resolution version on demand. Also
-/// the LOD placeholder the cover flow shows until full-res arrives, so it's large enough that the
-/// sharpening swap is subtle even full-screen.
-pub const THUMB: u32 = 360;
+/// the LOD placeholder the cover flow shows until full-res arrives. Deliberately trades a bit of
+/// full-screen sharpening subtlety for faster cover loading -- at launch, every thumbnail is read
+/// from disk, and this squares into that bill.
+pub const THUMB: u32 = 320;
 
 /// The higher-resolution edge the now-playing cover flow decodes on demand (see [`full_res`]), for
 /// the focused covers when the window is run full-screen. Short of a true 4K-panel edge on
