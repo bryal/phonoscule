@@ -114,6 +114,9 @@ pub struct QueueItem {
     pub artist: String,
     pub album: String,
     pub cover: Option<library::CoverArt>,
+    /// The album's accent color, carried independently of the cover pixels (the index knows it at
+    /// boot, long before thumbnails load) so the backdrop glow lights up immediately.
+    pub accent: Option<iced::Color>,
 }
 
 pub struct App {
@@ -332,6 +335,7 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
                 album: String::new(),
                 album_id: dir_key(path),
                 cover: None,
+                accent: None,
                 path: path.clone(),
             })
             .collect();
@@ -489,6 +493,7 @@ pub fn hydrate_queue(queue: &mut [QueueItem], album: &Album) {
         item.artist = album.artist.clone();
         item.album = album.title.clone();
         item.cover = album.cover.clone();
+        item.accent = album.accent;
         if let Some(track) = album.tracks.iter().find(|t| t.path == item.path) {
             item.title = track.title.clone();
         }
@@ -548,9 +553,10 @@ pub fn glow_center(album_id: u64) -> (f32, f32) {
 /// (normalized so the strongest channel saturates) placed at its scattered position; black when
 /// nothing is playing. The backdrop shader decides how much of the color to actually show.
 pub fn current_glow(app: &App) -> GlowState {
-    let color = match app.queue.get(app.current).and_then(|item| item.cover.as_ref()) {
-        Some(cover) => {
-            let accent = cover.accent;
+    // Read from the item's own accent (known from the index at boot), not through the loaded
+    // cover: the glow must not wait for thumbnails.
+    let color = match app.queue.get(app.current).and_then(|item| item.accent) {
+        Some(accent) => {
             let max = accent.r.max(accent.g).max(accent.b);
             if max <= f32::EPSILON {
                 iced::Color::BLACK
@@ -598,6 +604,7 @@ pub fn queue_items(album: &Album) -> Vec<QueueItem> {
             artist: album.artist.clone(),
             album: album.title.clone(),
             cover: album.cover.clone(),
+            accent: album.accent,
         })
         .collect()
 }

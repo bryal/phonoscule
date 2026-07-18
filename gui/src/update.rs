@@ -194,6 +194,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
             for item in app.queue.iter_mut().filter(|i| albums.contains(&i.album_id)) {
                 item.cover = Some(art.clone());
+                item.accent = Some(art.accent);
             }
             // The playing track's cover art may just have arrived -- notably right after boot,
             // when a restored queue's covers all hydrate through the scan. Re-publish it, and
