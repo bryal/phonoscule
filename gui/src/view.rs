@@ -1,6 +1,6 @@
 //! Rendering the model: the library browser and the player (Cover Flow) views.
 
-use crate::model::{App, ScanState, TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of};
+use crate::model::{App, Modal, ScanState, TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of};
 use crate::update::Msg;
 use iced::widget::{
     button, center, column, container, hover, image, mouse_area, opaque, responsive, row, scrollable, slider, stack, text,
@@ -20,6 +20,8 @@ const FA_BACKWARD_STEP: &str = "\u{f048}";
 const FA_FORWARD_STEP: &str = "\u{f051}";
 const FA_PLUS: &str = "\u{2b}";
 const FA_LIST: &str = "\u{f03a}";
+const FA_REPEAT: &str = "\u{f363}";
+const FA_ELLIPSIS: &str = "\u{f141}";
 
 fn font_awesome_solid() -> iced::Font {
     iced::Font {
@@ -53,11 +55,15 @@ pub fn view(app: &App) -> Element<'_, Msg> {
     if let Some(bar) = player_bar(app) {
         layers.push(container(bar).center_x(Fill).align_bottom(Fill).into());
     }
-    // The track menu is modal over everything (tabs and player bar included), library view only.
-    if app.view == View::Library
-        && let Some(menu) = track_menu_modal(app)
-    {
-        layers.push(menu);
+    // Modals float over everything (tabs and player bar included); the track menu belongs to the
+    // library view, the actions menu to either.
+    let modal = match app.modal {
+        Some(Modal::Tracks(_)) if app.view == View::Library => track_menu_modal(app),
+        Some(Modal::Actions) => Some(actions_modal(app)),
+        _ => None,
+    };
+    if let Some(modal) = modal {
+        layers.push(modal);
     }
     stack(layers).into()
 }
@@ -88,7 +94,29 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     .spacing(12)
     .align_y(Center);
 
+    // The repeat button cycles the mode, its icon dimmed when off and tagged with the mode
+    // otherwise; the ellipsis opens the actions menu (shuffle and friends). They flank the
+    // transport controls.
+    let repeat_tag = match app.repeat {
+        player::Repeat::Off => "",
+        player::Repeat::Track => "1",
+        player::Repeat::Album => "alb",
+        player::Repeat::Playlist => "all",
+    };
+    let repeat_icon = text(FA_REPEAT)
+        .font(font_awesome_solid())
+        .size(15)
+        .style(|theme: &Theme| text::Style { color: Some(Color { a: 0.35, ..theme.palette().text }) });
+    let repeat_icon = match app.repeat {
+        player::Repeat::Off => repeat_icon,
+        _ => repeat_icon.style(|theme: &Theme| text::Style { color: Some(theme.palette().text) }),
+    };
+    let repeat = button(row![repeat_icon, text(repeat_tag).size(10)].spacing(3)).style(button::text).on_press(Msg::CycleRepeat);
+    let actions =
+        button(text(FA_ELLIPSIS).font(font_awesome_solid()).size(15)).style(button::text).on_press(Msg::OpenActionsMenu);
+
     let controls = row![
+        repeat,
         button(text(FA_BACKWARD_STEP).font(font_awesome_solid()).size(18)).style(button::text).on_press(Msg::Prev),
         button(
             text(match app.play_state {
@@ -105,6 +133,7 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
         button(text(FA_FORWARD_STEP).font(font_awesome_solid()).size(18))
             .style(button::text)
             .on_press(Msg::Next { repeat: false }),
+        actions,
     ]
     .spacing(24)
     .align_y(Center);
@@ -159,7 +188,7 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         .selected(app.selected, Msg::AlbumSelected)
         .on_menu(Msg::OpenTrackMenu)
         // The track menu is modal: its opaque backdrop only blocks clicks, this blocks the rest.
-        .interactive(app.track_menu.is_none());
+        .interactive(app.modal.is_none());
     for (ix, album) in app.albums.iter().enumerate() {
         grid = grid.push(album_cover(ix, album), &album.title, &album.artist);
     }
@@ -176,14 +205,14 @@ fn library_view(app: &App) -> Element<'_, Msg> {
     }
 }
 
-/// The track menu for the album `app.track_menu` points at: a centered modal listing its tracks,
+/// The track menu for the album the open [`Modal::Tracks`] points at: a centered modal listing its tracks,
 /// each with play/enqueue bubbles, so single tracks can be played or queued (queueing keeps the
 /// menu open -- queueing several in a row is the natural flow). The inner `opaque` swallows clicks
 /// on the panel itself; the `mouse_area` catches clicks outside it to dismiss (Escape dismisses
 /// too, via `key_to_msg`); the outer `opaque` blocks the mouse from everything underneath.
 /// `None` when no menu is open (or a rescan dropped the album from under it).
 fn track_menu_modal(app: &App) -> Option<Element<'_, Msg>> {
-    let menu = app.track_menu?;
+    let menu = app.track_menu()?;
     let album = app.albums.get(menu.album)?;
 
     let mut list = column![].spacing(2);
@@ -225,7 +254,31 @@ fn track_menu_modal(app: &App) -> Option<Element<'_, Msg>> {
             },
             ..container::Style::default()
         });
-    Some(opaque(mouse_area(center(opaque(panel))).on_press(Msg::CloseTrackMenu)))
+    Some(opaque(mouse_area(center(opaque(panel))).on_press(Msg::CloseModal)))
+}
+
+/// The player actions menu: a centered modal with one entry per action on the playing queue
+/// (shuffles now; exports and friends later), each showing its shortcut key. Same dismissal as
+/// the track menu: Escape, or a click outside the panel.
+fn actions_modal(app: &App) -> Element<'_, Msg> {
+    let _ = app;
+    let entry = |label: &'static str, hint: &'static str, msg: Msg| {
+        let hint =
+            text(hint).size(12).style(|theme: &Theme| text::Style { color: Some(Color { a: 0.5, ..theme.palette().text }) });
+        button(row![text(label).size(15).width(Fill), hint].spacing(12).align_y(Center))
+            .style(button::text)
+            .width(Fill)
+            .padding([6, 8])
+            .on_press(msg)
+    };
+    let list =
+        column![entry("Shuffle albums", "s", Msg::ShuffleAlbums), entry("Shuffle tracks", "z", Msg::ShuffleTracks),].spacing(2);
+    let panel = container(list).padding(12).width(260).style(|theme: &Theme| container::Style {
+        background: Some(iced::Background::Color(Color { a: 0.97, ..theme.extended_palette().primary.weak.color })),
+        border: iced::Border { color: color!(0xffffff, 0.1), width: 1.0, radius: 10.0.into() },
+        ..container::Style::default()
+    });
+    opaque(mouse_area(center(opaque(panel))).on_press(Msg::CloseModal))
 }
 
 /// Approximate height of the floating player bar, used to keep content clear of it: the library

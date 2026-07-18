@@ -1,8 +1,8 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{
-    App, QueueItem, ScanState, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow, entries,
-    flow_target, glow_blend, queue_items, run_of,
+    App, Modal, ModalKind, QueueItem, ScanState, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id,
+    current_glow, entries, flow_target, glow_blend, queue_items, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -30,8 +30,18 @@ pub enum Msg {
     /// Open the modal listing an album's tracks (the card's list bubble, a left-click on its
     /// cover, or Enter on the selection), to play or queue tracks individually.
     OpenTrackMenu(usize),
-    /// Dismiss the track menu (Escape, or a click outside it).
-    CloseTrackMenu,
+    /// Open the player actions menu (the player bar's ellipsis button): shuffle and friends.
+    OpenActionsMenu,
+    /// Dismiss whatever modal is up (Escape, or a click outside it).
+    CloseModal,
+    /// Cycle the repeat mode: off -> track -> album -> playlist -> off (the `r` key, and the
+    /// player bar's repeat button).
+    CycleRepeat,
+    /// Shuffle the queue track-wise, in place and visibly (the `z` key, or the actions menu).
+    ShuffleTracks,
+    /// Shuffle the queue album-wise -- albums in random order, each one's tracks in their queue
+    /// order -- in place and visibly (the `s` key, or the actions menu).
+    ShuffleAlbums,
     /// Move the track menu's keyboard selection one track up or down (arrow keys).
     MenuMove(MenuDir),
     /// The cursor entered a track menu row: move the selection there, so the mouse and the arrow
@@ -173,20 +183,21 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::PreloadAlbum(ix) => return preload_cover(app, ix),
         Msg::AlbumSelected(selected) => app.selected = selected,
         Msg::OpenTrackMenu(ix) => {
-            app.track_menu = Some(TrackMenu { album: ix, selected: 0 });
+            app.modal = Some(Modal::Tracks(TrackMenu { album: ix, selected: 0 }));
             // A play from the menu is likely imminent: warm the album's high-res cover.
             return preload_cover(app, ix);
         }
-        Msg::CloseTrackMenu => app.track_menu = None,
+        Msg::OpenActionsMenu => app.modal = Some(Modal::Actions),
+        Msg::CloseModal => app.modal = None,
         Msg::MenuMove(dir) => return menu_step(app, dir),
         // No snap, unlike MenuMove: the cursor is already on the row it selected.
         Msg::MenuHover(track) => {
-            if let Some(menu) = &mut app.track_menu {
+            if let Some(Modal::Tracks(menu)) = &mut app.modal {
                 menu.selected = track;
             }
         }
         Msg::MenuQueue => {
-            if let Some(menu) = app.track_menu
+            if let Some(menu) = app.track_menu()
                 && let Some(item) = track_item(app, menu.album, menu.selected)
             {
                 app.send(player::Cmd::Append { tracks: entries(std::slice::from_ref(&item)) });
@@ -197,16 +208,23 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::MenuPlay => {
-            if let Some(menu) = app.track_menu {
-                app.track_menu = None;
+            if let Some(menu) = app.track_menu() {
+                app.modal = None;
                 if let Some(item) = track_item(app, menu.album, menu.selected) {
                     return play_items(app, vec![item]);
                 }
             }
         }
+        Msg::CycleRepeat => {
+            app.repeat = app.repeat.cycled();
+            app.send(player::Cmd::SetRepeat(app.repeat));
+            return save_player(app);
+        }
+        Msg::ShuffleTracks => return shuffle_queue(app, Grouping::Tracks),
+        Msg::ShuffleAlbums => return shuffle_queue(app, Grouping::Albums),
         Msg::PlayTrack { album, track } => {
             // Playing switches to the player view; the menu has served its purpose.
-            app.track_menu = None;
+            app.modal = None;
             if let Some(item) = track_item(app, album, track) {
                 return play_items(app, vec![item]);
             }
@@ -405,6 +423,76 @@ fn save_player(app: &App) -> Task<Msg> {
     Task::future(playlist::save_player(playlist::player_file(), playlist::SavedPlayer::new(app.current, app.repeat))).discard()
 }
 
+/// What a shuffle permutes: single tracks, or whole albums (each album's tracks stay together, in
+/// their queue order, while the albums land in random order).
+#[derive(Clone, Copy)]
+enum Grouping {
+    Tracks,
+    Albums,
+}
+
+/// Shuffles the queue in place, visibly: the reordering IS the new playlist (persisted like any
+/// other queue change, so a restart resumes the same order). The playing track keeps playing --
+/// the engine is handed the same tracks in the new order (see `Cmd::Reorder`) and only the cursor
+/// follows it -- and the cover flow snaps to its new position rather than sweeping.
+fn shuffle_queue(app: &mut App, grouping: Grouping) -> Task<Msg> {
+    if app.queue.is_empty() {
+        return Task::none();
+    }
+    // Shuffling from the actions menu: the action dismisses it.
+    if let Some(Modal::Actions) = app.modal {
+        app.modal = None;
+    }
+
+    // Build the new order as a permutation of indices, so the current track can be followed by
+    // identity (queue items need not be unique -- an album can be queued twice).
+    let order: Vec<usize> = match grouping {
+        Grouping::Tracks => {
+            let mut order: Vec<usize> = (0..app.queue.len()).collect();
+            shuffle(&mut order);
+            order
+        }
+        Grouping::Albums => {
+            // Group by album (all of an album's tracks, wherever they sit, in their queue order),
+            // then shuffle the groups.
+            let mut groups: Vec<(u64, Vec<usize>)> = Vec::new();
+            for (ix, item) in app.queue.iter().enumerate() {
+                match groups.iter_mut().find(|(album, _)| *album == item.album_id) {
+                    Some((_, ixs)) => ixs.push(ix),
+                    None => groups.push((item.album_id, vec![ix])),
+                }
+            }
+            shuffle(&mut groups);
+            groups.into_iter().flat_map(|(_, ixs)| ixs).collect()
+        }
+    };
+
+    let mut old: Vec<Option<QueueItem>> = std::mem::take(&mut app.queue).into_iter().map(Some).collect();
+    app.queue = order.iter().map(|&ix| old[ix].take().expect("a permutation visits each index once")).collect();
+    app.current = order.iter().position(|&ix| ix == app.current).unwrap_or(0);
+    app.anim_pos = flow_target(app);
+    app.send(player::Cmd::Reorder { tracks: entries(&app.queue), current: app.current });
+    Task::batch([save_playlist(app), save_player(app)])
+}
+
+/// Fisher-Yates over a splitmix64 stream seeded from the clock: not cryptographic, plenty for
+/// shuffling a music queue, and spares a randomness dependency.
+fn shuffle<T>(items: &mut [T]) {
+    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    let mut state = seed.map_or(0x9E37_79B9_7F4A_7C15, |d| d.as_nanos() as u64);
+    let mut next = move || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    for i in (1..items.len()).rev() {
+        // The modulo bias is immaterial at queue sizes.
+        items.swap(i, (next() % (i as u64 + 1)) as usize);
+    }
+}
+
 /// The queue item for one track of the album at `album`, or `None` if either index is out of
 /// range (a rescan can reshuffle the list under an open track menu).
 fn track_item(app: &App, album: usize, track: usize) -> Option<QueueItem> {
@@ -417,7 +505,7 @@ fn track_item(app: &App, album: usize, track: usize) -> Option<QueueItem> {
 /// fraction f of the list scrolls to fraction f), which keeps the selected row visible at every
 /// position without knowing the list's pixel geometry.
 fn menu_step(app: &mut App, dir: MenuDir) -> Task<Msg> {
-    let Some(menu) = &mut app.track_menu else { return Task::none() };
+    let Some(Modal::Tracks(menu)) = &mut app.modal else { return Task::none() };
     let Some(n) = app.albums.get(menu.album).map(|a| a.tracks.len()).filter(|&n| n > 0) else {
         return Task::none();
     };
@@ -575,18 +663,18 @@ fn skip_interval(held: Duration) -> Duration {
 
 /// Translates a key press into a message for the current `view`, or `None` for keys we don't bind.
 /// Only keys no widget captured arrive here: the library grid handles its own navigation and
-/// selection actions internally (see `album_grid`), so this covers the global view switching and
-/// the player bindings. `repeat` marks auto-repeat from a held key: continuous actions honor it
-/// (seek/scrub, walking the queue), while one-shot ones don't (holding Space must not machine-gun
-/// play/pause). Alt/Logo always pass through to the window manager.
+/// selection actions internally (see `album_grid`), so this covers the global view switching, the
+/// playback-mode keys, and the player bindings. `repeat` marks auto-repeat from a held key:
+/// continuous actions honor it (seek/scrub, walking the queue), while one-shot ones don't (holding
+/// Space must not machine-gun play/pause). Alt/Logo always pass through to the window manager.
 ///
 /// Global: Tab / Shift-Tab cycle the view tabs; `l`/`p` jump to Library/Player; Escape returns to
-/// the library. With the track menu open (`menu_open`), Escape dismisses it instead and every
-/// other binding is suppressed -- it's a modal. In the player: Left/Right seek by [`SEEK_STEP`],
-/// Space toggles play/pause, Home restarts the track (or steps back near the start), End steps to
-/// the next track, PageUp restarts the album (or steps to the previous one), PageDown jumps to the
-/// next album.
-pub fn key_to_msg(view: View, menu_open: bool, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
+/// the library; `r` cycles the repeat mode, `s` shuffles albums, `z` shuffles tracks. With a modal
+/// open, Escape dismisses it, the track menu gets its own bindings, and everything else is
+/// suppressed. In the player: Left/Right seek by [`SEEK_STEP`], Space toggles play/pause, Home
+/// restarts the track (or steps back near the start), End steps to the next track, PageUp restarts
+/// the album (or steps to the previous one), PageDown jumps to the next album.
+pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
     // Alt/Logo aren't bound anywhere; leave them (and their chords) to the window manager.
@@ -595,20 +683,34 @@ pub fn key_to_msg(view: View, menu_open: bool, key: Key, modifiers: Modifiers, r
     }
     let one_shot = |msg| if repeat { None } else { Some(msg) };
 
-    // The track menu is modal: it gets its own bindings and everything else is suppressed.
-    // Mirrors the grid's vocabulary one level down -- arrows move the selection, Space queues it,
-    // Ctrl+Space (or Enter, which opened the menu) plays it -- and Escape dismisses.
-    if menu_open {
-        return match (key, modifiers.control()) {
-            (Key::Named(Named::Escape), false) => one_shot(Msg::CloseTrackMenu),
-            (Key::Named(Named::ArrowUp), false) if modifiers.is_empty() => Some(Msg::MenuMove(MenuDir::Up)),
-            (Key::Named(Named::ArrowDown), false) if modifiers.is_empty() => Some(Msg::MenuMove(MenuDir::Down)),
-            // One queue per press: holding Space must not machine-gun the queue.
-            (Key::Named(Named::Space), false) if modifiers.is_empty() => one_shot(Msg::MenuQueue),
-            (Key::Named(Named::Space), true) => one_shot(Msg::MenuPlay),
-            (Key::Named(Named::Enter), false) if modifiers.is_empty() => one_shot(Msg::MenuPlay),
-            _ => None,
-        };
+    match modal {
+        // The track menu is modal: it gets its own bindings and everything else is suppressed.
+        // Mirrors the grid's vocabulary one level down -- arrows move the selection, Space queues
+        // it, Ctrl+Space (or Enter, which opened the menu) plays it -- and Escape dismisses.
+        Some(ModalKind::Tracks) => {
+            return match (key, modifiers.control()) {
+                (Key::Named(Named::Escape), false) => one_shot(Msg::CloseModal),
+                (Key::Named(Named::ArrowUp), false) if modifiers.is_empty() => Some(Msg::MenuMove(MenuDir::Up)),
+                (Key::Named(Named::ArrowDown), false) if modifiers.is_empty() => Some(Msg::MenuMove(MenuDir::Down)),
+                // One queue per press: holding Space must not machine-gun the queue.
+                (Key::Named(Named::Space), false) if modifiers.is_empty() => one_shot(Msg::MenuQueue),
+                (Key::Named(Named::Space), true) => one_shot(Msg::MenuPlay),
+                (Key::Named(Named::Enter), false) if modifiers.is_empty() => one_shot(Msg::MenuPlay),
+                _ => None,
+            };
+        }
+        // The actions menu: Escape dismisses; its actions keep their global keys (the entries
+        // display them as hints, and the handlers dismiss the menu themselves).
+        Some(ModalKind::Actions) => {
+            return match (key, modifiers.is_empty()) {
+                (Key::Named(Named::Escape), _) if !modifiers.control() => one_shot(Msg::CloseModal),
+                (Key::Character(c), true) if c.as_str() == "r" => one_shot(Msg::CycleRepeat),
+                (Key::Character(c), true) if c.as_str() == "s" => one_shot(Msg::ShuffleAlbums),
+                (Key::Character(c), true) if c.as_str() == "z" => one_shot(Msg::ShuffleTracks),
+                _ => None,
+            };
+        }
+        None => {}
     }
 
     // View-independent navigation takes precedence over the per-view bindings below.
@@ -618,6 +720,9 @@ pub fn key_to_msg(view: View, menu_open: bool, key: Key, modifiers: Modifiers, r
         (Key::Named(Named::Escape), _, false) => return one_shot(Msg::Show(View::Library)),
         (Key::Character(c), false, false) if c.as_str() == "l" => return one_shot(Msg::Show(View::Library)),
         (Key::Character(c), false, false) if c.as_str() == "p" => return one_shot(Msg::Show(View::Player)),
+        (Key::Character(c), false, false) if c.as_str() == "r" => return one_shot(Msg::CycleRepeat),
+        (Key::Character(c), false, false) if c.as_str() == "s" => return one_shot(Msg::ShuffleAlbums),
+        (Key::Character(c), false, false) if c.as_str() == "z" => return one_shot(Msg::ShuffleTracks),
         _ => {}
     }
 

@@ -40,6 +40,33 @@ pub enum ScanState {
     Complete,
 }
 
+/// A modal open over the current view; at most one at a time, by construction.
+#[derive(Debug, Clone, Copy)]
+pub enum Modal {
+    /// An album's track menu (see [`TrackMenu`]).
+    Tracks(TrackMenu),
+    /// The player actions menu (shuffle, and eventually export and friends), opened from the
+    /// player bar's ellipsis button.
+    Actions,
+}
+
+impl Modal {
+    /// The payload-free kind, for contexts that only care which modal is up (the keyboard
+    /// subscription identity, which must not churn as a menu's selection moves).
+    pub fn kind(self) -> ModalKind {
+        match self {
+            Modal::Tracks(_) => ModalKind::Tracks,
+            Modal::Actions => ModalKind::Actions,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModalKind {
+    Tracks,
+    Actions,
+}
+
 /// The open track menu: which album (an index into [`App::albums`]) and which of its tracks the
 /// keyboard selection sits on (Up/Down move it; Space queues, Ctrl+Space or Enter plays).
 #[derive(Debug, Clone, Copy)]
@@ -77,9 +104,9 @@ pub struct App {
     /// syncs from it each render and reports changes back (see `AlbumGrid::selected`); nothing
     /// here reads it.
     pub selected: Option<usize>,
-    /// The track menu open as a modal over the library view, letting single tracks be played or
-    /// queued; `None` when no menu is open.
-    pub track_menu: Option<TrackMenu>,
+    /// The modal open over the current view, if any: an album's track menu, or the player
+    /// actions menu.
+    pub modal: Option<Modal>,
     pub queue: Vec<QueueItem>,
     pub current: usize,
     /// The repeat mode, mirrored here for the UI and persistence; the engine holds its own copy
@@ -229,7 +256,7 @@ pub fn boot(conf: Conf, restored: playlist::Restored) -> impl Fn() -> (App, Task
             albums: vec![],
             view: View::Library,
             selected: None,
-            track_menu: None,
+            modal: None,
             queue: vec![],
             current: 0,
             repeat: restored.repeat,
@@ -298,6 +325,14 @@ impl App {
         // The command channel is unbounded, so this only fails when the engine is gone.
         if self.engine.cmd.try_send(cmd).is_err() {
             log::error!("player engine is gone");
+        }
+    }
+
+    /// The open track menu, if that is the modal that's up.
+    pub fn track_menu(&self) -> Option<TrackMenu> {
+        match self.modal {
+            Some(Modal::Tracks(menu)) => Some(menu),
+            _ => None,
         }
     }
 }

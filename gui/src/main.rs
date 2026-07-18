@@ -8,7 +8,7 @@ mod model;
 mod update;
 mod view;
 
-use model::{App, View, boot, flow_target, glow_animating};
+use model::{App, Modal, View, boot, flow_target, glow_animating};
 use phonoscule_gui::conf::{self, Conf};
 use phonoscule_gui::{playlist, watcher};
 use smol::channel;
@@ -96,13 +96,14 @@ fn subscription(app: &App) -> Subscription<Msg> {
 
     // `listen` yields only keyboard events a focused widget ignored, so shortcuts never shadow a
     // widget's own key handling (e.g. arrow keys while the seek bar has focus). Bindings depend on
-    // the active view and the track menu's modality; subscription closures must be non-capturing,
-    // so pair that state in with `with` (it hashes the value, so the subscription rebuilds
-    // whenever it changes and never goes stale).
-    let keys = keyboard::listen().with((app.view, app.track_menu.is_some())).filter_map(|((view, menu), event)| match event {
-        keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => key_to_msg(view, menu, key, modifiers, repeat),
-        _ => None,
-    });
+    // the active view and which modal is up; subscription closures must be non-capturing, so pair
+    // that state in with `with` (it hashes the value, so the subscription rebuilds whenever it
+    // changes and never goes stale).
+    let keys =
+        keyboard::listen().with((app.view, app.modal.map(Modal::kind))).filter_map(|((view, modal), event)| match event {
+            keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => key_to_msg(view, modal, key, modifiers, repeat),
+            _ => None,
+        });
 
     Subscription::batch([player, media, watch, rescan, frames, keys])
 }
