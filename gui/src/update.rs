@@ -155,22 +155,29 @@ pub enum MenuDir {
 pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
     match msg {
         Msg::Library(library::ScanEvent::Album(mut album)) => {
-            // Re-scans (and the boot scan reconciling the persisted index) re-report albums we
-            // already have: upsert by the stable id, keeping the already-loaded cover art when the
-            // cover is unchanged (the scanner skips re-decoding and re-sending it). Track whether
-            // anything observable actually changed, so `Done` knows if the index needs rewriting.
+            // Re-scans (and the boot scan reconciling the persisted index) re-report every album,
+            // the overwhelming majority unchanged: detect that first and drop the event on the
+            // floor. Thousands arrive in a burst on the main thread, and the per-event work below
+            // (hydration, sorted re-insert, a full filter refresh) is what used to hitch the UI
+            // for a beat on every rescan.
             match app.albums.iter().position(|a| a.id == album.id) {
                 Some(ix) => {
+                    // `cover`/`accent` are runtime-only: scan events never carry them.
+                    let Album { id: _, title, artist, genre, cover_id, cover: _, accent: _, tracks } = &app.albums[ix];
+                    if *title == album.title
+                        && *artist == album.artist
+                        && *genre == album.genre
+                        && *cover_id == album.cover_id
+                        && *tracks == album.tracks
+                    {
+                        return Task::none();
+                    }
+                    app.index_dirty = true;
                     let old = app.albums.remove(ix);
-                    app.index_dirty |= old.title != album.title
-                        || old.artist != album.artist
-                        || old.genre != album.genre
-                        || old.cover_id != album.cover_id
-                        || old.tracks != album.tracks;
+                    // Keep the already-loaded cover art when the cover is unchanged (the scanner
+                    // skips re-decoding and re-sending it); the accent follows the cover.
                     if old.cover_id == album.cover_id {
                         album.cover = old.cover;
-                        // The accent follows the cover: same cover, same accent (scan events
-                        // never carry one -- it's attached by Cover events and the index).
                         album.accent = old.accent;
                     }
                 }
