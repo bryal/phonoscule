@@ -169,7 +169,7 @@ fn library_view(app: &App) -> Element<'_, Msg> {
             let mut r = row![].spacing(SPACING);
             for (col_ix, album) in albums.iter().enumerate() {
                 let ix = row_ix * cols + col_ix;
-                r = r.push(album_card(ix, album, side, ix == app.selected));
+                r = r.push(album_card(ix, album, side, app.selected == Some(ix)));
             }
             grid = grid.push(r);
         }
@@ -183,6 +183,9 @@ fn library_view(app: &App) -> Element<'_, Msg> {
             .height(Fill)
             .id(GRID_SCROLL_ID)
             .on_scroll(Msg::GridScrolled);
+        // A click anywhere that no widget claims -- grid space, card text, padding -- clears the
+        // selection. Covers and bubbles capture their presses first, so selecting still works.
+        let grid = mouse_area(grid).on_press(Msg::Deselect);
         match app.scan {
             // The scan status floats over the grid rather than claiming layout space; rescans
             // (the watcher, the periodic poll) must not shift the albums around.

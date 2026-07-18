@@ -27,6 +27,9 @@ pub enum Msg {
     /// Highlight an album in the library grid (a cover click, which -- unlike the play bubble --
     /// only selects; playing is Ctrl+Space or the bubble).
     SelectAlbum(usize),
+    /// Clear the library grid's selection (a click on grid space that isn't a cover or a bubble --
+    /// those capture their clicks before the grid-wide mouse area sees them).
+    Deselect,
     /// Move the library grid's selection one step in a direction (arrow keys).
     SelectMove(Dir),
     /// The library grid scrolled; carries the new viewport so the model's offset mirror stays
@@ -140,9 +143,18 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::Show(v) => app.view = v,
         Msg::PlayAlbum(ix) => play_album(app, ix),
         Msg::QueueAlbum(ix) => queue_album(app, ix),
-        Msg::PlaySelected => play_album(app, app.selected),
-        Msg::QueueSelected => queue_album(app, app.selected),
-        Msg::SelectAlbum(ix) => app.selected = ix,
+        Msg::PlaySelected => {
+            if let Some(ix) = app.selected {
+                play_album(app, ix);
+            }
+        }
+        Msg::QueueSelected => {
+            if let Some(ix) = app.selected {
+                queue_album(app, ix);
+            }
+        }
+        Msg::SelectAlbum(ix) => app.selected = Some(ix),
+        Msg::Deselect => app.selected = None,
         Msg::SelectMove(dir) => return move_selection(app, dir),
         Msg::GridScrolled(viewport) => app.grid_offset = viewport.absolute_offset().y,
         Msg::PreloadAlbum(ix) => {
@@ -335,8 +347,9 @@ fn next_album(app: &App) {
 }
 
 /// Moves the library grid selection one cell in `dir`, clamped to the album list and the grid's
-/// current column count (cached by the view) -- then scrolls the grid if the selection left the
-/// visible region, mirroring the commanded offset (operations don't fire `on_scroll`).
+/// current column count (cached by the view) -- or, when nothing is selected, selects the first
+/// album in view. Then scrolls the grid if the selection isn't fully visible, mirroring the
+/// commanded offset (operations don't fire `on_scroll`).
 fn move_selection(app: &mut App, dir: Dir) -> Task<Msg> {
     let n = app.albums.len();
     if n == 0 {
@@ -344,8 +357,12 @@ fn move_selection(app: &mut App, dir: Dir) -> Task<Msg> {
     }
     let geom = app.grid.get();
     let cols = geom.cols.max(1);
-    app.selected = next_selection(app.selected.min(n - 1), n, cols, dir);
-    let Some(offset) = scroll_target(geom, app.grid_offset, app.selected / cols) else {
+    let selected = match app.selected {
+        Some(cur) => next_selection(cur.min(n - 1), n, cols, dir),
+        None => first_visible(geom, app.grid_offset, n, cols),
+    };
+    app.selected = Some(selected);
+    let Some(offset) = scroll_target(geom, app.grid_offset, selected / cols) else {
         return Task::none();
     };
     app.grid_offset = offset;
@@ -353,6 +370,18 @@ fn move_selection(app: &mut App, dir: Dir) -> Task<Msg> {
     // Per-axis optional offsets: move y, leave x untouched.
     let to = widget::operation::scrollable::AbsoluteOffset { x: None, y: Some(offset) };
     widget::operate(widget::operation::scrollable::scroll_to(widget::Id::new(GRID_SCROLL_ID), to))
+}
+
+/// The first album in view at the current scroll offset: the leftmost album of the topmost row
+/// that extends below the viewport top, however slightly -- arrow keys with no selection start
+/// here, and the shared scroll pass then pops a partially-visible row fully into view.
+fn first_visible(geom: GridGeom, offset: f32, n: usize, cols: usize) -> usize {
+    if geom.pitch <= 0.0 {
+        return 0; // No layout yet: fall back to the first album.
+    }
+    // The first row whose bottom edge (top + row * pitch + row_h) lies strictly below the offset.
+    let row = (((offset - geom.top - geom.row_h) / geom.pitch).floor() + 1.0).max(0.0) as usize;
+    (row.min((n - 1) / cols)) * cols
 }
 
 /// The scroll offset that brings the given grid row fully into view, or `None` if it already is.
@@ -616,5 +645,16 @@ mod test {
     #[test]
     fn no_scroll_before_the_first_layout() {
         assert_eq!(scroll_target(GridGeom::default(), 0.0, 5), None, "zeroed geometry must not divide or scroll");
+    }
+
+    #[test]
+    fn first_visible_is_the_topmost_row_below_the_viewport_top() {
+        assert_eq!(first_visible(GEOM, 0.0, N, COLS), 0, "unscrolled: the first album");
+        // Row 0's bottom edge sits at 60 + 231 = 291: one visible pixel still counts...
+        assert_eq!(first_visible(GEOM, 290.0, N, COLS), 0, "a sliver of row 0 in view selects it");
+        // ...but exactly at (or past) the edge it doesn't.
+        assert_eq!(first_visible(GEOM, 291.0, N, COLS), COLS, "row 0 fully above: row 1's first album");
+        assert_eq!(first_visible(GEOM, 1e4, N, COLS), 2 * COLS, "over-scrolled: clamps to the last row");
+        assert_eq!(first_visible(GridGeom::default(), 0.0, N, COLS), 0, "no layout yet: the first album");
     }
 }

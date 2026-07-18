@@ -83,10 +83,11 @@ pub struct App {
     pub scan: ScanState,
     pub albums: Vec<Album>,
     pub view: View,
-    /// The album highlighted in the library grid, as an index into `albums`. Clicking a cover or
-    /// arrow-key navigation moves it; Space queues it, Ctrl+Space plays it. Clamped against
-    /// `albums.len()` on use, since a rescan can shrink the list under it.
-    pub selected: usize,
+    /// The album highlighted in the library grid, as an index into `albums`; `None` (the initial
+    /// state, or after clicking empty grid space) means nothing is selected. Clicking a cover or
+    /// arrow-key navigation selects; Space queues the selection, Ctrl+Space plays it. Clamped
+    /// against `albums.len()` on use, since a rescan can shrink the list under it.
+    pub selected: Option<usize>,
     /// The library grid's geometry as last laid out. It depends on the window size and so is only
     /// known at layout time; the view caches it here (see `library_view`) for keyboard navigation,
     /// which runs in `update` with no layout to consult (column count for up/down movement, row
@@ -241,7 +242,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             scan: ScanState::Scanning,
             albums: vec![],
             view: View::Library,
-            selected: 0,
+            selected: None,
             grid: Cell::new(GridGeom::default()),
             grid_offset: 0.0,
             queue: vec![],
