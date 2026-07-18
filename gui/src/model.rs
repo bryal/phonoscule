@@ -265,7 +265,7 @@ pub fn boot(conf: Conf, playlist: playlist::SavedPlaylist) -> impl Fn() -> (App,
         app.anim_pos = flow_target(&app);
         if !app.queue.is_empty() {
             app.send(player::Cmd::SetQueue {
-                tracks: app.queue.iter().map(|item| item.path.clone()).collect(),
+                tracks: entries(&app.queue),
                 start: app.current,
                 play: player::PlayState::Paused,
             });
@@ -293,6 +293,12 @@ impl App {
             log::error!("player engine is gone");
         }
     }
+}
+
+/// The engine-facing form of the queue: each track's path plus its album grouping key, which
+/// repeat-album advancement walks (see [`player::Entry`]).
+pub fn entries(items: &[QueueItem]) -> Vec<player::Entry> {
+    items.iter().map(|item| player::Entry { path: item.path.clone(), album: item.album_id }).collect()
 }
 
 /// The queue's contiguous runs of tracks from the same album, as ranges into the queue. The

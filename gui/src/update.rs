@@ -1,8 +1,8 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{
-    App, QueueItem, ScanState, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow, flow_target,
-    glow_blend, queue_items, run_of,
+    App, QueueItem, ScanState, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow, entries,
+    flow_target, glow_blend, queue_items, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -176,7 +176,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             if let Some(menu) = app.track_menu
                 && let Some(item) = track_item(app, menu.album, menu.selected)
             {
-                app.send(player::Cmd::Append { tracks: vec![item.path.clone()] });
+                app.send(player::Cmd::Append { tracks: entries(std::slice::from_ref(&item)) });
                 app.queue.push(item);
                 // Step onto the next track, so successive presses queue an album run.
                 let step = menu_step(app, MenuDir::Down);
@@ -202,7 +202,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // Deliberately keeps the menu open: queueing several tracks in a row is the natural
             // flow, and Escape or a click outside ends it.
             if let Some(item) = track_item(app, album, track) {
-                app.send(player::Cmd::Append { tracks: vec![item.path.clone()] });
+                app.send(player::Cmd::Append { tracks: entries(std::slice::from_ref(&item)) });
                 app.queue.push(item);
                 return save_playlist(app);
             }
@@ -353,7 +353,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
 /// Returns the playlist save task.
 fn play_items(app: &mut App, items: Vec<QueueItem>) -> Task<Msg> {
     let play = player::PlayState::Playing;
-    app.send(player::Cmd::SetQueue { tracks: items.iter().map(|i| i.path.clone()).collect(), start: 0, play });
+    app.send(player::Cmd::SetQueue { tracks: entries(&items), start: 0, play });
     app.queue = items;
     app.current = 0;
     app.anim_pos = 0.0;
@@ -373,7 +373,7 @@ fn play_album(app: &mut App, ix: usize) -> Task<Msg> {
 fn queue_album(app: &mut App, ix: usize) -> Task<Msg> {
     let Some(album) = app.albums.get(ix) else { return Task::none() };
     let items = queue_items(album);
-    app.send(player::Cmd::Append { tracks: items.iter().map(|i| i.path.clone()).collect() });
+    app.send(player::Cmd::Append { tracks: entries(&items) });
     app.queue.extend(items);
     save_playlist(app)
 }
