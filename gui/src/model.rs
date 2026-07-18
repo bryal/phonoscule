@@ -269,6 +269,8 @@ pub fn boot(conf: Conf, playlist: playlist::SavedPlaylist) -> impl Fn() -> (App,
                 start: app.current,
                 play: player::PlayState::Paused,
             });
+            // A restored session opens where it left off: on the player, ready to resume.
+            app.view = View::Player;
         }
         let options = library::ScanOptions {
             root: conf.music_dir.clone(),
