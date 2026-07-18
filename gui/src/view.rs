@@ -220,26 +220,29 @@ fn library_view(app: &App) -> Element<'_, Msg> {
     stack(layers).into()
 }
 
-/// The library's filter bar, floating top-right opposite the nav tabs: an artist chip opening the
-/// searchable picker, the fuzzy album-title search, and play/queue-all buttons acting on every
-/// album currently matching, in displayed order.
+/// The library's filter bar, floating top-right opposite the nav tabs: genre and artist chips
+/// (each opening its searchable picker), the fuzzy album-title search, and play/queue-all buttons
+/// acting on every album currently matching, in displayed order.
 fn filter_bar(app: &App) -> Element<'_, Msg> {
-    let chip_label = app.filter.artist.as_deref().unwrap_or("All artists");
-    let chip = button(text(chip_label).size(13))
-        .style(|_theme, status| {
-            let alpha = match status {
-                button::Status::Hovered | button::Status::Pressed => 0.9,
-                button::Status::Active | button::Status::Disabled => 0.6,
-            };
-            button::Style {
-                background: Some(iced::Background::Color(Color { a: alpha, ..Color::BLACK })),
-                text_color: Color::WHITE,
-                border: iced::border::rounded(13.0),
-                ..button::Style::default()
-            }
-        })
-        .padding([5, 12])
-        .on_press(Msg::OpenPicker(PickerSubject::Artist));
+    let chip = |label: &str, subject: PickerSubject| {
+        button(text(label.to_owned()).size(13))
+            .style(|_theme, status| {
+                let alpha = match status {
+                    button::Status::Hovered | button::Status::Pressed => 0.9,
+                    button::Status::Active | button::Status::Disabled => 0.6,
+                };
+                button::Style {
+                    background: Some(iced::Background::Color(Color { a: alpha, ..Color::BLACK })),
+                    text_color: Color::WHITE,
+                    border: iced::border::rounded(13.0),
+                    ..button::Style::default()
+                }
+            })
+            .padding([5, 12])
+            .on_press(Msg::OpenPicker(subject))
+    };
+    let genre = chip(app.filter.genre.as_deref().unwrap_or("All genres"), PickerSubject::Genre);
+    let artist = chip(app.filter.artist.as_deref().unwrap_or("All artists"), PickerSubject::Artist);
     let search = text_input("Search albums…", &app.filter.search).on_input(Msg::SearchChanged).size(13).width(210);
     let enabled = !app.filtered.is_empty();
     let play = text(FA_PLAY).font(font_awesome_solid()).size(13);
@@ -250,7 +253,8 @@ fn filter_bar(app: &App) -> Element<'_, Msg> {
     let clear = button(clear).style(button::text).on_press_maybe((!app.filter.is_empty()).then_some(Msg::ClearFilters));
     let bar = row![
         clear,
-        chip,
+        genre,
+        artist,
         search,
         button(play).style(button::text).on_press_maybe(enabled.then_some(Msg::PlayAll)),
         button(enqueue).style(button::text).on_press_maybe(enabled.then_some(Msg::QueueAll)),
@@ -266,6 +270,7 @@ fn filter_bar(app: &App) -> Element<'_, Msg> {
 /// moves the selection; a click or Enter picks. Dismissal like the other modals.
 fn picker_modal(picker: &Picker) -> Element<'_, Msg> {
     let placeholder = match picker.subject {
+        PickerSubject::Genre => "Search genres…",
         PickerSubject::Artist => "Search artists…",
     };
     let input = text_input(placeholder, &picker.query)

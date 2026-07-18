@@ -71,9 +71,10 @@ pub enum ModalKind {
     Picker,
 }
 
-/// What a [`Picker`] picks a filter value for. Genres join once the metadata layer knows them.
+/// What a [`Picker`] picks a filter value for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerSubject {
+    Genre,
     Artist,
 }
 
@@ -373,10 +374,11 @@ impl App {
     }
 }
 
-/// The library filter's inputs: an exact artist (picked from the searchable picker) and a fuzzy
-/// album-title search, ANDed together. Genre joins once the metadata layer knows it.
+/// The library filter's inputs: an exact genre and artist (each picked from a searchable picker)
+/// and a fuzzy album-title search, ANDed together.
 #[derive(Debug, Clone, Default)]
 pub struct Filter {
+    pub genre: Option<String>,
     pub artist: Option<String>,
     pub search: String,
 }
@@ -384,7 +386,7 @@ pub struct Filter {
 impl Filter {
     /// Whether the filter lets everything through (nothing to clear).
     pub fn is_empty(&self) -> bool {
-        self.artist.is_none() && self.search.is_empty()
+        self.genre.is_none() && self.artist.is_none() && self.search.is_empty()
     }
 }
 
@@ -397,6 +399,7 @@ pub fn refresh_filter(app: &mut App) {
         .albums
         .iter()
         .enumerate()
+        .filter(|(_, album)| app.filter.genre.as_ref().is_none_or(|genre| album.genre == *genre))
         .filter(|(_, album)| app.filter.artist.as_ref().is_none_or(|artist| album.artist == *artist))
         .filter_map(|(ix, album)| Some((ix, search_rank(&album.title, &app.filter.search)?)))
         .collect();
@@ -434,9 +437,10 @@ fn lcs_len(a: &str, b: &str) -> usize {
 }
 
 /// The values the picker for `subject` searches over: every distinct value in the library,
-/// sorted. (The albums list is sorted by artist, but artists repeat per album.)
+/// sorted. Untagged albums contribute no genre; they show only under "(all)".
 pub fn picker_options(app: &App, subject: PickerSubject) -> Vec<String> {
     let values: std::collections::BTreeSet<&String> = match subject {
+        PickerSubject::Genre => app.albums.iter().map(|album| &album.genre).filter(|genre| !genre.is_empty()).collect(),
         PickerSubject::Artist => app.albums.iter().map(|album| &album.artist).collect(),
     };
     values.into_iter().cloned().collect()

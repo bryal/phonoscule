@@ -37,6 +37,8 @@ pub struct Album {
     pub id: u64,
     pub title: String,
     pub artist: String,
+    /// Empty when no track of the album carries a genre tag.
+    pub genre: String,
     /// The id the cover art for this album has (or would have, when not loaded yet).
     pub cover_id: Option<u64>,
     pub cover: Option<CoverArt>,
@@ -175,6 +177,8 @@ struct CacheEntry {
     title: String,
     artist: String,
     album: String,
+    /// Empty when the file carries no genre tag.
+    genre: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -183,7 +187,7 @@ struct Cache {
     files: HashMap<PathBuf, CacheEntry>,
 }
 
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 
 /// A stable hash-based identity for albums and covers.
 fn stable_id(parts: impl Hash) -> u64 {
@@ -371,6 +375,7 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
                         "" => parent_name(&file.path),
                         a => a.to_string(),
                     },
+                    genre: tags.genre().to_string(),
                 }
             }
         };
@@ -379,12 +384,17 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
                 id: stable_id((&job.dir, &entry.album)),
                 title: entry.album.clone(),
                 artist: entry.artist.clone(),
+                genre: entry.genre.clone(),
                 cover_id,
                 cover: None,
                 tracks: vec![],
             });
             albums.len() - 1
         });
+        // Genre is per-album here: the first track carrying one names the album's.
+        if albums[ix].genre.is_empty() {
+            albums[ix].genre = entry.genre.clone();
+        }
         albums[ix].tracks.push(TrackInfo { path: file.path.clone(), title: entry.title.clone() });
         entries.push((file.path.clone(), entry));
     }
@@ -558,7 +568,9 @@ mod test {
         fmt.extend((48000u32 * 4).to_le_bytes()); // avg bytes per second
         fmt.extend(4u16.to_le_bytes()); // block size
         fmt.extend(16u16.to_le_bytes()); // bits per sample
-        let list = [&b"INFO"[..], &info(b"INAM", title), &info(b"IART", artist), &info(b"IPRD", album)].concat();
+        let list =
+            [&b"INFO"[..], &info(b"INAM", title), &info(b"IART", artist), &info(b"IPRD", album), &info(b"IGNR", "Test Genre")]
+                .concat();
         let riff = [&b"WAVE"[..], &chunk(b"fmt ", &fmt), &chunk(b"LIST", &list), &chunk(b"data", &[0u8; 4800])].concat();
         let mut out = Vec::new();
         out.extend(b"RIFF");
@@ -651,6 +663,7 @@ mod test {
         scan_and_apply(&mut albums, options());
         assert_eq!(albums.len(), 2);
         assert_eq!(albums[0].tracks[0].title, "First Song");
+        assert_eq!(albums[0].genre, "Test Genre", "the genre tag reaches the album");
         assert!(cache_file.exists());
         let ids = (albums[0].id, albums[1].id);
 

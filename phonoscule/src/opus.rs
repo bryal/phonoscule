@@ -555,6 +555,8 @@ fn parse_opus_tags(metadata: &mut impl Metadata, data: &[u8]) {
                 metadata.set_artist(value)
             } else if key.eq_ignore_ascii_case("ALBUM") {
                 metadata.set_album(value)
+            } else if key.eq_ignore_ascii_case("GENRE") {
+                metadata.set_genre(value)
             } else {
                 log::trace!("ignored comment {key}");
             }

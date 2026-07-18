@@ -186,6 +186,7 @@ where
             "INAM" => m.read_title(chunk_size, inp).await.ok()?,
             "IPRD" => m.read_album(chunk_size, inp).await.ok()?,
             "IART" => m.read_artist(chunk_size, inp).await.ok()?,
+            "IGNR" => m.read_genre(chunk_size, inp).await.ok()?,
             id => {
                 log::trace!("ignored INFO subchunk {:?}", id);
                 0

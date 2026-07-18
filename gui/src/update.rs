@@ -669,6 +669,7 @@ fn pick_filter(app: &mut App, slot: usize) {
         },
     };
     match picker.subject {
+        PickerSubject::Genre => app.filter.genre = value,
         PickerSubject::Artist => app.filter.artist = value,
     }
     app.modal = None;

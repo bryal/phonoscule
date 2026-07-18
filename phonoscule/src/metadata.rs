@@ -6,12 +6,15 @@ pub trait Metadata: Default {
     fn title(&self) -> &str;
     fn album(&self) -> &str;
     fn artist(&self) -> &str;
+    fn genre(&self) -> &str;
     async fn read_title<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
     async fn read_album<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
     async fn read_artist<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
+    async fn read_genre<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
     fn set_title(&mut self, inp: &str);
     fn set_album(&mut self, inp: &str);
     fn set_artist(&mut self, inp: &str);
+    fn set_genre(&mut self, inp: &str);
 }
 
 #[derive(Clone)]
@@ -20,11 +23,12 @@ pub struct StaticMetadata<const BUF_SIZE: usize = 256> {
     buf: [u8; BUF_SIZE],
 }
 
-const STATIC_METADATA_N_FIELDS: usize = 3;
+const STATIC_METADATA_N_FIELDS: usize = 4;
 impl<const BUF_SIZE: usize> StaticMetadata<BUF_SIZE> {
     const TITLE: usize = 0;
     const ARTIST: usize = 1;
     const ALBUM: usize = 2;
+    const GENRE: usize = 3;
 
     async fn read_field<R: Read>(&mut self, field: usize, size: usize, inp: &mut R) -> Result<usize, R::Error> {
         let mut field_buf = [0u8; BUF_SIZE];
@@ -106,6 +110,9 @@ impl<const BUF_SIZE: usize> Metadata for StaticMetadata<BUF_SIZE> {
     fn artist(&self) -> &str {
         self.field_str(Self::ARTIST)
     }
+    fn genre(&self) -> &str {
+        self.field_str(Self::GENRE)
+    }
     async fn read_title<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error> {
         self.read_field(Self::TITLE, size, inp).await
     }
@@ -115,6 +122,9 @@ impl<const BUF_SIZE: usize> Metadata for StaticMetadata<BUF_SIZE> {
     async fn read_artist<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error> {
         self.read_field(Self::ARTIST, size, inp).await
     }
+    async fn read_genre<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error> {
+        self.read_field(Self::GENRE, size, inp).await
+    }
     fn set_title(&mut self, inp: &str) {
         self.set_field(Self::TITLE, inp)
     }
@@ -123,6 +133,9 @@ impl<const BUF_SIZE: usize> Metadata for StaticMetadata<BUF_SIZE> {
     }
     fn set_artist(&mut self, inp: &str) {
         self.set_field(Self::ARTIST, inp)
+    }
+    fn set_genre(&mut self, inp: &str) {
+        self.set_field(Self::GENRE, inp)
     }
 }
 
@@ -148,6 +161,7 @@ impl<const BUF_SIZE: usize> std::fmt::Debug for StaticMetadata<BUF_SIZE> {
             .field("title", &self.title())
             .field("artist", &self.artist())
             .field("album", &self.album())
+            .field("genre", &self.genre())
             .finish()
     }
 }
