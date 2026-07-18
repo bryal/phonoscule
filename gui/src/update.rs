@@ -1,7 +1,8 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{
-    App, QueueItem, ScanState, View, album_runs, current_album_id, current_glow, flow_target, glow_blend, queue_items, run_of,
+    App, QueueItem, ScanState, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow, flow_target,
+    glow_blend, queue_items, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -31,6 +32,13 @@ pub enum Msg {
     OpenTrackMenu(usize),
     /// Dismiss the track menu (Escape, or a click outside it).
     CloseTrackMenu,
+    /// Move the track menu's keyboard selection one track up or down (arrow keys).
+    MenuMove(MenuDir),
+    /// Append the track menu's selected track to the queue (Space), stepping the selection to the
+    /// next track so successive presses queue an album run.
+    MenuQueue,
+    /// Play the track menu's selected track, replacing the queue (Ctrl+Space or Enter).
+    MenuPlay,
     /// Play a single track, replacing the queue with it (a play bubble in the track menu).
     PlayTrack {
         album: usize,
@@ -90,6 +98,13 @@ pub enum SeekDir {
     Backward,
 }
 
+/// A keyboard move of the track menu's selection.
+#[derive(Debug, Clone, Copy)]
+pub enum MenuDir {
+    Up,
+    Down,
+}
+
 pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
     match msg {
         Msg::Library(library::ScanEvent::Album(mut album)) => {
@@ -139,11 +154,30 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::PreloadAlbum(ix) => return preload_cover(app, ix),
         Msg::AlbumSelected(selected) => app.selected = selected,
         Msg::OpenTrackMenu(ix) => {
-            app.track_menu = Some(ix);
+            app.track_menu = Some(TrackMenu { album: ix, selected: 0 });
             // A play from the menu is likely imminent: warm the album's high-res cover.
             return preload_cover(app, ix);
         }
         Msg::CloseTrackMenu => app.track_menu = None,
+        Msg::MenuMove(dir) => return menu_step(app, dir),
+        Msg::MenuQueue => {
+            if let Some(menu) = app.track_menu
+                && let Some(item) = track_item(app, menu.album, menu.selected)
+            {
+                app.send(player::Cmd::Append { tracks: vec![item.path.clone()] });
+                app.queue.push(item);
+                // Step onto the next track, so successive presses queue an album run.
+                return menu_step(app, MenuDir::Down);
+            }
+        }
+        Msg::MenuPlay => {
+            if let Some(menu) = app.track_menu {
+                app.track_menu = None;
+                if let Some(item) = track_item(app, menu.album, menu.selected) {
+                    play_items(app, vec![item]);
+                }
+            }
+        }
         Msg::PlayTrack { album, track } => {
             // Playing switches to the player view; the menu has served its purpose.
             app.track_menu = None;
@@ -332,6 +366,25 @@ fn track_item(app: &App, album: usize, track: usize) -> Option<QueueItem> {
     queue_items(album).into_iter().nth(track)
 }
 
+/// Moves the track menu's keyboard selection one step, clamped to the album's tracks, and snaps
+/// the menu's scrollable so the selection stays in view. Snapping is proportional (selection at
+/// fraction f of the list scrolls to fraction f), which keeps the selected row visible at every
+/// position without knowing the list's pixel geometry.
+fn menu_step(app: &mut App, dir: MenuDir) -> Task<Msg> {
+    let Some(menu) = &mut app.track_menu else { return Task::none() };
+    let Some(n) = app.albums.get(menu.album).map(|a| a.tracks.len()).filter(|&n| n > 0) else {
+        return Task::none();
+    };
+    menu.selected = match dir {
+        MenuDir::Up => menu.selected.saturating_sub(1),
+        MenuDir::Down => (menu.selected + 1).min(n - 1),
+    };
+    let fraction = if n > 1 { menu.selected as f32 / (n - 1) as f32 } else { 0.0 };
+    use iced::advanced::widget;
+    let to = widget::operation::scrollable::RelativeOffset { x: None, y: Some(fraction) };
+    widget::operate(widget::operation::scrollable::snap_to(widget::Id::new(TRACK_MENU_SCROLL_ID), to))
+}
+
 /// Warms the global high-res cache with the cover of the album at `ix` (see `HiResCache::query`);
 /// idempotent, so callers fire it on any hint that the album is about to play.
 fn preload_cover(app: &mut App, ix: usize) -> Task<Msg> {
@@ -496,10 +549,18 @@ pub fn key_to_msg(view: View, menu_open: bool, key: Key, modifiers: Modifiers, r
     }
     let one_shot = |msg| if repeat { None } else { Some(msg) };
 
-    // The track menu is modal: Escape dismisses it, everything else is suppressed.
+    // The track menu is modal: it gets its own bindings and everything else is suppressed.
+    // Mirrors the grid's vocabulary one level down -- arrows move the selection, Space queues it,
+    // Ctrl+Space (or Enter, which opened the menu) plays it -- and Escape dismisses.
     if menu_open {
-        return match key {
-            Key::Named(Named::Escape) if !modifiers.control() => one_shot(Msg::CloseTrackMenu),
+        return match (key, modifiers.control()) {
+            (Key::Named(Named::Escape), false) => one_shot(Msg::CloseTrackMenu),
+            (Key::Named(Named::ArrowUp), false) if modifiers.is_empty() => Some(Msg::MenuMove(MenuDir::Up)),
+            (Key::Named(Named::ArrowDown), false) if modifiers.is_empty() => Some(Msg::MenuMove(MenuDir::Down)),
+            // One queue per press: holding Space must not machine-gun the queue.
+            (Key::Named(Named::Space), false) if modifiers.is_empty() => one_shot(Msg::MenuQueue),
+            (Key::Named(Named::Space), true) => one_shot(Msg::MenuPlay),
+            (Key::Named(Named::Enter), false) if modifiers.is_empty() => one_shot(Msg::MenuPlay),
             _ => None,
         };
     }

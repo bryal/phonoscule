@@ -1,6 +1,6 @@
 //! Rendering the model: the library browser and the player (Cover Flow) views.
 
-use crate::model::{App, ScanState, View, album_runs, glow_now, run_of};
+use crate::model::{App, ScanState, TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of};
 use crate::update::Msg;
 use iced::widget::{
     button, center, column, container, hover, image, mouse_area, opaque, responsive, row, scrollable, slider, stack, text,
@@ -182,31 +182,39 @@ fn library_view(app: &App) -> Element<'_, Msg> {
 /// too, via `key_to_msg`); the outer `opaque` blocks the mouse from everything underneath.
 /// `None` when no menu is open (or a rescan dropped the album from under it).
 fn track_menu_modal(app: &App) -> Option<Element<'_, Msg>> {
-    let album_ix = app.track_menu?;
-    let album = app.albums.get(album_ix)?;
+    let menu = app.track_menu?;
+    let album = app.albums.get(menu.album)?;
 
     let mut list = column![].spacing(2);
     for (track_ix, track) in album.tracks.iter().enumerate() {
         let play = text(FA_PLAY).font(font_awesome_solid()).size(10);
         let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(12);
-        list = list.push(
-            row![
-                text(&track.title).size(14).width(Fill),
-                bubble(container(play).center(Fill), Msg::PlayTrack { album: album_ix, track: track_ix }),
-                bubble(container(enqueue).center(Fill), Msg::QueueTrack { album: album_ix, track: track_ix }),
-            ]
-            .spacing(6)
-            .align_y(Center),
-        );
+        let entry = row![
+            text(&track.title).size(14).width(Fill),
+            bubble(container(play).center(Fill), Msg::PlayTrack { album: menu.album, track: track_ix }),
+            bubble(container(enqueue).center(Fill), Msg::QueueTrack { album: menu.album, track: track_ix }),
+        ]
+        .spacing(6)
+        .align_y(Center);
+        // The keyboard selection, brightened a step above the panel.
+        let selected = track_ix == menu.selected;
+        list = list.push(container(entry).padding([0, 4]).style(move |_theme| container::Style {
+            background: selected.then(|| iced::Background::Color(color!(0xffffff, 0.1))),
+            border: iced::border::rounded(6.0),
+            ..container::Style::default()
+        }));
     }
-    // Long albums scroll within the panel's height cap (wheel-only, like the other lists).
+    // Long albums scroll within the panel's height cap (wheel-only, like the other lists); the id
+    // lets keyboard navigation snap the selection into view (see `menu_step`).
     let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
-    let list = scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar));
+    let list = scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar)).id(TRACK_MENU_SCROLL_ID);
 
     let header = column![text(&album.title).size(17), text(&album.artist).size(13).style(text::secondary)].spacing(2);
+    // A weak-primary panel rather than near-black, so the black action bubbles (and their hover
+    // brightening) stay visible against it.
     let panel =
-        container(column![header, list].spacing(12)).padding(16).width(420).max_height(560).style(|_theme| container::Style {
-            background: Some(iced::Background::Color(color!(0x101014, 0.97))),
+        container(column![header, list].spacing(12)).padding(16).width(420).max_height(560).style(|theme| container::Style {
+            background: Some(iced::Background::Color(Color { a: 0.97, ..theme.extended_palette().primary.weak.color })),
             border: iced::Border { color: color!(0xffffff, 0.1), width: 1.0, radius: 10.0.into() },
             ..container::Style::default()
         });

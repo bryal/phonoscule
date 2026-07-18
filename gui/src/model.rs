@@ -40,6 +40,17 @@ pub enum ScanState {
     Complete,
 }
 
+/// The open track menu: which album (an index into [`App::albums`]) and which of its tracks the
+/// keyboard selection sits on (Up/Down move it; Space queues, Ctrl+Space or Enter plays).
+#[derive(Debug, Clone, Copy)]
+pub struct TrackMenu {
+    pub album: usize,
+    pub selected: usize,
+}
+
+/// Widget id of the track menu's scrollable, so keyboard navigation can snap it to the selection.
+pub const TRACK_MENU_SCROLL_ID: &str = "track-menu";
+
 #[derive(Debug, Clone)]
 pub struct QueueItem {
     pub path: PathBuf,
@@ -66,9 +77,9 @@ pub struct App {
     /// syncs from it each render and reports changes back (see `AlbumGrid::selected`); nothing
     /// here reads it.
     pub selected: Option<usize>,
-    /// The album (an index into `albums`) whose track menu is open as a modal over the library
-    /// view, letting single tracks be played or queued; `None` when no menu is open.
-    pub track_menu: Option<usize>,
+    /// The track menu open as a modal over the library view, letting single tracks be played or
+    /// queued; `None` when no menu is open.
+    pub track_menu: Option<TrackMenu>,
     pub queue: Vec<QueueItem>,
     pub current: usize,
     pub play_state: player::PlayState,
