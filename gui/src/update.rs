@@ -73,6 +73,9 @@ pub enum Msg {
     },
     /// Reset playback: jump to the first track of the queue, paused (Backspace).
     ResetPlayback,
+    /// Clear the queue entirely (Ctrl+K, or the actions menu): playback stops, the player bar
+    /// disappears, and the session restores queueless -- a fresh start.
+    ClearQueue,
     /// Move the track menu's keyboard selection one track up or down (arrow keys).
     MenuMove(MenuDir),
     /// The cursor entered a track menu row: move the selection there, so the mouse and the arrow
@@ -334,6 +337,20 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 // its length on the seek bar -- the same way a restored session comes up.
                 app.send(player::Cmd::SetQueue { tracks: entries(&app.queue), start: 0, play: player::PlayState::Paused });
                 return save_player(app);
+            }
+        }
+        Msg::ClearQueue => {
+            // Invoked from the actions menu: the action dismisses it.
+            if matches!(app.modal, Some(Modal::Actions)) {
+                app.modal = None;
+            }
+            if !app.queue.is_empty() {
+                app.queue.clear();
+                app.current = 0;
+                app.anim_pos = 0.0;
+                // The engine goes idle (reporting QueueEnded, which also tells the OS we stopped).
+                app.send(player::Cmd::SetQueue { tracks: vec![], start: 0, play: player::PlayState::Paused });
+                return Task::batch([save_playlist(app), save_player(app)]);
             }
         }
         Msg::PlayTrack { album, track } => {
@@ -922,6 +939,7 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
                     scope: if ctrl { Scope::All } else { Scope::Others },
                     promotion: Promotion::Auto,
                 }),
+                (Key::Character(c), true) if c.as_str() == "k" => one_shot(Msg::ClearQueue),
                 _ => None,
             };
         }
@@ -963,6 +981,7 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
             });
         }
         (Key::Named(Named::Backspace), false, false) => return one_shot(Msg::ResetPlayback),
+        (Key::Character(c), false, true) if c.as_str() == "k" => return one_shot(Msg::ClearQueue),
         _ => {}
     }
 

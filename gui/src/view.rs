@@ -393,6 +393,7 @@ fn actions_modal(app: &App) -> Element<'_, Msg> {
             scope: Scope::All,
             promotion: Promotion::Literal
         }),
+        entry("Clear playlist", "ctrl+k", Msg::ClearQueue),
     ]
     .spacing(2);
     let panel = container(list).padding(12).width(280).style(|theme: &Theme| container::Style {
