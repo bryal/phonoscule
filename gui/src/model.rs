@@ -61,6 +61,11 @@ pub struct App {
     pub scan: ScanState,
     pub albums: Vec<Album>,
     pub view: View,
+    /// The library grid's selection, externalized from the grid widget (whose own state drops
+    /// with the view) so it survives switching views. Purely a persistence mirror: the widget
+    /// syncs from it each render and reports changes back (see `AlbumGrid::selected`); nothing
+    /// here reads it.
+    pub selected: Option<usize>,
     pub queue: Vec<QueueItem>,
     pub current: usize,
     pub play_state: player::PlayState,
@@ -206,6 +211,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             scan: ScanState::Scanning,
             albums: vec![],
             view: View::Library,
+            selected: None,
             queue: vec![],
             current: 0,
             play_state: player::PlayState::Paused,

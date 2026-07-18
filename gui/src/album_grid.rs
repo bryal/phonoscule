@@ -12,11 +12,13 @@
 //! - Space queues the selected album and Ctrl+Space plays it, published via `on_queue`/`on_play`.
 //!
 //! Selection and scroll position live in the widget tree ([`State`]), not the application model:
-//! nothing outside needs them, since the widget publishes whole actions (`on_play(ix)`). And the
-//! widget draws the card texts itself from its own metric constants, so the geometry keyboard
-//! navigation relies on and the rendered layout cannot drift apart. Both state and layout being
-//! in one place is the point -- the previous split (selection in the model, geometry mirrored out
-//! of the view, scroll offset mirrored out of the scrollable) needed three files to cooperate.
+//! the widget publishes whole actions (`on_play(ix)`), so nothing outside needs to track them.
+//! The exception is opt-in: [`selected`](AlbumGrid::selected) externalizes the selection so it
+//! survives the state being dropped when the view is left. And the widget draws the card texts
+//! itself from its own metric constants, so the geometry keyboard navigation relies on and the
+//! rendered layout cannot drift apart. Both state and layout being in one place is the point --
+//! the previous split (selection in the model, geometry mirrored out of the view, scroll offset
+//! mirrored out of the scrollable) needed three files to cooperate.
 //!
 //! The caller supplies each card's cover as an [`Element`] (image or fallback, plus any floating
 //! action bubbles), which the grid lays out to exactly the cover square; build it size-agnostic
@@ -51,7 +53,7 @@ const CARD_SPACING: f32 = 4.0;
 const WHEEL_LINE: f32 = 60.0;
 
 pub fn album_grid<'a, Message>(on_play: fn(usize) -> Message, on_queue: fn(usize) -> Message) -> AlbumGrid<'a, Message> {
-    AlbumGrid { cards: Vec::new(), top_clearance: 0.0, bottom_clearance: 0.0, on_play, on_queue }
+    AlbumGrid { cards: Vec::new(), top_clearance: 0.0, bottom_clearance: 0.0, on_play, on_queue, selection: None }
 }
 
 pub struct AlbumGrid<'a, Message> {
@@ -65,7 +67,24 @@ pub struct AlbumGrid<'a, Message> {
     on_play: fn(usize) -> Message,
     /// Append the album to the queue: Space on the selection.
     on_queue: fn(usize) -> Message,
+    /// Externalized selection, when the caller opted in via [`selected`](Self::selected).
+    selection: Option<Selection<Message>>,
 }
+
+/// The two halves of an externalized selection: the caller's value, synced into the internal
+/// selection on every render, and the message publishing every change back to the caller.
+struct Selection<Message> {
+    value: Option<usize>,
+    notify: fn(Option<usize>) -> Message,
+}
+
+// Derived Clone/Copy would demand `Message: Clone/Copy`; the fields are copyable regardless.
+impl<Message> Clone for Selection<Message> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<Message> Copy for Selection<Message> {}
 
 struct Card<'a, Message> {
     cover: Element<'a, Message>,
@@ -87,19 +106,32 @@ impl<'a, Message> AlbumGrid<'a, Message> {
         Self { bottom_clearance: clearance, ..self }
     }
 
+    /// Externalizes the selection so it survives the widget's own state being dropped (leaving the
+    /// view drops the whole subtree): the widget treats `selected` as the source of truth on every
+    /// render and publishes `on_select` whenever the selection changes, so the caller's store and
+    /// the internal state mirror each other. On a fresh mount the selection is also scrolled back
+    /// into view (the scroll offset itself is not externalized -- restoring the selection's
+    /// context is what matters).
+    pub fn selected(self, selected: Option<usize>, on_select: fn(Option<usize>) -> Message) -> Self {
+        Self { selection: Some(Selection { value: selected, notify: on_select }), ..self }
+    }
+
     fn geom(&self, width: f32) -> Geom {
         Geom::new(width, self.top_clearance, self.bottom_clearance)
     }
 }
 
-/// The grid's selection and scroll state, owned by the widget tree. Reset when the tree drops the
-/// widget (e.g. switching views), which conveniently returns the library fresh and unselected.
+/// The grid's selection and scroll state, owned by the widget tree, which drops it when the
+/// library view is left; an externalized selection (see [`AlbumGrid::selected`]) survives that.
 #[derive(Default)]
 struct State {
     selected: Option<usize>,
     /// Scroll offset in pixels; clamped against the content height on use, not on write, so a
     /// window resize can't strand it (the stock scrollable does the same).
     offset: f32,
+    /// Whether the fresh-mount pass ran (see the top of `update`): a restored selection is
+    /// scrolled back into view on the first event after the widget (re)mounts.
+    restored: bool,
 }
 
 /// A direction to move the selection.
@@ -117,7 +149,10 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::default())
+        // Seed from the externalized selection: a fresh state (`diff` never ran) must already
+        // carry it, or the first frame after a view switch would briefly lose the selection.
+        let selected = self.selection.and_then(|selection| selection.value);
+        tree::State::new(State { selected, ..State::default() })
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -126,8 +161,12 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
 
     fn diff(&self, tree: &mut Tree) {
         tree.diff_children(&self.cards.iter().map(|card| &card.cover).collect::<Vec<_>>());
-        // A rescan can shrink the library under the selection: clamp to the last album.
         let state = tree.state.downcast_mut::<State>();
+        // An externalized selection is the source of truth: sync from it every render.
+        if let Some(selection) = self.selection {
+            state.selected = selection.value;
+        }
+        // A rescan can shrink the library under the selection: clamp to the last album.
         if state.selected.is_some_and(|s| s >= self.cards.len()) {
             state.selected = self.cards.len().checked_sub(1);
         }
@@ -180,7 +219,21 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
         let n = self.cards.len();
         let geom = self.geom(bounds.width);
         let state = tree.state.downcast_mut::<State>();
+
+        // Fresh mount: an externally persisted selection may sit anywhere in the grid while the
+        // scroll offset starts at zero, so scroll it back into view before anything is shown (the
+        // first event through here is the pre-paint redraw request).
+        if !state.restored {
+            state.restored = true;
+            if let Some(selected) = state.selected
+                && let Some(target) = geom.scroll_target(state.offset, bounds.height, selected / geom.cols)
+            {
+                state.offset = target.clamp(0.0, geom.max_offset(n, bounds.height));
+            }
+        }
+
         let offset = state.offset.clamp(0.0, geom.max_offset(n, bounds.height));
+        let before = state.selected;
 
         // Children live at unscrolled content coordinates: hand them the cursor translated into
         // that space, and the visible region likewise. They react first and may capture (the
@@ -259,6 +312,13 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                 }
             }
             _ => {}
+        }
+
+        // Mirror every selection change back to the externalized store (see `selected`).
+        if let Some(selection) = self.selection
+            && state.selected != before
+        {
+            shell.publish((selection.notify)(state.selected));
         }
     }
 

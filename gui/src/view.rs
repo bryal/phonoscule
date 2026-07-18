@@ -141,8 +141,12 @@ fn library_view(app: &App) -> Element<'_, Msg> {
     let bottom_clearance = if app.queue.is_empty() { 16.0 } else { PLAYER_BAR_HEIGHT };
     // The grid widget owns layout, scrolling, selection, and keyboard navigation (see
     // `album_grid`); the view supplies each card's cover element and its texts, and receives
-    // whole actions back (Space queues the selection, Ctrl+Space plays it).
-    let mut grid = album_grid(Msg::PlayAlbum, Msg::QueueAlbum).top_clearance(TAB_BAR_HEIGHT).bottom_clearance(bottom_clearance);
+    // whole actions back (Space queues the selection, Ctrl+Space plays it). The selection is
+    // externalized into the model so it survives view switches.
+    let mut grid = album_grid(Msg::PlayAlbum, Msg::QueueAlbum)
+        .top_clearance(TAB_BAR_HEIGHT)
+        .bottom_clearance(bottom_clearance)
+        .selected(app.selected, Msg::AlbumSelected);
     for (ix, album) in app.albums.iter().enumerate() {
         grid = grid.push(album_cover(ix, album), &album.title, &album.artist);
     }

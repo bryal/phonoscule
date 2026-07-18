@@ -23,6 +23,9 @@ pub enum Msg {
     /// moment between hover and click and the cover is ready (or nearly) by the time the flow shows
     /// it. Idempotent -- a hover that never becomes a click just ages back out of the LRU.
     PreloadAlbum(usize),
+    /// The library grid's selection changed; store it so it survives view switches (the grid's
+    /// own state drops with the view -- see `AlbumGrid::selected`).
+    AlbumSelected(Option<usize>),
     Player(player::Event),
     Media(media::Control),
     Toggle,
@@ -123,6 +126,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 return app.hires.query(id, file);
             }
         }
+        Msg::AlbumSelected(selected) => app.selected = selected,
         Msg::Player(event) => match event {
             player::Event::TrackStarted { ix, len } => {
                 app.current = ix;
