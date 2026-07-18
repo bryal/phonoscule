@@ -27,13 +27,16 @@ pub enum Msg {
     /// The library grid's selection changed; store it so it survives view switches (the grid's
     /// own state drops with the view -- see `AlbumGrid::selected`).
     AlbumSelected(Option<usize>),
-    /// Open the modal listing an album's tracks (the card's list bubble, a right-click on its
+    /// Open the modal listing an album's tracks (the card's list bubble, a left-click on its
     /// cover, or Enter on the selection), to play or queue tracks individually.
     OpenTrackMenu(usize),
     /// Dismiss the track menu (Escape, or a click outside it).
     CloseTrackMenu,
     /// Move the track menu's keyboard selection one track up or down (arrow keys).
     MenuMove(MenuDir),
+    /// The cursor entered a track menu row: move the selection there, so the mouse and the arrow
+    /// keys drive the same highlight.
+    MenuHover(usize),
     /// Append the track menu's selected track to the queue (Space), stepping the selection to the
     /// next track so successive presses queue an album run.
     MenuQueue,
@@ -160,6 +163,12 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         }
         Msg::CloseTrackMenu => app.track_menu = None,
         Msg::MenuMove(dir) => return menu_step(app, dir),
+        // No snap, unlike MenuMove: the cursor is already on the row it selected.
+        Msg::MenuHover(track) => {
+            if let Some(menu) = &mut app.track_menu {
+                menu.selected = track;
+            }
+        }
         Msg::MenuQueue => {
             if let Some(menu) = app.track_menu
                 && let Some(item) = track_item(app, menu.album, menu.selected)

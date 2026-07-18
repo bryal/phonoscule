@@ -157,8 +157,8 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         .bottom_clearance(bottom_clearance)
         .selected(app.selected, Msg::AlbumSelected)
         .on_menu(Msg::OpenTrackMenu)
-        // The track menu is modal: its opaque backdrop blocks the mouse, this blocks the keys.
-        .keyboard(app.track_menu.is_none());
+        // The track menu is modal: its opaque backdrop only blocks clicks, this blocks the rest.
+        .interactive(app.track_menu.is_none());
     for (ix, album) in app.albums.iter().enumerate() {
         grid = grid.push(album_cover(ix, album), &album.title, &album.artist);
     }
@@ -196,13 +196,15 @@ fn track_menu_modal(app: &App) -> Option<Element<'_, Msg>> {
         ]
         .spacing(6)
         .align_y(Center);
-        // The keyboard selection, brightened a step above the panel.
+        // The selection, brightened a step above the panel; hovering a row moves it there, so the
+        // mouse and the arrow keys drive the same highlight.
         let selected = track_ix == menu.selected;
-        list = list.push(container(entry).padding([0, 4]).style(move |_theme| container::Style {
+        let entry = container(entry).padding([0, 4]).style(move |_theme| container::Style {
             background: selected.then(|| iced::Background::Color(color!(0xffffff, 0.1))),
             border: iced::border::rounded(6.0),
             ..container::Style::default()
-        }));
+        });
+        list = list.push(mouse_area(entry).on_enter(Msg::MenuHover(track_ix)));
     }
     // Long albums scroll within the panel's height cap (wheel-only, like the other lists); the id
     // lets keyboard navigation snap the selection into view (see `menu_step`).

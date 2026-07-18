@@ -4,13 +4,13 @@
 //! application's model/update/view files:
 //!
 //! - Wheel/touchpad scrolling, scrollbar-less (matching how the stock scrollable was configured).
-//! - Click-to-select on a card's cover; clicking anything else deselects. The action bubbles
-//!   floating over a cover capture their clicks first (children update before the grid and the
-//!   grid respects capture), so they act without touching the selection.
+//! - Hovering a cover selects its album; the cursor leaving every cover deselects. The action
+//!   bubbles floating over a cover capture their clicks first (children update before the grid
+//!   and the grid respects capture), so they act without the grid reacting.
 //! - Arrow-key navigation in two dimensions; when nothing is selected, an arrow key picks up the
 //!   first album in view. The selection is always scrolled fully into view, minimally.
 //! - Space queues the selected album and Ctrl+Space plays it, published via `on_queue`/`on_play`.
-//! - Right-clicking a cover, or Enter on the selection, asks for the album's track menu
+//! - Left-clicking a cover, or Enter on the selection, asks for the album's track menu
 //!   (published via `on_menu`; the menu itself is the caller's).
 //!
 //! Selection and scroll position live in the widget tree ([`State`]), not the application model:
@@ -63,7 +63,7 @@ pub fn album_grid<'a, Message>(on_play: fn(usize) -> Message, on_queue: fn(usize
         on_queue,
         on_menu: None,
         selection: None,
-        keyboard: true,
+        interactive: true,
     }
 }
 
@@ -78,15 +78,15 @@ pub struct AlbumGrid<'a, Message> {
     on_play: fn(usize) -> Message,
     /// Append the album to the queue: Space on the selection.
     on_queue: fn(usize) -> Message,
-    /// Ask for an album's track menu: right-clicking a cover (which also selects it), or Enter on
-    /// the selection. The menu itself is the caller's business; the grid only reports the ask.
+    /// Ask for an album's track menu: left-clicking a cover, or Enter on the selection. The menu
+    /// itself is the caller's business; the grid only reports the ask.
     on_menu: Option<fn(usize) -> Message>,
     /// Externalized selection, when the caller opted in via [`selected`](Self::selected).
     selection: Option<Selection<Message>>,
-    /// Whether the grid responds to keyboard input. Mouse input over a modal is blocked by the
-    /// modal's own opaque layer, but keyboard events reach every widget in the tree -- so the
-    /// caller disables this while a modal covers the grid.
-    keyboard: bool,
+    /// Whether the grid reacts to input at all. An `opaque` modal backdrop only blocks button
+    /// presses -- cursor moves, wheel scrolls, and keyboard events still reach every widget in
+    /// the tree -- so the caller disables this while a modal covers the grid.
+    interactive: bool,
 }
 
 /// The two halves of an externalized selection: the caller's value, synced into the internal
@@ -134,16 +134,16 @@ impl<'a, Message> AlbumGrid<'a, Message> {
         Self { selection: Some(Selection { value: selected, notify: on_select }), ..self }
     }
 
-    /// The message asking for an album's track menu: published on right-clicking a cover (which
-    /// also selects it) and on Enter with a selection.
+    /// The message asking for an album's track menu: published on left-clicking a cover and on
+    /// Enter with a selection.
     pub fn on_menu(self, on_menu: fn(usize) -> Message) -> Self {
         Self { on_menu: Some(on_menu), ..self }
     }
 
-    /// Sets whether the grid responds to keyboard input; disable it while a modal covers the grid
-    /// (see the `keyboard` field).
-    pub fn keyboard(self, enabled: bool) -> Self {
-        Self { keyboard: enabled, ..self }
+    /// Sets whether the grid reacts to input; disable it while a modal covers the grid (see the
+    /// `interactive` field).
+    pub fn interactive(self, enabled: bool) -> Self {
+        Self { interactive: enabled, ..self }
     }
 
     fn geom(&self, width: f32) -> Geom {
@@ -285,11 +285,22 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                 &content_viewport,
             );
         }
-        if shell.is_event_captured() {
+        if shell.is_event_captured() || !self.interactive {
             return;
         }
 
         match event {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                // Hover drives the selection: the album whose cover is under the cursor, or
+                // nothing when the cursor is over none. Reacting to actual cursor movement (not
+                // per-frame hit tests) keeps keyboard navigation stable while it scrolls content
+                // under a stationary mouse.
+                let hovered = layout.children().position(|cover| content_cursor.is_over(cover.bounds()));
+                if state.selected != hovered {
+                    state.selected = hovered;
+                    shell.request_redraw();
+                }
+            }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(bounds) => {
                 let dy = match delta {
                     mouse::ScrollDelta::Lines { y, .. } => y * WHEEL_LINE,
@@ -300,20 +311,9 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                 shell.request_redraw();
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) if cursor.is_over(bounds) => {
-                // A click on a cover selects; any other unclaimed click (card text, padding, empty
-                // grid) deselects and stays uncaptured -- it wasn't for us.
-                match layout.children().position(|cover| content_cursor.is_over(cover.bounds())) {
-                    Some(ix) => {
-                        state.selected = Some(ix);
-                        shell.capture_event();
-                    }
-                    None => state.selected = None,
-                }
-                shell.request_redraw();
-            }
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) if cursor.is_over(bounds) => {
-                // A right-click on a cover asks for its track menu (selecting it too -- a context
-                // menu implies its subject).
+                // A click on a cover asks for its track menu. Hover has normally already selected
+                // it, but select anyway: a click can land without a preceding move (e.g. through a
+                // just-focused window).
                 if let Some(on_menu) = self.on_menu
                     && let Some(ix) = layout.children().position(|cover| content_cursor.is_over(cover.bounds()))
                 {
@@ -324,7 +324,7 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                 }
             }
             Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(named), modifiers, repeat, .. })
-                if self.keyboard && n > 0 =>
+                if n > 0 =>
             {
                 let handled = match named {
                     Named::ArrowLeft if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Left),
