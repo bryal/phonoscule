@@ -1,7 +1,7 @@
 //! Rendering the model: the library browser and the player (Cover Flow) views.
 
 use crate::model::{App, Modal, ScanState, TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of};
-use crate::update::Msg;
+use crate::update::{Grouping, Msg, Scope};
 use iced::widget::{
     button, center, column, container, hover, image, mouse_area, opaque, responsive, row, scrollable, slider, stack, text,
 };
@@ -271,9 +271,14 @@ fn actions_modal(app: &App) -> Element<'_, Msg> {
             .padding([6, 8])
             .on_press(msg)
     };
-    let list =
-        column![entry("Shuffle albums", "s", Msg::ShuffleAlbums), entry("Shuffle tracks", "z", Msg::ShuffleTracks),].spacing(2);
-    let panel = container(list).padding(12).width(260).style(|theme: &Theme| container::Style {
+    let list = column![
+        entry("Shuffle other albums", "s", Msg::Shuffle { grouping: Grouping::Albums, scope: Scope::Others }),
+        entry("Shuffle all albums", "ctrl+s", Msg::Shuffle { grouping: Grouping::Albums, scope: Scope::All }),
+        entry("Shuffle other tracks", "z", Msg::Shuffle { grouping: Grouping::Tracks, scope: Scope::Others }),
+        entry("Shuffle all tracks", "ctrl+z", Msg::Shuffle { grouping: Grouping::Tracks, scope: Scope::All }),
+    ]
+    .spacing(2);
+    let panel = container(list).padding(12).width(280).style(|theme: &Theme| container::Style {
         background: Some(iced::Background::Color(Color { a: 0.97, ..theme.extended_palette().primary.weak.color })),
         border: iced::Border { color: color!(0xffffff, 0.1), width: 1.0, radius: 10.0.into() },
         ..container::Style::default()

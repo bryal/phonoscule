@@ -37,11 +37,16 @@ pub enum Msg {
     /// Cycle the repeat mode: off -> track -> album -> playlist -> off (the `r` key, and the
     /// player bar's repeat button).
     CycleRepeat,
-    /// Shuffle the queue track-wise, in place and visibly (the `z` key, or the actions menu).
-    ShuffleTracks,
-    /// Shuffle the queue album-wise -- albums in random order, each one's tracks in their queue
-    /// order -- in place and visibly (the `s` key, or the actions menu).
-    ShuffleAlbums,
+    /// Shuffle the queue, in place and visibly, per the grouping (single tracks, or whole albums
+    /// with their tracks kept together) and scope (everything behind the playing item, or
+    /// literally everything). `s`/`z` shuffle the other albums/tracks, Ctrl promotes to all; see
+    /// `shuffle_queue`.
+    Shuffle {
+        grouping: Grouping,
+        scope: Scope,
+    },
+    /// Reset playback: jump to the first track of the queue, paused (Backspace).
+    ResetPlayback,
     /// Move the track menu's keyboard selection one track up or down (arrow keys).
     MenuMove(MenuDir),
     /// The cursor entered a track menu row: move the selection there, so the mouse and the arrow
@@ -220,8 +225,17 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             app.send(player::Cmd::SetRepeat(app.repeat));
             return save_player(app);
         }
-        Msg::ShuffleTracks => return shuffle_queue(app, Grouping::Tracks),
-        Msg::ShuffleAlbums => return shuffle_queue(app, Grouping::Albums),
+        Msg::Shuffle { grouping, scope } => return shuffle_queue(app, grouping, scope),
+        Msg::ResetPlayback => {
+            if !app.queue.is_empty() {
+                app.current = 0;
+                app.anim_pos = flow_target(app);
+                // Replacing the queue with itself reopens the first track paused: ready to play,
+                // its length on the seek bar -- the same way a restored session comes up.
+                app.send(player::Cmd::SetQueue { tracks: entries(&app.queue), start: 0, play: player::PlayState::Paused });
+                return save_player(app);
+            }
+        }
         Msg::PlayTrack { album, track } => {
             // Playing switches to the player view; the menu has served its purpose.
             app.modal = None;
@@ -425,17 +439,31 @@ fn save_player(app: &App) -> Task<Msg> {
 
 /// What a shuffle permutes: single tracks, or whole albums (each album's tracks stay together, in
 /// their queue order, while the albums land in random order).
-#[derive(Clone, Copy)]
-enum Grouping {
+#[derive(Debug, Clone, Copy)]
+pub enum Grouping {
     Tracks,
     Albums,
 }
 
+/// How much of the queue a shuffle reorders.
+#[derive(Debug, Clone, Copy)]
+pub enum Scope {
+    /// The playing track (or its whole album) moves to the front of the queue and everything else
+    /// shuffles in behind it, so nothing lands unreachably behind the cursor; playback continues
+    /// undisturbed.
+    Others,
+    /// Literally everything shuffles: playback is interrupted and the cursor rests, paused, on
+    /// the queue's new first track.
+    All,
+}
+
 /// Shuffles the queue in place, visibly: the reordering IS the new playlist (persisted like any
-/// other queue change, so a restart resumes the same order). The playing track keeps playing --
-/// the engine is handed the same tracks in the new order (see `Cmd::Reorder`) and only the cursor
-/// follows it -- and the cover flow snaps to its new position rather than sweeping.
-fn shuffle_queue(app: &mut App, grouping: Grouping) -> Task<Msg> {
+/// other queue change, so a restart resumes the same order), and the cover flow snaps to the
+/// cursor's new position rather than sweeping. See [`Scope`] for what moves and what keeps
+/// playing. Paused on the very first track, nothing begun, [`Scope::Others`] promotes to
+/// [`Scope::All`]: that state reads "shuffle me a fresh playlist" (it's what Backspace resets to),
+/// not "keep my current track first".
+fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope) -> Task<Msg> {
     if app.queue.is_empty() {
         return Task::none();
     }
@@ -443,18 +471,18 @@ fn shuffle_queue(app: &mut App, grouping: Grouping) -> Task<Msg> {
     if let Some(Modal::Actions) = app.modal {
         app.modal = None;
     }
+    let scope = match (scope, app.current, app.play_state) {
+        (Scope::Others, 0, player::PlayState::Paused) => Scope::All,
+        (scope, ..) => scope,
+    };
 
     // Build the new order as a permutation of indices, so the current track can be followed by
-    // identity (queue items need not be unique -- an album can be queued twice).
-    let order: Vec<usize> = match grouping {
-        Grouping::Tracks => {
-            let mut order: Vec<usize> = (0..app.queue.len()).collect();
-            shuffle(&mut order);
-            order
-        }
+    // identity (queue items need not be unique -- an album can be queued twice). Tracks are
+    // singleton groups; albums group all of an album's tracks, wherever they sit, in their queue
+    // order.
+    let mut groups: Vec<Vec<usize>> = match grouping {
+        Grouping::Tracks => (0..app.queue.len()).map(|ix| vec![ix]).collect(),
         Grouping::Albums => {
-            // Group by album (all of an album's tracks, wherever they sit, in their queue order),
-            // then shuffle the groups.
             let mut groups: Vec<(u64, Vec<usize>)> = Vec::new();
             for (ix, item) in app.queue.iter().enumerate() {
                 match groups.iter_mut().find(|(album, _)| *album == item.album_id) {
@@ -462,16 +490,36 @@ fn shuffle_queue(app: &mut App, grouping: Grouping) -> Task<Msg> {
                     None => groups.push((item.album_id, vec![ix])),
                 }
             }
-            shuffle(&mut groups);
-            groups.into_iter().flat_map(|(_, ixs)| ixs).collect()
+            groups.into_iter().map(|(_, ixs)| ixs).collect()
         }
     };
+    match scope {
+        Scope::All => shuffle(&mut groups),
+        Scope::Others => {
+            // Pin the playing group to the front; only the rest shuffles.
+            let playing = groups.iter().position(|group| group.contains(&app.current)).unwrap_or(0);
+            groups.swap(0, playing);
+            shuffle(&mut groups[1..]);
+        }
+    }
+    let order: Vec<usize> = groups.into_iter().flatten().collect();
 
     let mut old: Vec<Option<QueueItem>> = std::mem::take(&mut app.queue).into_iter().map(Some).collect();
     app.queue = order.iter().map(|&ix| old[ix].take().expect("a permutation visits each index once")).collect();
-    app.current = order.iter().position(|&ix| ix == app.current).unwrap_or(0);
+    match scope {
+        // The engine is handed the same tracks in the new order and only the cursor follows the
+        // playing track (see `Cmd::Reorder`).
+        Scope::Others => {
+            app.current = order.iter().position(|&ix| ix == app.current).unwrap_or(0);
+            app.send(player::Cmd::Reorder { tracks: entries(&app.queue), current: app.current });
+        }
+        // A fresh start: the new first track opens paused, ready to play.
+        Scope::All => {
+            app.current = 0;
+            app.send(player::Cmd::SetQueue { tracks: entries(&app.queue), start: 0, play: player::PlayState::Paused });
+        }
+    }
     app.anim_pos = flow_target(app);
-    app.send(player::Cmd::Reorder { tracks: entries(&app.queue), current: app.current });
     Task::batch([save_playlist(app), save_player(app)])
 }
 
@@ -669,9 +717,11 @@ fn skip_interval(held: Duration) -> Duration {
 /// Space must not machine-gun play/pause). Alt/Logo always pass through to the window manager.
 ///
 /// Global: Tab / Shift-Tab cycle the view tabs; `l`/`p` jump to Library/Player; Escape returns to
-/// the library; `r` cycles the repeat mode, `s` shuffles albums, `z` shuffles tracks. With a modal
-/// open, Escape dismisses it, the track menu gets its own bindings, and everything else is
-/// suppressed. In the player: Left/Right seek by [`SEEK_STEP`], Space toggles play/pause, Home
+/// the library; `r` cycles the repeat mode; `s`/`z` shuffle the other albums/tracks in behind the
+/// playing one (Ctrl promotes to shuffling literally everything); Backspace resets playback to the
+/// queue's first track, paused. With a modal open, Escape dismisses it, the track menu gets its
+/// own bindings, and everything else is suppressed. In the player: Left/Right seek by
+/// [`SEEK_STEP`], Space toggles play/pause, Home
 /// restarts the track (or steps back near the start), End steps to the next track, PageUp restarts
 /// the album (or steps to the previous one), PageDown jumps to the next album.
 pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
@@ -702,11 +752,15 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         // The actions menu: Escape dismisses; its actions keep their global keys (the entries
         // display them as hints, and the handlers dismiss the menu themselves).
         Some(ModalKind::Actions) => {
-            return match (key, modifiers.is_empty()) {
-                (Key::Named(Named::Escape), _) if !modifiers.control() => one_shot(Msg::CloseModal),
-                (Key::Character(c), true) if c.as_str() == "r" => one_shot(Msg::CycleRepeat),
-                (Key::Character(c), true) if c.as_str() == "s" => one_shot(Msg::ShuffleAlbums),
-                (Key::Character(c), true) if c.as_str() == "z" => one_shot(Msg::ShuffleTracks),
+            return match (key, modifiers.control()) {
+                (Key::Named(Named::Escape), false) => one_shot(Msg::CloseModal),
+                (Key::Character(c), false) if c.as_str() == "r" => one_shot(Msg::CycleRepeat),
+                (Key::Character(c), ctrl) if c.as_str() == "s" => {
+                    one_shot(Msg::Shuffle { grouping: Grouping::Albums, scope: if ctrl { Scope::All } else { Scope::Others } })
+                }
+                (Key::Character(c), ctrl) if c.as_str() == "z" => {
+                    one_shot(Msg::Shuffle { grouping: Grouping::Tracks, scope: if ctrl { Scope::All } else { Scope::Others } })
+                }
                 _ => None,
             };
         }
@@ -721,8 +775,13 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         (Key::Character(c), false, false) if c.as_str() == "l" => return one_shot(Msg::Show(View::Library)),
         (Key::Character(c), false, false) if c.as_str() == "p" => return one_shot(Msg::Show(View::Player)),
         (Key::Character(c), false, false) if c.as_str() == "r" => return one_shot(Msg::CycleRepeat),
-        (Key::Character(c), false, false) if c.as_str() == "s" => return one_shot(Msg::ShuffleAlbums),
-        (Key::Character(c), false, false) if c.as_str() == "z" => return one_shot(Msg::ShuffleTracks),
+        (Key::Character(c), false, ctrl) if c.as_str() == "s" => {
+            return one_shot(Msg::Shuffle { grouping: Grouping::Albums, scope: if ctrl { Scope::All } else { Scope::Others } });
+        }
+        (Key::Character(c), false, ctrl) if c.as_str() == "z" => {
+            return one_shot(Msg::Shuffle { grouping: Grouping::Tracks, scope: if ctrl { Scope::All } else { Scope::Others } });
+        }
+        (Key::Named(Named::Backspace), false, false) => return one_shot(Msg::ResetPlayback),
         _ => {}
     }
 
