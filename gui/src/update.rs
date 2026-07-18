@@ -169,6 +169,9 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                         || old.tracks != album.tracks;
                     if old.cover_id == album.cover_id {
                         album.cover = old.cover;
+                        // The accent follows the cover: same cover, same accent (scan events
+                        // never carry one -- it's attached by Cover events and the index).
+                        album.accent = old.accent;
                     }
                 }
                 None => app.index_dirty = true,
@@ -181,12 +184,13 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // in parallel).
             let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
             let ix = app.albums.partition_point(|a| key(a) <= key(&album));
-            app.albums.insert(ix, album);
+            app.albums.insert(ix, *album);
             refresh_filter(app);
         }
         Msg::Library(library::ScanEvent::Cover { albums, art }) => {
             for album in app.albums.iter_mut().filter(|a| albums.contains(&a.id)) {
                 album.cover = Some(art.clone());
+                album.accent = Some(art.accent);
             }
             for item in app.queue.iter_mut().filter(|i| albums.contains(&i.album_id)) {
                 item.cover = Some(art.clone());

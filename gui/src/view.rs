@@ -417,7 +417,29 @@ const TAB_BAR_HEIGHT: f32 = 60.0;
 fn album_cover(ix: usize, album: &Album) -> Element<'_, Msg> {
     let cover: Element<'_, Msg> = match &album.cover {
         Some(c) => image(c.handle.clone()).width(Fill).height(Fill).content_fit(iced::ContentFit::Cover).into(),
-        None => container(text(&album.title).size(16).center()).center(Fill).style(container::rounded_box).into(),
+        // No pixels (not loaded yet, or the album has none): a tile tinted by the album's accent
+        // color when the index knows it -- a zeroth level of detail below the thumbnail, so a
+        // fresh launch shows the library as a color mosaic that sharpens into artwork. Dimmed, so
+        // the title stays readable on any accent.
+        None => {
+            let accent = album.accent;
+            container(text(&album.title).size(16).center())
+                .center(Fill)
+                .style(move |theme| match accent {
+                    Some(c) => container::Style {
+                        background: Some(iced::Background::Color(Color {
+                            r: 0.55 * c.r,
+                            g: 0.55 * c.g,
+                            b: 0.55 * c.b,
+                            a: 1.0,
+                        })),
+                        border: iced::border::rounded(2.0),
+                        ..container::Style::default()
+                    },
+                    None => container::rounded_box(theme),
+                })
+                .into()
+        }
     };
     // Action bubbles along the cover's right edge, shown only while hovering the cover. Entering
     // the play bubble preloads the high-res cover, hiding its decode behind the hover-to-click gap;

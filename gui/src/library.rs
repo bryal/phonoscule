@@ -43,6 +43,9 @@ pub struct Album {
     /// The id the cover art for this album has (or would have, when not loaded yet).
     pub cover_id: Option<u64>,
     pub cover: Option<CoverArt>,
+    /// The cover's accent color, known before (and independently of) the cover pixels: persisted
+    /// in the album index, so freshly launched fallback tiles can already carry it.
+    pub accent: Option<iced::Color>,
     pub tracks: Vec<TrackInfo>,
 }
 
@@ -78,8 +81,9 @@ impl fmt::Debug for CoverArt {
 #[derive(Debug, Clone)]
 pub enum ScanEvent {
     /// A fully discovered album. Its cover art may still be loading (or, when its cover id was
-    /// in [`ScanOptions::known_covers`], arrive not at all: keep what you have).
-    Album(Album),
+    /// in [`ScanOptions::known_covers`], arrive not at all: keep what you have). Boxed: an album
+    /// is by far the largest event, and it travels through every message channel.
+    Album(Box<Album>),
     /// Cover art finished loading for the albums with the given ids.
     Cover { albums: Vec<u64>, art: CoverArt },
     /// The scan is complete: every album has been reported. Albums absent from `album_ids` no
@@ -118,7 +122,7 @@ pub fn default_index_file() -> Option<PathBuf> {
 
 /// Bumped when [`SavedAlbum`] changes shape; an old or unreadable index just means the grid stays
 /// empty until the scan streams the albums in, like before the index existed.
-const INDEX_VERSION: u32 = 1;
+const INDEX_VERSION: u32 = 2;
 
 /// The persisted album index: the assembled album list minus the cover pixels, so a launch can
 /// show the whole library instantly instead of waiting for the directory walk. The boot scan then
@@ -138,6 +142,8 @@ struct SavedAlbum {
     artist: String,
     genre: String,
     cover_id: Option<u64>,
+    /// The cover's accent color as linear RGB components.
+    accent: Option<[f32; 3]>,
     tracks: Vec<TrackInfo>,
 }
 
@@ -171,6 +177,7 @@ pub async fn load_index(path: Option<PathBuf>) -> Vec<Album> {
             genre: a.genre,
             cover_id: a.cover_id,
             cover: None,
+            accent: a.accent.map(|[r, g, b]| iced::Color { r, g, b, a: 1.0 }),
             tracks: a.tracks,
         })
         .collect()
@@ -189,6 +196,7 @@ pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output
                 artist: a.artist.clone(),
                 genre: a.genre.clone(),
                 cover_id: a.cover_id,
+                accent: a.accent.map(|c| [c.r, c.g, c.b]),
                 tracks: a.tracks.clone(),
             })
             .collect(),
@@ -363,7 +371,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
             for album in albums {
                 ids.push(album.id);
                 album_ids.push(album.id);
-                if tx.send(ScanEvent::Album(album)).await.is_err() {
+                if tx.send(ScanEvent::Album(Box::new(album))).await.is_err() {
                     return;
                 }
             }
@@ -499,6 +507,7 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
                 genre: entry.genre.clone(),
                 cover_id,
                 cover: None,
+                accent: None,
                 tracks: vec![],
             });
             albums.len() - 1
@@ -672,6 +681,7 @@ mod test {
             genre: "Genre".into(),
             cover_id: Some(9),
             cover: None,
+            accent: Some(iced::Color { r: 0.25, g: 0.5, b: 0.75, a: 1.0 }),
             tracks: vec![TrackInfo { path: "/x/one/1.opus".into(), title: "First".into() }],
         };
         smol::block_on(async {
@@ -683,6 +693,7 @@ mod test {
             assert_eq!(loaded[0].genre, album.genre);
             assert_eq!(loaded[0].cover_id, album.cover_id);
             assert_eq!(loaded[0].tracks, album.tracks);
+            assert_eq!(loaded[0].accent, album.accent, "the accent color round-trips");
             assert!(loaded[0].cover.is_none(), "covers are runtime-only");
         });
 
@@ -736,7 +747,7 @@ mod test {
                                 album.cover = old.cover;
                             }
                         }
-                        albums.push(album);
+                        albums.push(*album);
                     }
                     ScanEvent::Cover { albums: ids, art } => {
                         for album in albums.iter_mut().filter(|a| ids.contains(&a.id)) {
