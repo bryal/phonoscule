@@ -1,8 +1,7 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{
-    App, GRID_SCROLL_ID, GridGeom, ScanState, View, album_runs, current_album_id, current_glow, flow_target, glow_blend,
-    queue_items, run_of,
+    App, ScanState, View, album_runs, current_album_id, current_glow, flow_target, glow_blend, queue_items, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -24,21 +23,6 @@ pub enum Msg {
     /// moment between hover and click and the cover is ready (or nearly) by the time the flow shows
     /// it. Idempotent -- a hover that never becomes a click just ages back out of the LRU.
     PreloadAlbum(usize),
-    /// Highlight an album in the library grid (a cover click, which -- unlike the play bubble --
-    /// only selects; playing is Ctrl+Space or the bubble).
-    SelectAlbum(usize),
-    /// Clear the library grid's selection (a click on grid space that isn't a cover or a bubble --
-    /// those capture their clicks before the grid-wide mouse area sees them).
-    Deselect,
-    /// Move the library grid's selection one step in a direction (arrow keys).
-    SelectMove(Dir),
-    /// The library grid scrolled; carries the new viewport so the model's offset mirror stays
-    /// fresh for the scroll-into-view arithmetic (see `scroll_target`).
-    GridScrolled(iced::widget::scrollable::Viewport),
-    /// Play the selected album, replacing the queue with it (Ctrl+Space); as its play bubble does.
-    PlaySelected,
-    /// Append the selected album to the queue (Space); as its enqueue bubble does.
-    QueueSelected,
     Player(player::Event),
     Media(media::Control),
     Toggle,
@@ -88,15 +72,6 @@ pub enum SeekDir {
     Backward,
 }
 
-/// A direction to move the library grid's selection.
-#[derive(Debug, Clone, Copy)]
-pub enum Dir {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
 pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
     match msg {
         Msg::Library(library::ScanEvent::Album(mut album)) => {
@@ -143,20 +118,6 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::Show(v) => app.view = v,
         Msg::PlayAlbum(ix) => play_album(app, ix),
         Msg::QueueAlbum(ix) => queue_album(app, ix),
-        Msg::PlaySelected => {
-            if let Some(ix) = app.selected {
-                play_album(app, ix);
-            }
-        }
-        Msg::QueueSelected => {
-            if let Some(ix) = app.selected {
-                queue_album(app, ix);
-            }
-        }
-        Msg::SelectAlbum(ix) => app.selected = Some(ix),
-        Msg::Deselect => app.selected = None,
-        Msg::SelectMove(dir) => return move_selection(app, dir),
-        Msg::GridScrolled(viewport) => app.grid_offset = viewport.absolute_offset().y,
         Msg::PreloadAlbum(ix) => {
             if let Some((id, file)) = app.albums.get(ix).and_then(|a| a.cover.as_ref()).map(|c| (c.id, c.file.clone())) {
                 return app.hires.query(id, file);
@@ -346,85 +307,6 @@ fn next_album(app: &App) {
     }
 }
 
-/// Moves the library grid selection one cell in `dir`, clamped to the album list and the grid's
-/// current column count (cached by the view) -- or, when nothing is selected, selects the first
-/// album in view. Then scrolls the grid if the selection isn't fully visible, mirroring the
-/// commanded offset (operations don't fire `on_scroll`).
-fn move_selection(app: &mut App, dir: Dir) -> Task<Msg> {
-    let n = app.albums.len();
-    if n == 0 {
-        return Task::none();
-    }
-    let geom = app.grid.get();
-    let cols = geom.cols.max(1);
-    let selected = match app.selected {
-        Some(cur) => next_selection(cur.min(n - 1), n, cols, dir),
-        None => first_visible(geom, app.grid_offset, n, cols),
-    };
-    app.selected = Some(selected);
-    let Some(offset) = scroll_target(geom, app.grid_offset, selected / cols) else {
-        return Task::none();
-    };
-    app.grid_offset = offset;
-    use iced::advanced::widget;
-    // Per-axis optional offsets: move y, leave x untouched.
-    let to = widget::operation::scrollable::AbsoluteOffset { x: None, y: Some(offset) };
-    widget::operate(widget::operation::scrollable::scroll_to(widget::Id::new(GRID_SCROLL_ID), to))
-}
-
-/// The first album in view at the current scroll offset: the leftmost album of the topmost row
-/// that extends below the viewport top, however slightly -- arrow keys with no selection start
-/// here, and the shared scroll pass then pops a partially-visible row fully into view.
-fn first_visible(geom: GridGeom, offset: f32, n: usize, cols: usize) -> usize {
-    if geom.pitch <= 0.0 {
-        return 0; // No layout yet: fall back to the first album.
-    }
-    // The first row whose bottom edge (top + row * pitch + row_h) lies strictly below the offset.
-    let row = (((offset - geom.top - geom.row_h) / geom.pitch).floor() + 1.0).max(0.0) as usize;
-    (row.min((n - 1) / cols)) * cols
-}
-
-/// The scroll offset that brings the given grid row fully into view, or `None` if it already is.
-/// "In view" leaves the grid's top padding above the row (clearing the floating tabs) and keeps its
-/// bottom above the player bar; the scroll is minimal -- up-moves align the row under the top
-/// padding, down-moves align its bottom to the bar, so the selection hugs whichever edge it left.
-fn scroll_target(geom: GridGeom, offset: f32, row: usize) -> Option<f32> {
-    if geom.pitch <= 0.0 || geom.view_h <= 0.0 {
-        return None; // No layout yet.
-    }
-    let y_top = geom.top + row as f32 * geom.pitch;
-    let y_bottom = y_top + geom.row_h;
-    if y_top < offset + geom.top {
-        Some((y_top - geom.top).max(0.0))
-    } else if y_bottom > offset + geom.view_h - geom.occluded {
-        Some(y_bottom - (geom.view_h - geom.occluded))
-    } else {
-        None
-    }
-}
-
-/// The grid index one step from `cur` in `dir`, given `n` albums in `cols` columns. Up/Down move by
-/// a row; Left/Right by one album, crossing row boundaries. Up from the top row and Down from the
-/// last row stay put; Down into a shorter final row that has no cell in this column lands on the
-/// last album. Assumes `n > 0`, `cols >= 1`, and `cur < n`.
-fn next_selection(cur: usize, n: usize, cols: usize, dir: Dir) -> usize {
-    match dir {
-        Dir::Left => cur.saturating_sub(1),
-        Dir::Right => (cur + 1).min(n - 1),
-        Dir::Up => cur.checked_sub(cols).unwrap_or(cur),
-        Dir::Down => {
-            let below = cur + cols;
-            if below < n {
-                below
-            } else if cur / cols < (n - 1) / cols {
-                n - 1
-            } else {
-                cur
-            }
-        }
-    }
-}
-
 /// Options for a periodic re-scan: skip re-decoding all the cover art we already hold.
 fn rescan_options(app: &App) -> library::ScanOptions {
     library::ScanOptions {
@@ -536,15 +418,16 @@ fn skip_interval(held: Duration) -> Duration {
 }
 
 /// Translates a key press into a message for the current `view`, or `None` for keys we don't bind.
-/// `repeat` marks auto-repeat from a held key: continuous actions honor it (seek/scrub, walking the
-/// queue, moving the grid selection), while one-shot ones don't (holding Space must not machine-gun
-/// play/pause or re-queue an album every frame). Alt/Logo always pass through to the window manager.
+/// Only keys no widget captured arrive here: the library grid handles its own navigation and
+/// selection actions internally (see `album_grid`), so this covers the global view switching and
+/// the player bindings. `repeat` marks auto-repeat from a held key: continuous actions honor it
+/// (seek/scrub, walking the queue), while one-shot ones don't (holding Space must not machine-gun
+/// play/pause). Alt/Logo always pass through to the window manager.
 ///
 /// Global: Tab / Shift-Tab cycle the view tabs; `l`/`p` jump to Library/Player; Escape returns to
-/// the library. In the library: arrow keys move the grid selection, Space queues the selected
-/// album, Ctrl+Space plays it. In the player: Left/Right seek by [`SEEK_STEP`], Space toggles
-/// play/pause, Home restarts the track (or steps back near the start), End steps to the next track,
-/// PageUp restarts the album (or steps to the previous one), PageDown jumps to the next album.
+/// the library. In the player: Left/Right seek by [`SEEK_STEP`], Space toggles play/pause, Home
+/// restarts the track (or steps back near the start), End steps to the next track, PageUp restarts
+/// the album (or steps to the previous one), PageDown jumps to the next album.
 pub fn key_to_msg(view: View, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
@@ -565,15 +448,7 @@ pub fn key_to_msg(view: View, key: Key, modifiers: Modifiers, repeat: bool) -> O
     }
 
     match view {
-        View::Library => match (key, modifiers.control()) {
-            (Key::Named(Named::ArrowLeft), false) => Some(Msg::SelectMove(Dir::Left)),
-            (Key::Named(Named::ArrowRight), false) => Some(Msg::SelectMove(Dir::Right)),
-            (Key::Named(Named::ArrowUp), false) => Some(Msg::SelectMove(Dir::Up)),
-            (Key::Named(Named::ArrowDown), false) => Some(Msg::SelectMove(Dir::Down)),
-            (Key::Named(Named::Space), false) => one_shot(Msg::QueueSelected),
-            (Key::Named(Named::Space), true) => one_shot(Msg::PlaySelected),
-            _ => None,
-        },
+        View::Library => None,
         // The player view binds no Ctrl chords of its own.
         View::Player if modifiers.control() => None,
         View::Player => match key {
@@ -587,74 +462,5 @@ pub fn key_to_msg(view: View, key: Key, modifiers: Modifiers, repeat: bool) -> O
             Key::Named(Named::PageDown) => one_shot(Msg::NextAlbum),
             _ => None,
         },
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    // A 13-album grid laid out 5 columns wide: rows [0..4], [5..9], [10..12] (a short last row).
-    const N: usize = 13;
-    const COLS: usize = 5;
-
-    #[test]
-    fn horizontal_selection_is_linear_and_clamped() {
-        assert_eq!(next_selection(0, N, COLS, Dir::Left), 0, "left saturates at the first album");
-        assert_eq!(next_selection(5, N, COLS, Dir::Left), 4, "left crosses the row boundary");
-        assert_eq!(next_selection(4, N, COLS, Dir::Right), 5, "right crosses the row boundary");
-        assert_eq!(next_selection(N - 1, N, COLS, Dir::Right), N - 1, "right clamps at the last album");
-    }
-
-    #[test]
-    fn vertical_selection_moves_by_a_row() {
-        assert_eq!(next_selection(2, N, COLS, Dir::Up), 2, "up from the top row stays put");
-        assert_eq!(next_selection(7, N, COLS, Dir::Up), 2, "up moves back one row, same column");
-        assert_eq!(next_selection(2, N, COLS, Dir::Down), 7, "down moves forward one row, same column");
-        assert_eq!(next_selection(7, N, COLS, Dir::Down), 12, "down into a full cell below");
-    }
-
-    #[test]
-    fn down_into_a_short_last_row_lands_on_the_last_album() {
-        // Album 9 (row 1, col 4) has no cell directly below -- the last row ends at 12 (col 2).
-        assert_eq!(next_selection(9, N, COLS, Dir::Down), N - 1, "no cell below: land on the last album");
-        // Album 11 is already in the last row: down stays put.
-        assert_eq!(next_selection(11, N, COLS, Dir::Down), 11, "down from the last row stays put");
-    }
-
-    // A grid of 255px-pitch rows in an 800px viewport with a 152px player bar: rows 0-2 fit above
-    // the bar (row 2 ends at 60 + 2*255 + 231 = 801 > 648... row 1 ends at 546); see each case.
-    const GEOM: GridGeom = GridGeom { cols: COLS, row_h: 231.0, pitch: 255.0, top: 60.0, view_h: 800.0, occluded: 152.0 };
-
-    #[test]
-    fn no_scroll_while_the_row_is_fully_visible() {
-        assert_eq!(scroll_target(GEOM, 0.0, 0), None, "row 0 starts in view");
-        assert_eq!(scroll_target(GEOM, 0.0, 1), None, "row 1 ends at 546, above the bar at 648");
-        assert_eq!(scroll_target(GEOM, 408.0, 2), None, "row 2 is in view once scrolled to it");
-    }
-
-    #[test]
-    fn scrolls_minimally_to_either_edge() {
-        // Row 3 ends at 60 + 3*255 + 231 = 1056; align its bottom to the bar: 1056 - 648.
-        assert_eq!(scroll_target(GEOM, 0.0, 3), Some(408.0), "down: align the row bottom to the bar");
-        assert_eq!(scroll_target(GEOM, 408.0, 3), None, "and it is then stably in view");
-        // Back up from there: align row 0 under the top padding, i.e. all the way to the top.
-        assert_eq!(scroll_target(GEOM, 408.0, 0), Some(0.0), "up: align the row under the top padding");
-    }
-
-    #[test]
-    fn no_scroll_before_the_first_layout() {
-        assert_eq!(scroll_target(GridGeom::default(), 0.0, 5), None, "zeroed geometry must not divide or scroll");
-    }
-
-    #[test]
-    fn first_visible_is_the_topmost_row_below_the_viewport_top() {
-        assert_eq!(first_visible(GEOM, 0.0, N, COLS), 0, "unscrolled: the first album");
-        // Row 0's bottom edge sits at 60 + 231 = 291: one visible pixel still counts...
-        assert_eq!(first_visible(GEOM, 290.0, N, COLS), 0, "a sliver of row 0 in view selects it");
-        // ...but exactly at (or past) the edge it doesn't.
-        assert_eq!(first_visible(GEOM, 291.0, N, COLS), COLS, "row 0 fully above: row 1's first album");
-        assert_eq!(first_visible(GEOM, 1e4, N, COLS), 2 * COLS, "over-scrolled: clamps to the last row");
-        assert_eq!(first_visible(GridGeom::default(), 0.0, N, COLS), 0, "no layout yet: the first album");
     }
 }

@@ -6,7 +6,6 @@ use iced::Task;
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::{media, player, watcher};
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,27 +40,6 @@ pub enum ScanState {
     Complete,
 }
 
-/// Widget id of the library grid's scrollable, so `update` can address it with scroll operations.
-pub const GRID_SCROLL_ID: &str = "library-grid";
-
-/// The library grid's layout geometry, cached by the view for the update loop (see
-/// [`App::grid`]). All vertical measures are in pixels of the scrollable's content.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct GridGeom {
-    /// Albums per row.
-    pub cols: usize,
-    /// Height of one row of cards (uniform: every card reserves the same title/artist block).
-    pub row_h: f32,
-    /// Vertical distance between consecutive rows' tops (`row_h` + the grid's row spacing).
-    pub pitch: f32,
-    /// Where the first row starts: the grid's top padding, which also clears the floating tabs.
-    pub top: f32,
-    /// The scrollable's viewport height (the window height; the grid runs behind the bars).
-    pub view_h: f32,
-    /// Pixels of the viewport bottom hidden behind the floating player bar (0 with no queue).
-    pub occluded: f32,
-}
-
 #[derive(Debug, Clone)]
 pub struct QueueItem {
     pub path: PathBuf,
@@ -83,20 +61,6 @@ pub struct App {
     pub scan: ScanState,
     pub albums: Vec<Album>,
     pub view: View,
-    /// The album highlighted in the library grid, as an index into `albums`; `None` (the initial
-    /// state, or after clicking empty grid space) means nothing is selected. Clicking a cover or
-    /// arrow-key navigation selects; Space queues the selection, Ctrl+Space plays it. Clamped
-    /// against `albums.len()` on use, since a rescan can shrink the list under it.
-    pub selected: Option<usize>,
-    /// The library grid's geometry as last laid out. It depends on the window size and so is only
-    /// known at layout time; the view caches it here (see `library_view`) for keyboard navigation,
-    /// which runs in `update` with no layout to consult (column count for up/down movement, row
-    /// positions for scrolling the selection into view).
-    pub grid: Cell<GridGeom>,
-    /// The library grid's current scroll offset, tracked from the scrollable's `on_scroll` (and
-    /// mirrored when `update` scrolls it programmatically, which fires no `on_scroll`). Lets
-    /// keyboard navigation decide whether the selected row is in view without asking the widget.
-    pub grid_offset: f32,
     pub queue: Vec<QueueItem>,
     pub current: usize,
     pub play_state: player::PlayState,
@@ -242,9 +206,6 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             scan: ScanState::Scanning,
             albums: vec![],
             view: View::Library,
-            selected: None,
-            grid: Cell::new(GridGeom::default()),
-            grid_offset: 0.0,
             queue: vec![],
             current: 0,
             play_state: player::PlayState::Paused,
