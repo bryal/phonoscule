@@ -214,8 +214,12 @@ fn track_menu_modal(app: &App) -> Option<Element<'_, Msg>> {
     // brightening) stay visible against it.
     let panel =
         container(column![header, list].spacing(12)).padding(16).width(420).max_height(560).style(|theme| container::Style {
-            background: Some(iced::Background::Color(Color { a: 0.97, ..theme.extended_palette().primary.weak.color })),
-            border: iced::Border { color: color!(0xffffff, 0.1), width: 1.0, radius: 10.0.into() },
+            background: Some(iced::Background::Color(Color { a: 0.98, ..theme.extended_palette().background.base.color })),
+            border: iced::Border {
+                color: theme.extended_palette().background.strong.color.scale_alpha(0.75),
+                width: 1.0,
+                radius: 10.0.into(),
+            },
             ..container::Style::default()
         });
     Some(opaque(mouse_area(center(opaque(panel))).on_press(Msg::CloseTrackMenu)))
