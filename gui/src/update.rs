@@ -3,7 +3,7 @@
 use crate::model::{
     App, Filter, Modal, ModalKind, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, ScanState,
     TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow, entries, flow_target, glow_blend,
-    picker_matches, queue_items, refresh_filter, run_of,
+    hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -155,28 +155,28 @@ pub enum MenuDir {
 pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
     match msg {
         Msg::Library(library::ScanEvent::Album(mut album)) => {
-            // Re-scans re-report albums we already have: upsert by the stable id, keeping the
-            // already-loaded cover art when the cover is unchanged (the scanner skips
-            // re-decoding and re-sending it).
-            if let Some(ix) = app.albums.iter().position(|a| a.id == album.id) {
-                let old = app.albums.remove(ix);
-                if old.cover_id == album.cover_id {
-                    album.cover = old.cover;
+            // Re-scans (and the boot scan reconciling the persisted index) re-report albums we
+            // already have: upsert by the stable id, keeping the already-loaded cover art when the
+            // cover is unchanged (the scanner skips re-decoding and re-sending it). Track whether
+            // anything observable actually changed, so `Done` knows if the index needs rewriting.
+            match app.albums.iter().position(|a| a.id == album.id) {
+                Some(ix) => {
+                    let old = app.albums.remove(ix);
+                    app.index_dirty |= old.title != album.title
+                        || old.artist != album.artist
+                        || old.genre != album.genre
+                        || old.cover_id != album.cover_id
+                        || old.tracks != album.tracks;
+                    if old.cover_id == album.cover_id {
+                        album.cover = old.cover;
+                    }
                 }
+                None => app.index_dirty = true,
             }
             // A queue restored from disk carries only paths (placeholder tags, provisional album
-            // keys) until the scan reports its albums: hydrate matching items by path. Covers not
-            // yet decoded follow by album id through the Cover events.
-            let paths: std::collections::HashSet<&std::path::PathBuf> = album.tracks.iter().map(|t| &t.path).collect();
-            for item in app.queue.iter_mut().filter(|item| paths.contains(&item.path)) {
-                item.album_id = album.id;
-                item.artist = album.artist.clone();
-                item.album = album.title.clone();
-                item.cover = album.cover.clone();
-                if let Some(track) = album.tracks.iter().find(|t| t.path == item.path) {
-                    item.title = track.title.clone();
-                }
-            }
+            // keys) until the library reports its albums: hydrate matching items by path. Covers
+            // not yet decoded follow by album id through the Cover events.
+            hydrate_queue(&mut app.queue, &album);
             // Keep the browser sorted; scan order is nondeterministic (directories complete
             // in parallel).
             let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
@@ -201,9 +201,17 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         }
         Msg::Library(library::ScanEvent::Done { album_ids }) => {
             let ids: std::collections::HashSet<u64> = album_ids.into_iter().collect();
+            let before = app.albums.len();
             app.albums.retain(|album| ids.contains(&album.id));
+            app.index_dirty |= app.albums.len() != before;
             app.scan = ScanState::Complete;
             refresh_filter(app);
+            // Persist the settled album list for the next launch's instant grid -- only when this
+            // scan actually changed something, so the quiet periodic rescans don't churn the disk.
+            if app.index_dirty {
+                app.index_dirty = false;
+                return Task::future(library::save_index(library::default_index_file(), &app.albums)).discard();
+            }
         }
         Msg::Rescan => match app.scan {
             // The running scan will pick changes up anyway.

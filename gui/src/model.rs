@@ -126,6 +126,10 @@ pub struct App {
     pub conf: Conf,
     pub scan: ScanState,
     pub albums: Vec<Album>,
+    /// Whether `albums` has drifted from the persisted album index since it was last written:
+    /// set by scan events that actually change something, cleared when `Done` saves the index.
+    /// Keeps the quiet periodic rescans from rewriting megabytes every time.
+    pub index_dirty: bool,
     /// The library filter: which albums the grid shows, of everything in `albums`.
     pub filter: Filter,
     /// The filtered view of `albums` the grid displays: indices into it, in display order
@@ -279,7 +283,7 @@ impl Default for HiResCache {
     }
 }
 
-pub fn boot(conf: Conf, restored: playlist::Restored) -> impl Fn() -> (App, Task<Msg>) {
+pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl Fn() -> (App, Task<Msg>) {
     move || {
         let (media, media_worker) = media::start();
         let mut app = App {
@@ -288,7 +292,8 @@ pub fn boot(conf: Conf, restored: playlist::Restored) -> impl Fn() -> (App, Task
             watcher: watcher::start(&conf.music_dir),
             conf: conf.clone(),
             scan: ScanState::Scanning,
-            albums: vec![],
+            albums: index.clone(),
+            index_dirty: false,
             filter: Filter::default(),
             filtered: vec![],
             view: View::Library,
@@ -330,6 +335,14 @@ pub fn boot(conf: Conf, restored: playlist::Restored) -> impl Fn() -> (App, Task
                 path: path.clone(),
             })
             .collect();
+        // The persisted album index makes the whole library visible immediately (covers stream in
+        // from the thumbnail cache); the scan below reconciles it like any rescan. It also
+        // hydrates the restored queue right here -- real tags and album ids from the first frame,
+        // and the engine gets real album grouping keys below instead of the provisional ones.
+        for album in &app.albums {
+            hydrate_queue(&mut app.queue, album);
+        }
+        refresh_filter(&mut app);
         app.current = restored.current;
         // Rest the cover flow on the current album rather than sweeping to it from the far end.
         app.anim_pos = flow_target(&app);
@@ -464,6 +477,22 @@ pub fn picker_matches(app: &App, subject: PickerSubject, query: &str) -> Vec<Str
 /// repeat-album advancement walks (see [`player::Entry`]).
 pub fn entries(items: &[QueueItem]) -> Vec<player::Entry> {
     items.iter().map(|item| player::Entry { path: item.path.clone(), album: item.album_id }).collect()
+}
+
+/// Fills the queue items belonging to `album` with its tags, id, and cover art -- how a restored,
+/// paths-only queue hydrates as the library reports albums (from the persisted index at boot, and
+/// from every scan event thereafter).
+pub fn hydrate_queue(queue: &mut [QueueItem], album: &Album) {
+    let paths: HashSet<&PathBuf> = album.tracks.iter().map(|t| &t.path).collect();
+    for item in queue.iter_mut().filter(|item| paths.contains(&item.path)) {
+        item.album_id = album.id;
+        item.artist = album.artist.clone();
+        item.album = album.title.clone();
+        item.cover = album.cover.clone();
+        if let Some(track) = album.tracks.iter().find(|t| t.path == item.path) {
+            item.title = track.title.clone();
+        }
+    }
 }
 
 /// A provisional album grouping key for a track not yet matched to the library: its parent

@@ -25,6 +25,7 @@ use smol::{channel, fs::File, io::BufReader, stream::Stream};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    future::Future,
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     sync::Arc,
@@ -45,7 +46,7 @@ pub struct Album {
     pub tracks: Vec<TrackInfo>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackInfo {
     pub path: PathBuf,
     pub title: String,
@@ -108,6 +109,105 @@ pub fn default_cache_file() -> Option<PathBuf> {
 /// in the name, so bumping [`THUMB`] starts a fresh directory rather than reading mismatched files.
 pub fn default_covers_dir() -> Option<PathBuf> {
     Some(cache_dir()?.join(format!("covers.{THUMB}")))
+}
+
+/// The default location of the album index: `<cache>/phonoscule/albums.json`.
+pub fn default_index_file() -> Option<PathBuf> {
+    Some(cache_dir()?.join("albums.json"))
+}
+
+/// Bumped when [`SavedAlbum`] changes shape; an old or unreadable index just means the grid stays
+/// empty until the scan streams the albums in, like before the index existed.
+const INDEX_VERSION: u32 = 1;
+
+/// The persisted album index: the assembled album list minus the cover pixels, so a launch can
+/// show the whole library instantly instead of waiting for the directory walk. The boot scan then
+/// reconciles it exactly like a rescan (upsert by id, retain what `Done` reports), so staleness
+/// self-heals; covers stream in from the thumbnail cache as always.
+#[derive(Serialize, Deserialize)]
+struct AlbumIndex {
+    version: u32,
+    albums: Vec<SavedAlbum>,
+}
+
+/// [`Album`] minus the runtime-only cover art.
+#[derive(Serialize, Deserialize)]
+struct SavedAlbum {
+    id: u64,
+    title: String,
+    artist: String,
+    genre: String,
+    cover_id: Option<u64>,
+    tracks: Vec<TrackInfo>,
+}
+
+/// Loads the album index; a missing, outdated, or unreadable one is an empty library (the scan
+/// rebuilds and re-saves it).
+pub async fn load_index(path: Option<PathBuf>) -> Vec<Album> {
+    let Some(path) = path else { return vec![] };
+    let src = match smol::fs::read_to_string(&path).await {
+        Ok(src) => src,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return vec![],
+        Err(e) => {
+            log::warn!("could not read the album index at {path:?}: {e}");
+            return vec![];
+        }
+    };
+    let index = match serde_json::from_str::<AlbumIndex>(&src) {
+        Ok(index) if index.version == INDEX_VERSION => index,
+        Ok(_) => return vec![],
+        Err(e) => {
+            log::warn!("discarding an unreadable album index at {path:?}: {e}");
+            return vec![];
+        }
+    };
+    index
+        .albums
+        .into_iter()
+        .map(|a| Album {
+            id: a.id,
+            title: a.title,
+            artist: a.artist,
+            genre: a.genre,
+            cover_id: a.cover_id,
+            cover: None,
+            tracks: a.tracks,
+        })
+        .collect()
+}
+
+/// Saves the album index (snapshotting `albums` eagerly, so the write can run detached).
+/// Best-effort atomic, like the tag cache; failure only costs the next launch its instant grid.
+pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output = ()> + Send + 'static {
+    let index = AlbumIndex {
+        version: INDEX_VERSION,
+        albums: albums
+            .iter()
+            .map(|a| SavedAlbum {
+                id: a.id,
+                title: a.title.clone(),
+                artist: a.artist.clone(),
+                genre: a.genre.clone(),
+                cover_id: a.cover_id,
+                tracks: a.tracks.clone(),
+            })
+            .collect(),
+    };
+    async move {
+        let Some(path) = path else { return };
+        let write = async {
+            if let Some(dir) = path.parent() {
+                smol::fs::create_dir_all(dir).await?;
+            }
+            let json = serde_json::to_string(&index).map_err(std::io::Error::other)?;
+            let tmp = path.with_extension("json.partial");
+            smol::fs::write(&tmp, json).await?;
+            smol::fs::rename(&tmp, &path).await
+        };
+        if let Err(e) = write.await {
+            log::warn!("could not write the album index to {path:?}: {e}");
+        }
+    }
 }
 
 /// Our cache directory, gathering every persistent cache under one roof:
@@ -545,6 +645,37 @@ async fn save_cache(path: &Path, cache: &Cache) {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The album index round-trips everything but the runtime-only cover art.
+    #[test]
+    fn album_index_roundtrip() {
+        let root = std::env::temp_dir().join(format!("phonoscule-index-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = Some(root.join("albums.json"));
+
+        let album = Album {
+            id: 7,
+            title: "One".into(),
+            artist: "Artist".into(),
+            genre: "Genre".into(),
+            cover_id: Some(9),
+            cover: None,
+            tracks: vec![TrackInfo { path: "/x/one/1.opus".into(), title: "First".into() }],
+        };
+        smol::block_on(async {
+            save_index(path.clone(), std::slice::from_ref(&album)).await;
+            let loaded = load_index(path.clone()).await;
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].id, album.id);
+            assert_eq!(loaded[0].title, album.title);
+            assert_eq!(loaded[0].genre, album.genre);
+            assert_eq!(loaded[0].cover_id, album.cover_id);
+            assert_eq!(loaded[0].tracks, album.tracks);
+            assert!(loaded[0].cover.is_none(), "covers are runtime-only");
+        });
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     /// A minimal valid WAV: 48 kHz stereo 16-bit PCM silence with LIST-INFO tags.
     fn wav_bytes(title: &str, artist: &str, album: &str) -> Vec<u8> {
