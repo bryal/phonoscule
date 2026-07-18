@@ -197,6 +197,9 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::Library(library::ScanEvent::Cover { albums, art }) => {
             for album in app.albums.iter_mut().filter(|a| albums.contains(&a.id)) {
                 album.cover = Some(art.clone());
+                // Freshly computed, so an accent the index got wrong (or an algorithm change)
+                // heals on the next index save.
+                app.index_dirty |= album.accent != Some(art.accent);
                 album.accent = Some(art.accent);
             }
             for item in app.queue.iter_mut().filter(|i| albums.contains(&i.album_id)) {

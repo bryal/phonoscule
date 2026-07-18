@@ -620,13 +620,13 @@ pub fn accent_color(rgb: &[u8]) -> iced::Color {
             return 0.0;
         }
         let (r, g, b) = ((r / n) as f32 / 255.0, (g / n) as f32 / 255.0, (b / n) as f32 / 255.0);
-        let max = r.max(g).max(b);
-        let min = r.min(g).min(b);
-        let saturation = if max > 0.0 { (max - min) / max } else { 0.0 };
-        // Distinctness must dominate size: saturation counts cubed, and the population floor is
-        // only a tiebreaker so that grayscale art degrades to its most common shade -- any
-        // bigger and a large mass of near-white/gray outweighs smaller vivid regions.
-        n as f32 * (0.01 + saturation.powi(3) * max)
+        let chroma = r.max(g).max(b) - r.min(g).min(b);
+        // Vividness must dominate size: chroma counts cubed, and the population floor is only a
+        // tiebreaker so that grayscale art degrades to its most common shade. Absolute chroma,
+        // not a max-relative saturation ratio: near-black pixels have huge channel *ratios* from
+        // a color cast alone, and covers have masses of them (hair, shadow) that would
+        // out-populate any genuinely vivid region.
+        n as f32 * (0.01 + chroma.powi(3))
     };
     let best = buckets.iter().max_by(|a, b| score(a).total_cmp(&score(b)));
     match best {
@@ -803,6 +803,22 @@ mod test {
         }
         let accent = accent_color(&rgb);
         assert!(accent.r > 0.5 && accent.g < 0.3 && accent.b < 0.3, "{accent:?}");
+    }
+
+    #[test]
+    fn accent_ignores_a_dark_color_cast_mass() {
+        // Mostly near-black with a faint teal cast (hair and shadow on a dim photo) -- a huge
+        // channel ratio but barely any color -- against a modest vivid blue: the blue must win.
+        let mut rgb = Vec::new();
+        for i in 0..10_000 {
+            match i % 8 {
+                0 => rgb.extend([40u8, 80, 220]),
+                1 => rgb.extend([60u8, 100, 235]),
+                _ => rgb.extend([4u8, 45, 34]),
+            }
+        }
+        let accent = accent_color(&rgb);
+        assert!(accent.b > 0.5 && accent.b > accent.g, "{accent:?}");
     }
 
     #[test]
