@@ -93,6 +93,10 @@ pub enum ScanEvent {
 
 pub struct ScanOptions {
     pub root: PathBuf,
+    /// Album ids whose directories are scanned (and thus whose covers load) before everything
+    /// else, in this order -- e.g. the restored queue's albums, circularly outward from the
+    /// playing one, so the cover flow dresses up first.
+    pub priority: Vec<u64>,
     /// Ids of cover art the consumer already has: decoding (and [`ScanEvent::Cover`]) is skipped
     /// for these.
     pub known_covers: HashSet<u64>,
@@ -337,15 +341,19 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
         }
     }
 
-    // Order the jobs the way the grid sorts albums (artist, then album title), so covers stream
-    // into the visible top of an unscrolled library first instead of in walk order. The keys come
-    // from the tag cache -- already loaded, no file reads -- so this is exact for everything seen
-    // before; new directories (a cache miss) fall back to their name, which usually approximates
-    // the artist anyway.
+    // Order the jobs so covers stream in usefully: prioritized albums first (in their given
+    // order), then the way the grid sorts (artist, then album title) so the visible top of an
+    // unscrolled library fills next. The keys -- including each directory's album id, for the
+    // priority lookup -- come from the tag cache, already loaded, no file reads; new directories
+    // (a cache miss) fall back to their name, which usually approximates the artist anyway.
+    let rank: HashMap<u64, usize> = options.priority.iter().enumerate().map(|(rank, &id)| (id, rank)).collect();
     jobs.sort_by_cached_key(|job| {
         job.files.first().and_then(|file| cache.files.get(&file.path)).map_or_else(
-            || (job.dir.file_name().unwrap_or_default().to_string_lossy().to_lowercase(), String::new()),
-            |entry| (entry.artist.to_lowercase(), entry.album.to_lowercase()),
+            || (usize::MAX, job.dir.file_name().unwrap_or_default().to_string_lossy().to_lowercase(), String::new()),
+            |entry| {
+                let id = stable_id((&job.dir, &entry.album));
+                (rank.get(&id).copied().unwrap_or(usize::MAX), entry.artist.to_lowercase(), entry.album.to_lowercase())
+            },
         )
     });
 
@@ -808,6 +816,7 @@ mod test {
         let cache_file = root.join("cache.json");
         let options = || ScanOptions {
             root: root.clone(),
+            priority: vec![],
             known_covers: Default::default(),
             cache_file: Some(cache_file.clone()),
             covers_dir: None,

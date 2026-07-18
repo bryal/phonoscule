@@ -125,7 +125,13 @@ fn corpus(with_covers: bool) -> PathBuf {
 /// disabled: this measures the full scanning work, reproducibly.
 fn drain(root: PathBuf) -> Vec<Album> {
     smol::block_on(async {
-        let options = library::ScanOptions { root, known_covers: Default::default(), cache_file: None, covers_dir: None };
+        let options = library::ScanOptions {
+            root,
+            priority: vec![],
+            known_covers: Default::default(),
+            cache_file: None,
+            covers_dir: None,
+        };
         let mut albums: Vec<Album> = Vec::new();
         let mut stream = std::pin::pin!(library::scan(options));
         while let Some(event) = stream.next().await {

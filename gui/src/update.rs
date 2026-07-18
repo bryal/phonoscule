@@ -786,10 +786,12 @@ fn next_album(app: &App) {
     }
 }
 
-/// Options for a periodic re-scan: skip re-decoding all the cover art we already hold.
+/// Options for a periodic re-scan: skip re-decoding all the cover art we already hold. No cover
+/// priority -- the covers that matter are long loaded by now.
 fn rescan_options(app: &App) -> library::ScanOptions {
     library::ScanOptions {
         root: app.conf.music_dir.clone(),
+        priority: vec![],
         known_covers: app.albums.iter().filter_map(|a| a.cover.as_ref().map(|c| c.id)).collect(),
         cache_file: library::default_cache_file(),
         covers_dir: library::default_covers_dir(),

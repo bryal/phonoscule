@@ -362,6 +362,9 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
         }
         let options = library::ScanOptions {
             root: conf.music_dir.clone(),
+            // Dress the restored queue's covers first, outward from the playing album: they're
+            // what a session booting into the player is looking at.
+            priority: cover_priority(&app.queue, app.current),
             known_covers: Default::default(),
             cache_file: library::default_cache_file(),
             covers_dir: library::default_covers_dir(),
@@ -498,6 +501,34 @@ pub fn hydrate_queue(queue: &mut [QueueItem], album: &Album) {
             item.title = track.title.clone();
         }
     }
+}
+
+/// The queue's albums as a cover-loading priority: distinct album ids ordered circularly outward
+/// from the playing track -- current, next, previous, next-but-one, ... -- so a session restored
+/// into the player dresses the covers nearest the flow's center first.
+fn cover_priority(queue: &[QueueItem], current: usize) -> Vec<u64> {
+    let n = queue.len();
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
+    if n == 0 {
+        return ids;
+    }
+    let current = current.min(n - 1);
+    for d in 0..n {
+        let mut consider = |ix: usize| {
+            let id = queue[ix].album_id;
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        };
+        if current + d < n {
+            consider(current + d);
+        }
+        if d > 0 && current >= d {
+            consider(current - d);
+        }
+    }
+    ids
 }
 
 /// A provisional album grouping key for a track not yet matched to the library: its parent
