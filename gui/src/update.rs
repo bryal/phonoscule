@@ -1,7 +1,7 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{
-    App, ScanState, View, album_runs, current_album_id, current_glow, flow_target, glow_blend, queue_items, run_of,
+    App, QueueItem, ScanState, View, album_runs, current_album_id, current_glow, flow_target, glow_blend, queue_items, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -26,6 +26,21 @@ pub enum Msg {
     /// The library grid's selection changed; store it so it survives view switches (the grid's
     /// own state drops with the view -- see `AlbumGrid::selected`).
     AlbumSelected(Option<usize>),
+    /// Open the modal listing an album's tracks (the card's list bubble, a right-click on its
+    /// cover, or Enter on the selection), to play or queue tracks individually.
+    OpenTrackMenu(usize),
+    /// Dismiss the track menu (Escape, or a click outside it).
+    CloseTrackMenu,
+    /// Play a single track, replacing the queue with it (a play bubble in the track menu).
+    PlayTrack {
+        album: usize,
+        track: usize,
+    },
+    /// Append a single track to the queue (an enqueue bubble in the track menu).
+    QueueTrack {
+        album: usize,
+        track: usize,
+    },
     Player(player::Event),
     Media(media::Control),
     Toggle,
@@ -121,12 +136,29 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::Show(v) => app.view = v,
         Msg::PlayAlbum(ix) => play_album(app, ix),
         Msg::QueueAlbum(ix) => queue_album(app, ix),
-        Msg::PreloadAlbum(ix) => {
-            if let Some((id, file)) = app.albums.get(ix).and_then(|a| a.cover.as_ref()).map(|c| (c.id, c.file.clone())) {
-                return app.hires.query(id, file);
+        Msg::PreloadAlbum(ix) => return preload_cover(app, ix),
+        Msg::AlbumSelected(selected) => app.selected = selected,
+        Msg::OpenTrackMenu(ix) => {
+            app.track_menu = Some(ix);
+            // A play from the menu is likely imminent: warm the album's high-res cover.
+            return preload_cover(app, ix);
+        }
+        Msg::CloseTrackMenu => app.track_menu = None,
+        Msg::PlayTrack { album, track } => {
+            // Playing switches to the player view; the menu has served its purpose.
+            app.track_menu = None;
+            if let Some(item) = track_item(app, album, track) {
+                play_items(app, vec![item]);
             }
         }
-        Msg::AlbumSelected(selected) => app.selected = selected,
+        Msg::QueueTrack { album, track } => {
+            // Deliberately keeps the menu open: queueing several tracks in a row is the natural
+            // flow, and Escape or a click outside ends it.
+            if let Some(item) = track_item(app, album, track) {
+                app.send(player::Cmd::Append { tracks: vec![item.path.clone()] });
+                app.queue.push(item);
+            }
+        }
         Msg::Player(event) => match event {
             player::Event::TrackStarted { ix, len } => {
                 app.current = ix;
@@ -268,16 +300,21 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
     Task::none()
 }
 
-/// Replaces the queue with the album at `ix` and switches to the player view. No-op if the index
-/// is out of range -- a rescan can shrink the list under a stale selection.
-fn play_album(app: &mut App, ix: usize) {
-    let Some(album) = app.albums.get(ix) else { return };
-    let items = queue_items(album);
+/// Replaces the queue with the given items and switches to the player view, playing from the top.
+fn play_items(app: &mut App, items: Vec<QueueItem>) {
     app.send(player::Cmd::SetQueue { tracks: items.iter().map(|i| i.path.clone()).collect(), start: 0 });
     app.queue = items;
     app.current = 0;
     app.anim_pos = 0.0;
     app.view = View::Player;
+}
+
+/// Replaces the queue with the album at `ix` and switches to the player view. No-op if the index
+/// is out of range -- a rescan can shrink the list under a stale selection.
+fn play_album(app: &mut App, ix: usize) {
+    let Some(album) = app.albums.get(ix) else { return };
+    let items = queue_items(album);
+    play_items(app, items);
 }
 
 /// Appends the album at `ix` to the queue. No-op if the index is out of range.
@@ -286,6 +323,22 @@ fn queue_album(app: &mut App, ix: usize) {
     let items = queue_items(album);
     app.send(player::Cmd::Append { tracks: items.iter().map(|i| i.path.clone()).collect() });
     app.queue.extend(items);
+}
+
+/// The queue item for one track of the album at `album`, or `None` if either index is out of
+/// range (a rescan can reshuffle the list under an open track menu).
+fn track_item(app: &App, album: usize, track: usize) -> Option<QueueItem> {
+    let album = app.albums.get(album)?;
+    queue_items(album).into_iter().nth(track)
+}
+
+/// Warms the global high-res cache with the cover of the album at `ix` (see `HiResCache::query`);
+/// idempotent, so callers fire it on any hint that the album is about to play.
+fn preload_cover(app: &mut App, ix: usize) -> Task<Msg> {
+    match app.albums.get(ix).and_then(|a| a.cover.as_ref()).map(|c| (c.id, c.file.clone())) {
+        Some((id, file)) => app.hires.query(id, file),
+        None => Task::none(),
+    }
 }
 
 /// PageUp: restart the current album, or -- if playback is already at its first track -- step to
@@ -429,10 +482,12 @@ fn skip_interval(held: Duration) -> Duration {
 /// play/pause). Alt/Logo always pass through to the window manager.
 ///
 /// Global: Tab / Shift-Tab cycle the view tabs; `l`/`p` jump to Library/Player; Escape returns to
-/// the library. In the player: Left/Right seek by [`SEEK_STEP`], Space toggles play/pause, Home
-/// restarts the track (or steps back near the start), End steps to the next track, PageUp restarts
-/// the album (or steps to the previous one), PageDown jumps to the next album.
-pub fn key_to_msg(view: View, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
+/// the library. With the track menu open (`menu_open`), Escape dismisses it instead and every
+/// other binding is suppressed -- it's a modal. In the player: Left/Right seek by [`SEEK_STEP`],
+/// Space toggles play/pause, Home restarts the track (or steps back near the start), End steps to
+/// the next track, PageUp restarts the album (or steps to the previous one), PageDown jumps to the
+/// next album.
+pub fn key_to_msg(view: View, menu_open: bool, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
     // Alt/Logo aren't bound anywhere; leave them (and their chords) to the window manager.
@@ -440,6 +495,14 @@ pub fn key_to_msg(view: View, key: Key, modifiers: Modifiers, repeat: bool) -> O
         return None;
     }
     let one_shot = |msg| if repeat { None } else { Some(msg) };
+
+    // The track menu is modal: Escape dismisses it, everything else is suppressed.
+    if menu_open {
+        return match key {
+            Key::Named(Named::Escape) if !modifiers.control() => one_shot(Msg::CloseTrackMenu),
+            _ => None,
+        };
+    }
 
     // View-independent navigation takes precedence over the per-view bindings below.
     match (&key, modifiers.shift(), modifiers.control()) {

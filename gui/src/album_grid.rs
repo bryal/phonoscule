@@ -10,6 +10,8 @@
 //! - Arrow-key navigation in two dimensions; when nothing is selected, an arrow key picks up the
 //!   first album in view. The selection is always scrolled fully into view, minimally.
 //! - Space queues the selected album and Ctrl+Space plays it, published via `on_queue`/`on_play`.
+//! - Right-clicking a cover, or Enter on the selection, asks for the album's track menu
+//!   (published via `on_menu`; the menu itself is the caller's).
 //!
 //! Selection and scroll position live in the widget tree ([`State`]), not the application model:
 //! the widget publishes whole actions (`on_play(ix)`), so nothing outside needs to track them.
@@ -53,7 +55,16 @@ const CARD_SPACING: f32 = 4.0;
 const WHEEL_LINE: f32 = 60.0;
 
 pub fn album_grid<'a, Message>(on_play: fn(usize) -> Message, on_queue: fn(usize) -> Message) -> AlbumGrid<'a, Message> {
-    AlbumGrid { cards: Vec::new(), top_clearance: 0.0, bottom_clearance: 0.0, on_play, on_queue, selection: None }
+    AlbumGrid {
+        cards: Vec::new(),
+        top_clearance: 0.0,
+        bottom_clearance: 0.0,
+        on_play,
+        on_queue,
+        on_menu: None,
+        selection: None,
+        keyboard: true,
+    }
 }
 
 pub struct AlbumGrid<'a, Message> {
@@ -67,8 +78,15 @@ pub struct AlbumGrid<'a, Message> {
     on_play: fn(usize) -> Message,
     /// Append the album to the queue: Space on the selection.
     on_queue: fn(usize) -> Message,
+    /// Ask for an album's track menu: right-clicking a cover (which also selects it), or Enter on
+    /// the selection. The menu itself is the caller's business; the grid only reports the ask.
+    on_menu: Option<fn(usize) -> Message>,
     /// Externalized selection, when the caller opted in via [`selected`](Self::selected).
     selection: Option<Selection<Message>>,
+    /// Whether the grid responds to keyboard input. Mouse input over a modal is blocked by the
+    /// modal's own opaque layer, but keyboard events reach every widget in the tree -- so the
+    /// caller disables this while a modal covers the grid.
+    keyboard: bool,
 }
 
 /// The two halves of an externalized selection: the caller's value, synced into the internal
@@ -114,6 +132,18 @@ impl<'a, Message> AlbumGrid<'a, Message> {
     /// context is what matters).
     pub fn selected(self, selected: Option<usize>, on_select: fn(Option<usize>) -> Message) -> Self {
         Self { selection: Some(Selection { value: selected, notify: on_select }), ..self }
+    }
+
+    /// The message asking for an album's track menu: published on right-clicking a cover (which
+    /// also selects it) and on Enter with a selection.
+    pub fn on_menu(self, on_menu: fn(usize) -> Message) -> Self {
+        Self { on_menu: Some(on_menu), ..self }
+    }
+
+    /// Sets whether the grid responds to keyboard input; disable it while a modal covers the grid
+    /// (see the `keyboard` field).
+    pub fn keyboard(self, enabled: bool) -> Self {
+        Self { keyboard: enabled, ..self }
     }
 
     fn geom(&self, width: f32) -> Geom {
@@ -281,8 +311,20 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                 }
                 shell.request_redraw();
             }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) if cursor.is_over(bounds) => {
+                // A right-click on a cover asks for its track menu (selecting it too -- a context
+                // menu implies its subject).
+                if let Some(on_menu) = self.on_menu
+                    && let Some(ix) = layout.children().position(|cover| content_cursor.is_over(cover.bounds()))
+                {
+                    state.selected = Some(ix);
+                    shell.publish(on_menu(ix));
+                    shell.capture_event();
+                    shell.request_redraw();
+                }
+            }
             Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(named), modifiers, repeat, .. })
-                if n > 0 =>
+                if self.keyboard && n > 0 =>
             {
                 let handled = match named {
                     Named::ArrowLeft if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Left),
@@ -303,6 +345,13 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                             true
                         }
                         None => false,
+                    },
+                    Named::Enter if modifiers.is_empty() && !repeat => match (self.on_menu, state.selected) {
+                        (Some(on_menu), Some(ix)) => {
+                            shell.publish(on_menu(ix));
+                            true
+                        }
+                        _ => false,
                     },
                     _ => false,
                 };

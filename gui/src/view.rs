@@ -2,7 +2,9 @@
 
 use crate::model::{App, ScanState, View, album_runs, glow_now, run_of};
 use crate::update::Msg;
-use iced::widget::{button, column, container, hover, image, mouse_area, responsive, row, scrollable, slider, stack, text};
+use iced::widget::{
+    button, center, column, container, hover, image, mouse_area, opaque, responsive, row, scrollable, slider, stack, text,
+};
 use iced::{Center, Color, Element, Fill, Theme, color};
 use phonoscule_gui::album_grid::album_grid;
 use phonoscule_gui::background;
@@ -17,6 +19,7 @@ const FA_PAUSE: &str = "\u{f04c}";
 const FA_BACKWARD_STEP: &str = "\u{f048}";
 const FA_FORWARD_STEP: &str = "\u{f051}";
 const FA_PLUS: &str = "\u{2b}";
+const FA_LIST: &str = "\u{f03a}";
 
 fn font_awesome_solid() -> iced::Font {
     iced::Font {
@@ -49,6 +52,12 @@ pub fn view(app: &App) -> Element<'_, Msg> {
     let mut layers: Vec<Element<'_, Msg>> = vec![background::background(glow.color, glow.center).into(), body, tabs.into()];
     if let Some(bar) = player_bar(app) {
         layers.push(container(bar).center_x(Fill).align_bottom(Fill).into());
+    }
+    // The track menu is modal over everything (tabs and player bar included), library view only.
+    if app.view == View::Library
+        && let Some(menu) = track_menu_modal(app)
+    {
+        layers.push(menu);
     }
     stack(layers).into()
 }
@@ -146,7 +155,10 @@ fn library_view(app: &App) -> Element<'_, Msg> {
     let mut grid = album_grid(Msg::PlayAlbum, Msg::QueueAlbum)
         .top_clearance(TAB_BAR_HEIGHT)
         .bottom_clearance(bottom_clearance)
-        .selected(app.selected, Msg::AlbumSelected);
+        .selected(app.selected, Msg::AlbumSelected)
+        .on_menu(Msg::OpenTrackMenu)
+        // The track menu is modal: its opaque backdrop blocks the mouse, this blocks the keys.
+        .keyboard(app.track_menu.is_none());
     for (ix, album) in app.albums.iter().enumerate() {
         grid = grid.push(album_cover(ix, album), &album.title, &album.artist);
     }
@@ -161,6 +173,44 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         }
         ScanState::Complete => grid.into(),
     }
+}
+
+/// The track menu for the album `app.track_menu` points at: a centered modal listing its tracks,
+/// each with play/enqueue bubbles, so single tracks can be played or queued (queueing keeps the
+/// menu open -- queueing several in a row is the natural flow). The inner `opaque` swallows clicks
+/// on the panel itself; the `mouse_area` catches clicks outside it to dismiss (Escape dismisses
+/// too, via `key_to_msg`); the outer `opaque` blocks the mouse from everything underneath.
+/// `None` when no menu is open (or a rescan dropped the album from under it).
+fn track_menu_modal(app: &App) -> Option<Element<'_, Msg>> {
+    let album_ix = app.track_menu?;
+    let album = app.albums.get(album_ix)?;
+
+    let mut list = column![].spacing(2);
+    for (track_ix, track) in album.tracks.iter().enumerate() {
+        let play = text(FA_PLAY).font(font_awesome_solid()).size(10);
+        let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(12);
+        list = list.push(
+            row![
+                text(&track.title).size(14).width(Fill),
+                bubble(container(play).center(Fill), Msg::PlayTrack { album: album_ix, track: track_ix }),
+                bubble(container(enqueue).center(Fill), Msg::QueueTrack { album: album_ix, track: track_ix }),
+            ]
+            .spacing(6)
+            .align_y(Center),
+        );
+    }
+    // Long albums scroll within the panel's height cap (wheel-only, like the other lists).
+    let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
+    let list = scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar));
+
+    let header = column![text(&album.title).size(17), text(&album.artist).size(13).style(text::secondary)].spacing(2);
+    let panel =
+        container(column![header, list].spacing(12)).padding(16).width(420).max_height(560).style(|_theme| container::Style {
+            background: Some(iced::Background::Color(color!(0x101014, 0.97))),
+            border: iced::Border { color: color!(0xffffff, 0.1), width: 1.0, radius: 10.0.into() },
+            ..container::Style::default()
+        });
+    Some(opaque(mouse_area(center(opaque(panel))).on_press(Msg::CloseTrackMenu)))
 }
 
 /// Approximate height of the floating player bar, used to keep content clear of it: the library
@@ -179,13 +229,16 @@ fn album_cover(ix: usize, album: &Album) -> Element<'_, Msg> {
         None => container(text(&album.title).size(16).center()).center(Fill).style(container::rounded_box).into(),
     };
     // Action bubbles along the cover's right edge, shown only while hovering the cover. Entering
-    // the play bubble preloads the high-res cover, hiding its decode behind the hover-to-click gap.
+    // the play bubble preloads the high-res cover, hiding its decode behind the hover-to-click gap;
+    // the list bubble opens the album's track menu (as do right-click and Enter -- see the grid).
     let play = text(FA_PLAY).font(font_awesome_solid()).size(12);
     let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(14);
+    let tracks = text(FA_LIST).font(font_awesome_solid()).size(11);
     let bubbles = container(
         column![
             mouse_area(bubble(container(play).center(Fill), Msg::PlayAlbum(ix))).on_enter(Msg::PreloadAlbum(ix)),
             bubble(container(enqueue).center(Fill), Msg::QueueAlbum(ix)),
+            bubble(container(tracks).center(Fill), Msg::OpenTrackMenu(ix)),
         ]
         .spacing(6),
     )

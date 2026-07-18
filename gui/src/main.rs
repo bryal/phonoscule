@@ -95,10 +95,11 @@ fn subscription(app: &App) -> Subscription<Msg> {
 
     // `listen` yields only keyboard events a focused widget ignored, so shortcuts never shadow a
     // widget's own key handling (e.g. arrow keys while the seek bar has focus). Bindings depend on
-    // the active view; subscription closures must be non-capturing, so pair it in with `with` (it
-    // hashes the value, so the subscription rebuilds when the view changes and never goes stale).
-    let keys = keyboard::listen().with(app.view).filter_map(|(view, event)| match event {
-        keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => key_to_msg(view, key, modifiers, repeat),
+    // the active view and the track menu's modality; subscription closures must be non-capturing,
+    // so pair that state in with `with` (it hashes the value, so the subscription rebuilds
+    // whenever it changes and never goes stale).
+    let keys = keyboard::listen().with((app.view, app.track_menu.is_some())).filter_map(|((view, menu), event)| match event {
+        keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => key_to_msg(view, menu, key, modifiers, repeat),
         _ => None,
     });
 

@@ -66,6 +66,9 @@ pub struct App {
     /// syncs from it each render and reports changes back (see `AlbumGrid::selected`); nothing
     /// here reads it.
     pub selected: Option<usize>,
+    /// The album (an index into `albums`) whose track menu is open as a modal over the library
+    /// view, letting single tracks be played or queued; `None` when no menu is open.
+    pub track_menu: Option<usize>,
     pub queue: Vec<QueueItem>,
     pub current: usize,
     pub play_state: player::PlayState,
@@ -212,6 +215,7 @@ pub fn boot(conf: Conf) -> impl Fn() -> (App, Task<Msg>) {
             albums: vec![],
             view: View::Library,
             selected: None,
+            track_menu: None,
             queue: vec![],
             current: 0,
             play_state: player::PlayState::Paused,
