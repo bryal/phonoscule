@@ -120,6 +120,19 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                     album.cover = old.cover;
                 }
             }
+            // A queue restored from disk carries only paths (placeholder tags, provisional album
+            // keys) until the scan reports its albums: hydrate matching items by path. Covers not
+            // yet decoded follow by album id through the Cover events.
+            let paths: std::collections::HashSet<&std::path::PathBuf> = album.tracks.iter().map(|t| &t.path).collect();
+            for item in app.queue.iter_mut().filter(|item| paths.contains(&item.path)) {
+                item.album_id = album.id;
+                item.artist = album.artist.clone();
+                item.album = album.title.clone();
+                item.cover = album.cover.clone();
+                if let Some(track) = album.tracks.iter().find(|t| t.path == item.path) {
+                    item.title = track.title.clone();
+                }
+            }
             // Keep the browser sorted; scan order is nondeterministic (directories complete
             // in parallel).
             let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
@@ -221,7 +234,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 publish_media(app);
                 // The playing album moved: ensure the cover flow's high-res window around it, and
                 // remember the new position for the next restore.
-                return Task::batch([ensure_hires(app), save_playlist(app)]);
+                return Task::batch([ensure_hires(app), save_player(app)]);
             }
             player::Event::Progress(t) => {
                 // While a seek is settling, ignore reports until playback reaches (roughly) the
@@ -358,7 +371,7 @@ fn play_items(app: &mut App, items: Vec<QueueItem>) -> Task<Msg> {
     app.current = 0;
     app.anim_pos = 0.0;
     app.view = View::Player;
-    save_playlist(app)
+    Task::batch([save_playlist(app), save_player(app)])
 }
 
 /// Replaces the queue with the album at `ix` and switches to the player view. No-op if the index
@@ -378,21 +391,18 @@ fn queue_album(app: &mut App, ix: usize) -> Task<Msg> {
     save_playlist(app)
 }
 
-/// Snapshots the queue and current track to disk, fire-and-forget (see the playlist module).
-/// Returned by everything that changes either, so a crash or an exit at any point loses nothing.
+/// Snapshots the queue's tracks to disk, fire-and-forget (see the playlist module). Returned by
+/// everything that changes the queue, so a crash or an exit at any point loses nothing.
 fn save_playlist(app: &App) -> Task<Msg> {
-    let items = app
-        .queue
-        .iter()
-        .map(|i| playlist::SavedItem {
-            path: i.path.clone(),
-            album_id: i.album_id,
-            title: i.title.clone(),
-            artist: i.artist.clone(),
-            album: i.album.clone(),
-        })
-        .collect();
-    Task::future(playlist::save(playlist::default_file(), playlist::SavedPlaylist::new(items, app.current))).discard()
+    let tracks = app.queue.iter().map(|item| item.path.clone()).collect();
+    Task::future(playlist::save_playlist(playlist::playlist_file(), playlist::SavedPlaylist::new(tracks))).discard()
+}
+
+/// Snapshots the session state around the queue (current track, repeat mode) to disk; returned by
+/// everything that changes either. Split from [`save_playlist`]: track changes are frequent and
+/// needn't rewrite the whole track list.
+fn save_player(app: &App) -> Task<Msg> {
+    Task::future(playlist::save_player(playlist::player_file(), playlist::SavedPlayer::new(app.current, app.repeat))).discard()
 }
 
 /// The queue item for one track of the album at `album`, or `None` if either index is out of

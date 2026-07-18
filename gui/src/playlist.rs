@@ -1,102 +1,144 @@
-//! Persistence of the play queue across runs: the tracks (with the metadata needed to render them
-//! before the library scan comes back) and which one was current. Saved best-effort on every
-//! change and loaded once at boot; the session restores paused at the start of the current track.
+//! Persistence of the player's session across runs, split over two files in the XDG state
+//! directory: `playlist.json` is the queue itself -- essentially just the list of tracks -- while
+//! `player.json` holds the session state around it (current index, repeat mode). The split keeps
+//! the playlist a plain track list, one step away from a future M3U export/import, while the
+//! volatile session state churns in its own small file.
 //!
-//! Lives under the XDG *state* directory, not the cache: unlike the tag or cover caches, a queue
-//! can't be regenerated, so it must survive a cache wipe.
+//! Only paths are stored: tags and album grouping rehydrate from the library scan at boot (see the
+//! `ScanEvent::Album` handling in `update`). Both files are saved best-effort on every change and
+//! loaded once at boot; the session restores paused at the start of the current track.
+//!
+//! State directory, not cache: unlike the tag or cover caches, a queue can't be regenerated, so it
+//! must survive a cache wipe.
 
+use crate::player::Repeat;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Bumped when [`SavedPlaylist`] changes shape; an old or unreadable file restores an empty queue.
-const VERSION: u32 = 1;
+/// Bumped when [`SavedPlaylist`] changes shape; old or unreadable files restore an empty queue.
+/// (v1 was the pre-split format carrying per-track tags.)
+const PLAYLIST_VERSION: u32 = 2;
+const PLAYER_VERSION: u32 = 1;
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct SavedPlaylist {
     version: u32,
-    pub items: Vec<SavedItem>,
-    pub current: usize,
+    pub tracks: Vec<PathBuf>,
 }
 
 impl SavedPlaylist {
-    pub fn new(items: Vec<SavedItem>, current: usize) -> Self {
-        SavedPlaylist { version: VERSION, items, current }
+    pub fn new(tracks: Vec<PathBuf>) -> Self {
+        SavedPlaylist { version: PLAYLIST_VERSION, tracks }
     }
 }
 
-/// A queue entry: the track and the tags the player view shows. Everything but the cover art,
-/// which the library scan re-attaches by album id shortly after boot.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SavedItem {
-    pub path: PathBuf,
-    pub album_id: u64,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
+#[derive(Clone, Copy, Serialize, Deserialize, Default)]
+pub struct SavedPlayer {
+    version: u32,
+    pub current: usize,
+    pub repeat: Repeat,
 }
 
-/// Where the playlist is saved: `$XDG_STATE_HOME/phonoscule/playlist.json`, falling back to
+impl SavedPlayer {
+    pub fn new(current: usize, repeat: Repeat) -> Self {
+        SavedPlayer { version: PLAYER_VERSION, current, repeat }
+    }
+}
+
+/// A restored session, [`load`]ed and reconciled from both files.
+#[derive(Clone, Default)]
+pub struct Restored {
+    pub tracks: Vec<PathBuf>,
+    pub current: usize,
+    pub repeat: Repeat,
+}
+
+/// Where the queue is saved: `$XDG_STATE_HOME/phonoscule/playlist.json`, falling back to
 /// `~/.local/state/phonoscule/playlist.json`.
-pub fn default_file() -> Option<PathBuf> {
+pub fn playlist_file() -> Option<PathBuf> {
+    Some(state_dir()?.join("playlist.json"))
+}
+
+/// Where the session state around the queue is saved (next to [`playlist_file`]).
+pub fn player_file() -> Option<PathBuf> {
+    Some(state_dir()?.join("player.json"))
+}
+
+fn state_dir() -> Option<PathBuf> {
     let state = std::env::var("XDG_STATE_HOME")
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .or_else(|| Some(std::env::home_dir()?.join(".local/state")))?;
-    Some(state.join("phonoscule/playlist.json"))
+    Some(state.join("phonoscule"))
 }
 
-/// Loads the saved playlist, dropping tracks whose files have vanished since the last run (the
-/// music directory may have changed in between) while keeping `current` pointed at the same item.
-/// A missing, outdated, or unreadable file restores an empty queue.
-pub async fn load(path: Option<PathBuf>) -> SavedPlaylist {
-    let Some(path) = path else { return SavedPlaylist::default() };
-    let src = match smol::fs::read_to_string(&path).await {
-        Ok(src) => src,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return SavedPlaylist::default(),
-        Err(e) => {
-            log::warn!("could not read the playlist at {path:?}: {e}");
-            return SavedPlaylist::default();
-        }
-    };
-    let saved = match serde_json::from_str::<SavedPlaylist>(&src) {
-        Ok(saved) if saved.version == VERSION => saved,
-        Ok(_) => return SavedPlaylist::default(),
-        Err(e) => {
-            log::warn!("discarding unreadable playlist at {path:?}: {e}");
-            return SavedPlaylist::default();
-        }
-    };
+/// Loads and reconciles both files: tracks whose files have vanished since the last run are
+/// dropped (the music directory may have changed in between) with `current` following its item to
+/// its new index, and `current` is clamped to the queue. Missing, outdated, or unreadable files
+/// degrade to their defaults (an empty queue; index 0, repeat off).
+pub async fn load(playlist: Option<PathBuf>, player: Option<PathBuf>) -> Restored {
+    let saved: SavedPlaylist =
+        read_json(playlist, "playlist").await.filter(|p: &SavedPlaylist| p.version == PLAYLIST_VERSION).unwrap_or_default();
+    let state: SavedPlayer =
+        read_json(player, "player state").await.filter(|p: &SavedPlayer| p.version == PLAYER_VERSION).unwrap_or_default();
 
-    let mut items = Vec::with_capacity(saved.items.len());
-    let mut current = saved.current;
-    for (ix, item) in saved.items.into_iter().enumerate() {
-        if smol::fs::metadata(&item.path).await.is_ok() {
-            items.push(item);
-        } else if ix < saved.current {
+    let mut tracks = Vec::with_capacity(saved.tracks.len());
+    let mut current = state.current;
+    for (ix, track) in saved.tracks.into_iter().enumerate() {
+        if smol::fs::metadata(&track).await.is_ok() {
+            tracks.push(track);
+        } else if ix < state.current {
             // A dropped track before the current one shifts it back one slot.
             current -= 1;
         }
     }
-    let current = current.min(items.len().saturating_sub(1));
-    SavedPlaylist { version: VERSION, items, current }
+    let current = current.min(tracks.len().saturating_sub(1));
+    Restored { tracks, current, repeat: state.repeat }
 }
 
-/// Best-effort atomic write, mirroring the tag cache's idiom; failure only costs this queue on
+pub async fn save_playlist(path: Option<PathBuf>, playlist: SavedPlaylist) {
+    save_json(path, &playlist).await;
+}
+
+pub async fn save_player(path: Option<PathBuf>, player: SavedPlayer) {
+    save_json(path, &player).await;
+}
+
+async fn read_json<T: serde::de::DeserializeOwned>(path: Option<PathBuf>, what: &str) -> Option<T> {
+    let path = path?;
+    let src = match smol::fs::read_to_string(&path).await {
+        Ok(src) => src,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            log::warn!("could not read the {what} at {path:?}: {e}");
+            return None;
+        }
+    };
+    match serde_json::from_str::<T>(&src) {
+        Ok(value) => Some(value),
+        Err(e) => {
+            log::warn!("discarding unreadable {what} at {path:?}: {e}");
+            None
+        }
+    }
+}
+
+/// Best-effort atomic write, mirroring the tag cache's idiom; failure only costs this state on
 /// the next launch.
-pub async fn save(path: Option<PathBuf>, playlist: SavedPlaylist) {
+async fn save_json<T: Serialize>(path: Option<PathBuf>, value: &T) {
     let Some(path) = path else { return };
     let write = async {
         if let Some(dir) = path.parent() {
             smol::fs::create_dir_all(dir).await?;
         }
-        let json = serde_json::to_string(&playlist).map_err(std::io::Error::other)?;
+        let json = serde_json::to_string(value).map_err(std::io::Error::other)?;
         let tmp = path.with_extension("json.partial");
         smol::fs::write(&tmp, json).await?;
         smol::fs::rename(&tmp, &path).await
     };
     if let Err(e) = write.await {
-        log::warn!("could not write the playlist to {path:?}: {e}");
+        log::warn!("could not write {path:?}: {e}");
     }
 }
 
@@ -104,40 +146,38 @@ pub async fn save(path: Option<PathBuf>, playlist: SavedPlaylist) {
 mod test {
     use super::*;
 
-    fn item(path: PathBuf, title: &str) -> SavedItem {
-        SavedItem { path, album_id: 1, title: title.into(), artist: "a".into(), album: "b".into() }
-    }
-
     /// Save and load round-trip, with a track whose file vanished between runs: it is dropped, and
     /// `current` follows its item to the new index.
     #[test]
     fn roundtrip_drops_vanished_tracks_and_keeps_current() {
         let root = std::env::temp_dir().join(format!("phonoscule-playlist-test-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let file = Some(root.join("playlist.json"));
+        let (playlist, player) = (Some(root.join("playlist.json")), Some(root.join("player.json")));
 
         smol::block_on(async {
             // Two real files around one that never exists.
             let (a, b) = (root.join("a.opus"), root.join("b.opus"));
             smol::fs::write(&a, b"x").await.unwrap();
             smol::fs::write(&b, b"x").await.unwrap();
-            let items = vec![item(a.clone(), "a"), item(root.join("gone.opus"), "gone"), item(b.clone(), "b")];
 
-            save(file.clone(), SavedPlaylist::new(items, 2)).await;
-            let loaded = load(file.clone()).await;
+            save_playlist(playlist.clone(), SavedPlaylist::new(vec![a.clone(), root.join("gone.opus"), b.clone()])).await;
+            save_player(player.clone(), SavedPlayer::new(2, Repeat::Album)).await;
+            let restored = load(playlist.clone(), player.clone()).await;
 
-            let titles: Vec<&str> = loaded.items.iter().map(|i| i.title.as_str()).collect();
-            assert_eq!(titles, ["a", "b"], "the vanished track is dropped");
-            assert_eq!(loaded.current, 1, "current follows its item past the dropped one");
+            assert_eq!(restored.tracks, [a, b], "the vanished track is dropped");
+            assert_eq!(restored.current, 1, "current follows its item past the dropped one");
+            assert_eq!(restored.repeat, Repeat::Album, "the repeat mode round-trips");
         });
 
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
-    fn missing_file_restores_an_empty_queue() {
-        let loaded = smol::block_on(load(Some(std::env::temp_dir().join("phonoscule-playlist-nonexistent.json"))));
-        assert!(loaded.items.is_empty());
-        assert_eq!(loaded.current, 0);
+    fn missing_files_restore_an_empty_session() {
+        let missing = std::env::temp_dir().join("phonoscule-playlist-nonexistent");
+        let restored = smol::block_on(load(Some(missing.join("playlist.json")), Some(missing.join("player.json"))));
+        assert!(restored.tracks.is_empty());
+        assert_eq!(restored.current, 0);
+        assert_eq!(restored.repeat, Repeat::Off);
     }
 }

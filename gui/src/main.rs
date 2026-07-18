@@ -42,9 +42,9 @@ fn main() -> anyhow::Result<()> {
     let arg_conf_path = args.next().map(PathBuf::from);
     anyhow::ensure!(args.next().is_none(), "expected at most one argument: a path to a config file");
     let conf = smol::block_on(Conf::load(conf::locate(arg_conf_path)))?;
-    let playlist = smol::block_on(playlist::load(playlist::default_file()));
+    let restored = smol::block_on(playlist::load(playlist::playlist_file(), playlist::player_file()));
 
-    let app = iced::application(boot(conf, playlist), update, view)
+    let app = iced::application(boot(conf, restored), update, view)
         .title("Phonoscule")
         .subscription(subscription)
         .theme(theme)

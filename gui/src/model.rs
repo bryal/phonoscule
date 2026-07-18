@@ -82,6 +82,9 @@ pub struct App {
     pub track_menu: Option<TrackMenu>,
     pub queue: Vec<QueueItem>,
     pub current: usize,
+    /// The repeat mode, mirrored here for the UI and persistence; the engine holds its own copy
+    /// (synced via [`player::Cmd::SetRepeat`]) since auto-advance happens there.
+    pub repeat: player::Repeat,
     pub play_state: player::PlayState,
     pub pos: Duration,
     pub len: Option<Duration>,
@@ -214,7 +217,7 @@ impl Default for HiResCache {
     }
 }
 
-pub fn boot(conf: Conf, playlist: playlist::SavedPlaylist) -> impl Fn() -> (App, Task<Msg>) {
+pub fn boot(conf: Conf, restored: playlist::Restored) -> impl Fn() -> (App, Task<Msg>) {
     move || {
         let (media, media_worker) = media::start();
         let mut app = App {
@@ -229,6 +232,7 @@ pub fn boot(conf: Conf, playlist: playlist::SavedPlaylist) -> impl Fn() -> (App,
             track_menu: None,
             queue: vec![],
             current: 0,
+            repeat: restored.repeat,
             play_state: player::PlayState::Paused,
             pos: Duration::ZERO,
             len: None,
@@ -245,24 +249,27 @@ pub fn boot(conf: Conf, playlist: playlist::SavedPlaylist) -> impl Fn() -> (App,
             last_frame: Instant::now(),
         };
         // Restore the previous session's queue, paused at its current track: the engine opens the
-        // track (reporting its length for the seek bar) and waits. The items carry their tags but
-        // no cover art yet -- the scan below re-attaches covers by album id as it reports them.
-        let saved = playlist.clone();
-        app.queue = saved
-            .items
-            .into_iter()
-            .map(|item| QueueItem {
-                path: item.path,
-                album_id: item.album_id,
-                title: item.title,
-                artist: item.artist,
-                album: item.album,
+        // track (reporting its length for the seek bar) and waits. Only paths were persisted --
+        // items start as placeholders (the file stem for a title, the parent directory hashed as a
+        // provisional album key) and the scan below hydrates real tags and album ids by path, with
+        // covers following by album id. The engine keeps the provisional keys until the next queue
+        // command; they group identically except for the rare directory holding several albums.
+        app.queue = restored
+            .tracks
+            .iter()
+            .map(|path| QueueItem {
+                title: path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+                artist: String::new(),
+                album: String::new(),
+                album_id: dir_key(path),
                 cover: None,
+                path: path.clone(),
             })
             .collect();
-        app.current = saved.current;
+        app.current = restored.current;
         // Rest the cover flow on the current album rather than sweeping to it from the far end.
         app.anim_pos = flow_target(&app);
+        app.send(player::Cmd::SetRepeat(app.repeat));
         if !app.queue.is_empty() {
             app.send(player::Cmd::SetQueue {
                 tracks: entries(&app.queue),
@@ -299,6 +306,16 @@ impl App {
 /// repeat-album advancement walks (see [`player::Entry`]).
 pub fn entries(items: &[QueueItem]) -> Vec<player::Entry> {
     items.iter().map(|item| player::Entry { path: item.path.clone(), album: item.album_id }).collect()
+}
+
+/// A provisional album grouping key for a track not yet matched to the library: its parent
+/// directory (an album is a directory here), hashed into the album-id key space. Replaced by the
+/// real album id when the scan hydrates the item.
+fn dir_key(path: &std::path::Path) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    path.parent().hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The queue's contiguous runs of tracks from the same album, as ranges into the queue. The
