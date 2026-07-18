@@ -381,6 +381,13 @@ pub struct Filter {
     pub search: String,
 }
 
+impl Filter {
+    /// Whether the filter lets everything through (nothing to clear).
+    pub fn is_empty(&self) -> bool {
+        self.artist.is_none() && self.search.is_empty()
+    }
+}
+
 /// Recomputes [`App::filtered`] from the filter inputs: albums by the picked artist (if any)
 /// whose titles contain every whitespace-split word of the search (case-insensitively). Album
 /// order (alphabetical) is kept, except that a non-empty search re-ranks by [`search_rank`] --

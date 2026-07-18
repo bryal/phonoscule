@@ -26,6 +26,7 @@ const FA_PLUS: &str = "\u{2b}";
 const FA_LIST: &str = "\u{f03a}";
 const FA_REPEAT: &str = "\u{f363}";
 const FA_ELLIPSIS: &str = "\u{f141}";
+const FA_XMARK: &str = "\u{f00d}";
 
 fn font_awesome_solid() -> iced::Font {
     iced::Font {
@@ -243,7 +244,12 @@ fn filter_bar(app: &App) -> Element<'_, Msg> {
     let enabled = !app.filtered.is_empty();
     let play = text(FA_PLAY).font(font_awesome_solid()).size(13);
     let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(15);
+    // Clears every filter; sits apart from the play/queue pair at the other end, and disables
+    // (dimming) when there is nothing to clear.
+    let clear = text(FA_XMARK).font(font_awesome_solid()).size(14);
+    let clear = button(clear).style(button::text).on_press_maybe((!app.filter.is_empty()).then_some(Msg::ClearFilters));
     let bar = row![
+        clear,
         chip,
         search,
         button(play).style(button::text).on_press_maybe(enabled.then_some(Msg::PlayAll)),

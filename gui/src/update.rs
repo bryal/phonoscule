@@ -1,7 +1,7 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{
-    App, Modal, ModalKind, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, ScanState,
+    App, Filter, Modal, ModalKind, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, ScanState,
     TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow, entries, flow_target, glow_blend,
     picker_matches, queue_items, refresh_filter, run_of,
 };
@@ -31,6 +31,8 @@ pub enum Msg {
     AlbumSelected(Option<usize>),
     /// The album-title search field changed: refresh the filtered grid.
     SearchChanged(String),
+    /// Clear every library filter (the bar's ✕ button), showing the whole library again.
+    ClearFilters,
     /// Play all albums matching the current filter, in their displayed order, replacing the queue.
     PlayAll,
     /// Append all albums matching the current filter, in their displayed order, to the queue.
@@ -238,6 +240,11 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::SearchChanged(search) => {
             app.filter.search = search;
             // The old selection would silently point at a different album in the new list.
+            app.selected = None;
+            refresh_filter(app);
+        }
+        Msg::ClearFilters => {
+            app.filter = Filter::default();
             app.selected = None;
             refresh_filter(app);
         }
