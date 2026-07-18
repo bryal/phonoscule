@@ -99,7 +99,7 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     // menu (shuffle and friends). They flank the transport controls.
     let repeat_tag = match app.repeat {
         player::Repeat::Off => "×",
-        player::Repeat::Track => "1",
+        player::Repeat::Track => "∙",
         player::Repeat::Album => "◎",
         player::Repeat::Playlist => "∞",
     };
@@ -108,12 +108,12 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
         _ => 1.0,
     };
     let repeat_style = move |theme: &Theme| text::Style { color: Some(Color { a: alpha, ..theme.palette().text }) };
-    let repeat_icon = text(FA_REPEAT).font(font_awesome_solid()).size(18).style(repeat_style);
-    let repeat = button(row![repeat_icon, text(repeat_tag).size(13).style(repeat_style)].spacing(4).align_y(Center))
+    let repeat_icon = text(FA_REPEAT).font(font_awesome_solid()).size(17).style(repeat_style);
+    let repeat = button(row![repeat_icon, text(repeat_tag).size(16).style(repeat_style)].spacing(4).align_y(Center))
         .style(button::text)
         .on_press(Msg::CycleRepeat);
     let actions =
-        button(text(FA_ELLIPSIS).font(font_awesome_solid()).size(18)).style(button::text).on_press(Msg::OpenActionsMenu);
+        button(text(FA_ELLIPSIS).font(font_awesome_solid()).size(17)).style(button::text).on_press(Msg::OpenActionsMenu);
 
     let controls = row![
         repeat,
