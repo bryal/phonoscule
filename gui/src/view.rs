@@ -1,6 +1,6 @@
 //! Rendering the model: the library browser and the player (Cover Flow) views.
 
-use crate::model::{App, ScanState, View, album_runs, glow_now, run_of};
+use crate::model::{App, GRID_SCROLL_ID, GridGeom, ScanState, View, album_runs, glow_now, run_of};
 use crate::update::Msg;
 use iced::widget::{button, column, container, hover, image, mouse_area, responsive, row, scrollable, slider, stack, text};
 use iced::{Center, Color, Element, Fill, Theme, color};
@@ -146,11 +146,19 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         // doesn't leave a bare right margin.
         let width = size.width - 2.0 * PADDING;
         let cols = (((width + SPACING) / (CARD_SIDE + SPACING)) as usize).max(1);
-        // Cache the column count for keyboard up/down navigation, which runs in `update` and has no
-        // layout to consult (see `App::grid_cols`).
-        app.grid_cols.set(cols);
         let side = ((width - SPACING * (cols - 1) as f32) / cols as f32).floor().max(CARD_SIDE / 2.0);
-        let mut grid = column![].spacing(24).padding(iced::Padding {
+        // Cache the grid's geometry for keyboard navigation, which runs in `update` and has no
+        // layout to consult (see `App::grid`): the column count for up/down movement, the row
+        // metrics and viewport for scrolling the selection into view.
+        app.grid.set(GridGeom {
+            cols,
+            row_h: card_height(side),
+            pitch: card_height(side) + GRID_ROW_SPACING,
+            top: TAB_BAR_HEIGHT,
+            view_h: size.height,
+            occluded: if app.queue.is_empty() { 0.0 } else { PLAYER_BAR_HEIGHT },
+        });
+        let mut grid = column![].spacing(GRID_ROW_SPACING).padding(iced::Padding {
             // Clear the floating nav tabs at the top.
             top: TAB_BAR_HEIGHT,
             right: PADDING,
@@ -168,7 +176,13 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         // No scrollbar (it would overlap the floating player bar and can't be shortened):
         // wheel/touchpad scrolling only, like the track list overlay.
         let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
-        let grid = scrollable(grid).direction(scrollable::Direction::Vertical(invisible_scrollbar)).height(Fill);
+        // The id lets keyboard navigation address this scrollable with scroll operations, and
+        // on_scroll keeps the model's offset mirror fresh (see `App::grid_offset`).
+        let grid = scrollable(grid)
+            .direction(scrollable::Direction::Vertical(invisible_scrollbar))
+            .height(Fill)
+            .id(GRID_SCROLL_ID)
+            .on_scroll(Msg::GridScrolled);
         match app.scan {
             // The scan status floats over the grid rather than claiming layout space; rescans
             // (the watcher, the periodic poll) must not shift the albums around.
@@ -195,11 +209,34 @@ const PLAYER_BAR_HEIGHT: f32 = 152.0;
 /// Where the library grid starts, leaving the floating nav tabs clear with a gap below them.
 const TAB_BAR_HEIGHT: f32 = 60.0;
 
+/// Vertical spacing between the library grid's rows.
+const GRID_ROW_SPACING: f32 = 24.0;
+
+/// The pad around each album card, framing the selection highlight (see [`album_card`]).
+const CARD_PAD: f32 = 6.0;
+
+/// The title's reserved height: exactly two lines at a fixed 19px line height. Fixed rather than
+/// wrap-to-fit so every card is the same height -- keyboard navigation computes row positions from
+/// [`card_height`], which uniform cards make exact. Titles longer than two lines are clipped.
+const TITLE_HEIGHT: f32 = 38.0;
+const TITLE_LINE_HEIGHT: f32 = 19.0;
+
+/// The artist line's reserved height: one line, clipping any wrap, for the same uniformity.
+const ARTIST_HEIGHT: f32 = 17.0;
+
+/// Spacing between a card's cover, title, and artist blocks.
+const CARD_SPACING: f32 = 4.0;
+
+/// The exact height of an album card of width `side`: the square cover (inset by the pad) plus the
+/// fixed text blocks. The update loop turns this into row positions for scroll-into-view.
+fn card_height(side: f32) -> f32 {
+    (side - 2.0 * CARD_PAD) + CARD_SPACING + TITLE_HEIGHT + CARD_SPACING + ARTIST_HEIGHT + 2.0 * CARD_PAD
+}
+
 fn album_card(ix: usize, album: &Album, side: f32, selected: bool) -> Element<'_, Msg> {
     // The card sits inside a constant pad so the selection highlight can frame it; the cover shrinks
     // to keep each card's footprint exactly `side`, so highlighting never reflows the grid.
-    const PAD: f32 = 6.0;
-    let inner = (side - 2.0 * PAD).max(1.0);
+    let inner = (side - 2.0 * CARD_PAD).max(1.0);
     let cover: Element<'_, Msg> = match &album.cover {
         Some(c) => image(c.handle.clone()).width(inner).height(inner).content_fit(iced::ContentFit::Cover).into(),
         None => container(text(&album.title).size(16).center())
@@ -224,17 +261,21 @@ fn album_card(ix: usize, album: &Album, side: f32, selected: bool) -> Element<'_
     .padding(8);
     // A left click only selects (playing is the play bubble or Ctrl+Space).
     let cover = hover(button(cover).padding(0).style(button::text).on_press(Msg::SelectAlbum(ix)), bubbles);
+    // Fixed-height text blocks keep every card the same height (see TITLE_HEIGHT); the title wraps
+    // to two lines at a line height chosen to fill its block exactly.
+    let title = text(&album.title).size(15).line_height(iced::Pixels(TITLE_LINE_HEIGHT)).height(TITLE_HEIGHT);
     // Artist is dimmer than the title but not as faint as `text::secondary`, which the selection
     // backdrop washes out (see below).
     let artist = text(&album.artist)
         .size(13)
+        .height(ARTIST_HEIGHT)
         .style(|theme: &Theme| text::Style { color: Some(Color { a: 0.8, ..theme.palette().text }) });
-    let card = column![cover, text(&album.title).size(15), artist].spacing(4).width(inner);
+    let card = column![cover, title, artist].spacing(CARD_SPACING).width(inner);
     // The selected card gets a translucent weak-primary backdrop -- see-through enough that the
     // black grid darkens it and the artist text keeps its contrast. Unselected cards draw no
     // background, so the constant pad is the only footprint either way.
     container(card)
-        .padding(PAD)
+        .padding(CARD_PAD)
         .style(move |theme: &Theme| container::Style {
             background: selected
                 .then(|| iced::Background::Color(Color { a: 0.5, ..theme.extended_palette().primary.weak.color })),
