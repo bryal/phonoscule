@@ -44,6 +44,7 @@ pub enum Msg {
     Shuffle {
         grouping: Grouping,
         scope: Scope,
+        promotion: Promotion,
     },
     /// Reset playback: jump to the first track of the queue, paused (Backspace).
     ResetPlayback,
@@ -225,7 +226,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             app.send(player::Cmd::SetRepeat(app.repeat));
             return save_player(app);
         }
-        Msg::Shuffle { grouping, scope } => return shuffle_queue(app, grouping, scope),
+        Msg::Shuffle { grouping, scope, promotion } => return shuffle_queue(app, grouping, scope, promotion),
         Msg::ResetPlayback => {
             if !app.queue.is_empty() {
                 app.current = 0;
@@ -445,6 +446,16 @@ pub enum Grouping {
     Albums,
 }
 
+/// Whether a [`Scope::Others`] shuffle may promote to [`Scope::All`] when playback sits paused on
+/// the queue's first track, nothing begun -- a state that reads "shuffle me a fresh playlist",
+/// not "keep my current track first". The bare `s`/`z` keys promote; the actions menu's entries
+/// say exactly what they do, so they stay literal.
+#[derive(Debug, Clone, Copy)]
+pub enum Promotion {
+    Auto,
+    Literal,
+}
+
 /// How much of the queue a shuffle reorders.
 #[derive(Debug, Clone, Copy)]
 pub enum Scope {
@@ -460,10 +471,9 @@ pub enum Scope {
 /// Shuffles the queue in place, visibly: the reordering IS the new playlist (persisted like any
 /// other queue change, so a restart resumes the same order), and the cover flow snaps to the
 /// cursor's new position rather than sweeping. See [`Scope`] for what moves and what keeps
-/// playing. Paused on the very first track, nothing begun, [`Scope::Others`] promotes to
-/// [`Scope::All`]: that state reads "shuffle me a fresh playlist" (it's what Backspace resets to),
-/// not "keep my current track first".
-fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope) -> Task<Msg> {
+/// playing, and [`Promotion`] for when a shuffle of the others becomes a shuffle of everything
+/// (it's the state Backspace resets to, making Ctrl+s and Backspace-then-s equivalent).
+fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope, promotion: Promotion) -> Task<Msg> {
     if app.queue.is_empty() {
         return Task::none();
     }
@@ -471,8 +481,8 @@ fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope) -> Task<Msg> {
     if let Some(Modal::Actions) = app.modal {
         app.modal = None;
     }
-    let scope = match (scope, app.current, app.play_state) {
-        (Scope::Others, 0, player::PlayState::Paused) => Scope::All,
+    let scope = match (scope, promotion, app.current, app.play_state) {
+        (Scope::Others, Promotion::Auto, 0, player::PlayState::Paused) => Scope::All,
         (scope, ..) => scope,
     };
 
@@ -755,12 +765,16 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
             return match (key, modifiers.control()) {
                 (Key::Named(Named::Escape), false) => one_shot(Msg::CloseModal),
                 (Key::Character(c), false) if c.as_str() == "r" => one_shot(Msg::CycleRepeat),
-                (Key::Character(c), ctrl) if c.as_str() == "s" => {
-                    one_shot(Msg::Shuffle { grouping: Grouping::Albums, scope: if ctrl { Scope::All } else { Scope::Others } })
-                }
-                (Key::Character(c), ctrl) if c.as_str() == "z" => {
-                    one_shot(Msg::Shuffle { grouping: Grouping::Tracks, scope: if ctrl { Scope::All } else { Scope::Others } })
-                }
+                (Key::Character(c), ctrl) if c.as_str() == "s" => one_shot(Msg::Shuffle {
+                    grouping: Grouping::Albums,
+                    scope: if ctrl { Scope::All } else { Scope::Others },
+                    promotion: Promotion::Auto,
+                }),
+                (Key::Character(c), ctrl) if c.as_str() == "z" => one_shot(Msg::Shuffle {
+                    grouping: Grouping::Tracks,
+                    scope: if ctrl { Scope::All } else { Scope::Others },
+                    promotion: Promotion::Auto,
+                }),
                 _ => None,
             };
         }
@@ -776,10 +790,18 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         (Key::Character(c), false, false) if c.as_str() == "p" => return one_shot(Msg::Show(View::Player)),
         (Key::Character(c), false, false) if c.as_str() == "r" => return one_shot(Msg::CycleRepeat),
         (Key::Character(c), false, ctrl) if c.as_str() == "s" => {
-            return one_shot(Msg::Shuffle { grouping: Grouping::Albums, scope: if ctrl { Scope::All } else { Scope::Others } });
+            return one_shot(Msg::Shuffle {
+                grouping: Grouping::Albums,
+                scope: if ctrl { Scope::All } else { Scope::Others },
+                promotion: Promotion::Auto,
+            });
         }
         (Key::Character(c), false, ctrl) if c.as_str() == "z" => {
-            return one_shot(Msg::Shuffle { grouping: Grouping::Tracks, scope: if ctrl { Scope::All } else { Scope::Others } });
+            return one_shot(Msg::Shuffle {
+                grouping: Grouping::Tracks,
+                scope: if ctrl { Scope::All } else { Scope::Others },
+                promotion: Promotion::Auto,
+            });
         }
         (Key::Named(Named::Backspace), false, false) => return one_shot(Msg::ResetPlayback),
         _ => {}
