@@ -94,24 +94,24 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     .spacing(12)
     .align_y(Center);
 
-    // The repeat button cycles the mode, its icon dimmed when off and tagged with the mode
-    // otherwise; the ellipsis opens the actions menu (shuffle and friends). They flank the
-    // transport controls.
+    // The repeat button cycles the mode, dimmed when off and tagged with a single glyph per mode
+    // (equal widths, so the button doesn't shift as it cycles); the ellipsis opens the actions
+    // menu (shuffle and friends). They flank the transport controls.
     let repeat_tag = match app.repeat {
-        player::Repeat::Off => "",
+        player::Repeat::Off => "×",
         player::Repeat::Track => "1",
-        player::Repeat::Album => "alb",
-        player::Repeat::Playlist => "all",
+        player::Repeat::Album => "◎",
+        player::Repeat::Playlist => "∞",
     };
-    let repeat_icon = text(FA_REPEAT)
-        .font(font_awesome_solid())
-        .size(15)
-        .style(|theme: &Theme| text::Style { color: Some(Color { a: 0.35, ..theme.palette().text }) });
-    let repeat_icon = match app.repeat {
-        player::Repeat::Off => repeat_icon,
-        _ => repeat_icon.style(|theme: &Theme| text::Style { color: Some(theme.palette().text) }),
+    let alpha = match app.repeat {
+        player::Repeat::Off => 0.35,
+        _ => 1.0,
     };
-    let repeat = button(row![repeat_icon, text(repeat_tag).size(10)].spacing(3)).style(button::text).on_press(Msg::CycleRepeat);
+    let repeat_style = move |theme: &Theme| text::Style { color: Some(Color { a: alpha, ..theme.palette().text }) };
+    let repeat_icon = text(FA_REPEAT).font(font_awesome_solid()).size(15).style(repeat_style);
+    let repeat = button(row![repeat_icon, text(repeat_tag).size(10).style(repeat_style)].spacing(3).align_y(Center))
+        .style(button::text)
+        .on_press(Msg::CycleRepeat);
     let actions =
         button(text(FA_ELLIPSIS).font(font_awesome_solid()).size(15)).style(button::text).on_press(Msg::OpenActionsMenu);
 
