@@ -67,10 +67,10 @@ fn channel_subscription<T: Send + 'static>(tag: &'static str, rx: channel::Recei
     Subscription::run_with(Tagged(tag, rx), |tagged| tagged.1.clone())
 }
 
-/// How often the music directory is polled for changes, as the fallback behind the filesystem
-/// watcher. Unchanged files are never re-read (the tag cache is validated by stat data), so a
-/// quiet poll costs directory listings and stats.
-const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
+/// How often the music directory is polled for changes, as the fallback behind the filesystem watcher.
+/// Unchanged files are never re-read (the tag cache is validated by stat data),
+/// so a quiet poll costs directory listings and stats.
+const RESCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// Debounces the watcher's raw change events into one `Msg::Rescan` per settled burst, driven on
 /// iced's own executor. `run_with` keeps a stable identity (the tag) and (re)builds the debounce
