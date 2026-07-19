@@ -211,8 +211,8 @@ enum Edge {
 fn glass_panel<'a>(app: &App, content: Element<'a, Msg>, highlight_edge: Edge) -> Element<'a, Msg> {
     let g = glow_now(app).color;
     let tinted = |k: f32, a: f32| Color { r: g.r * k, g: g.g * k, b: g.b * k, a };
-    let glass = tinted(0.16, 0.72);
-    let highlight = tinted(0.85, 0.5);
+    let glass = tinted(0.18, 0.68);
+    let highlight = tinted(0.70, 0.35);
     let hairline = container(iced::widget::Space::new()).width(Fill).height(1).style(move |_theme| container::Style {
         background: Some(iced::Background::Color(highlight)),
         ..container::Style::default()
