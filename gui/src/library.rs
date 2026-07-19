@@ -621,15 +621,18 @@ pub fn accent_color(rgb: &[u8]) -> iced::Color {
             return 0.0;
         }
         let (r, g, b) = ((r / n) as f32 / 255.0, (g / n) as f32 / 255.0, (b / n) as f32 / 255.0);
-        let chroma = r.max(g).max(b) - r.min(g).min(b);
+        let max = r.max(g).max(b);
+        let chroma = max - r.min(g).min(b);
         // Vividness must dominate size -- a small vivid region (a logo, a lit screen) IS the
         // accent of a mostly-dark cover, so the population floor is tiny: a tiebreaker letting
-        // grayscale art degrade to its most common shade, never a rival to real color. Absolute
+        // grayscale art degrade to a representative shade, never a rival to real color. Absolute
         // chroma, not a max-relative ratio, so near-black masses can't ride their color cast. A
         // vivid bucket must still cover ~0.1% of the art: JPEG noise on dark covers yields lone
-        // max-chroma pixels.
+        // max-chroma pixels. The tiebreaker itself is brightness-weighted: on achromatic art a
+        // bright shade beats a dark mass unless the dark is overwhelmingly dominant (a black
+        // cover with a fair patch of white should accent white, not black).
         let vivid = if n * 1000 >= samples { chroma.powi(3) } else { 0.0 };
-        n as f32 * (1e-4 + vivid)
+        n as f32 * (1e-4 * (0.1 + max) + vivid)
     };
     let best = buckets.iter().max_by(|a, b| score(a).total_cmp(&score(b)));
     match best {
@@ -822,6 +825,22 @@ mod test {
         }
         let accent = accent_color(&rgb);
         assert!(accent.b > 0.5 && accent.b > accent.g, "{accent:?}");
+    }
+
+    #[test]
+    fn accent_prefers_a_bright_neutral_over_a_dark_mass() {
+        // Achromatic art, mostly black with a substantial bright-gray region (a parchment
+        // background): the bright shade makes the better accent.
+        let mut rgb = Vec::new();
+        for i in 0..10_000 {
+            if i % 3 == 0 {
+                rgb.extend([215u8, 213, 209]);
+            } else {
+                rgb.extend([7u8, 7, 7]);
+            }
+        }
+        let accent = accent_color(&rgb);
+        assert!(accent.r > 0.7, "{accent:?}");
     }
 
     #[test]

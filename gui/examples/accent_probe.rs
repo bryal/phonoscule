@@ -27,9 +27,10 @@ fn main() {
             return 0.0;
         }
         let (r, g, b) = ((r / n) as f32 / 255.0, (g / n) as f32 / 255.0, (b / n) as f32 / 255.0);
-        let chroma = r.max(g).max(b) - r.min(g).min(b);
+        let max = r.max(g).max(b);
+        let chroma = max - r.min(g).min(b);
         let vivid = if n * 1000 >= samples { chroma.powi(3) } else { 0.0 };
-        n as f32 * (1e-4 + vivid)
+        n as f32 * (1e-4 * (0.1 + max) + vivid)
     };
     let mut ranked: Vec<&[u64; 4]> = buckets.iter().filter(|b| b[0] > 0).collect();
     ranked.sort_by(|a, b| score(b).total_cmp(&score(a)));
