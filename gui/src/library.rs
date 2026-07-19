@@ -1,8 +1,17 @@
 //! Music library scanning: find audio files, read their tags with phonoscule, group them into
 //! albums, and load folder cover art (`cover.jpg` & friends).
 //!
-//! [`scan`] streams results incrementally: albums are reported as soon as their directory has
-//! been read, and cover art (the expensive part) trickles in afterwards, decoded concurrently.
+//! Albums are what the tags say, not what the directory layout says: tracks group by (album
+//! artist, album title) -- the ALBUMARTIST tag, or the track's own artist without one -- wherever
+//! their files live in the pool. So a multi-disc album split over `CD1`/`CD2` directories is one
+//! album, and two same-named albums by different artists are two even side by side in one
+//! directory. The flip side is deliberate: a compilation without ALBUMARTIST tags fragments into
+//! per-artist albums -- maintaining that tag is the library's job, not ours to guess from paths.
+//!
+//! [`scan`] streams results incrementally: an album is (re-)reported as directories contribute
+//! tracks to it, growing until the scan completes, and cover art (the expensive part) trickles in
+//! afterwards, decoded concurrently. On a warm rescan the tag cache predicts every directory an
+//! album draws from, so each album is reported exactly once, fully assembled (see `Assembler`).
 //!
 //! Tags are cached persistently (validated by file mtime + size), so only new or changed files
 //! are actually opened; re-scans of an unchanged library cost directory reads and stats. Album
@@ -29,7 +38,8 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub struct Album {
-    /// Stable content-derived id (directory + album title), the same across re-scans.
+    /// Stable content-derived id (album artist + album title), the same across re-scans -- and
+    /// across the user reorganizing where the files live.
     pub id: u64,
     pub title: String,
     pub artist: String,
@@ -75,11 +85,17 @@ impl fmt::Debug for CoverArt {
 
 #[derive(Debug, Clone)]
 pub enum ScanEvent {
-    /// A fully discovered album. Its cover art may still be loading (or, when its cover id was
-    /// in [`ScanOptions::known_covers`], arrive not at all: keep what you have). Boxed: an album
-    /// is by far the largest event, and it travels through every message channel.
+    /// A discovered album, in its assembled-so-far state: consumers upsert by id. Usually
+    /// reported once and complete, but an album drawing tracks from directories the tag cache
+    /// didn't predict grows across reports until [`ScanEvent::Done`]. Its cover art may still be
+    /// loading (or, when its cover id was in [`ScanOptions::known_covers`], arrive not at all:
+    /// keep what you have). Boxed: an album is by far the largest event, and it travels through
+    /// every message channel.
     Album(Box<Album>),
-    /// Cover art finished loading for the albums with the given ids.
+    /// Cover art finished loading for the albums with the given ids. Apply it only where the
+    /// album's current `cover_id` still matches [`CoverArt::id`]: an album can outgrow a queued
+    /// cover mid-scan (a later directory contributed more of its tracks), and the stale decode
+    /// must not overwrite the winner.
     Cover { albums: Vec<u64>, art: CoverArt },
     /// The scan is complete: every album has been reported. Albums absent from `album_ids` no
     /// longer exist and should be dropped.
@@ -119,9 +135,10 @@ pub fn default_index_file() -> Option<PathBuf> {
     Some(cache_dir()?.join("albums.json"))
 }
 
-/// Bumped when [`SavedAlbum`] changes shape; an old or unreadable index just means the grid stays
-/// empty until the scan streams the albums in, like before the index existed.
-const INDEX_VERSION: u32 = 2;
+/// Bumped when [`SavedAlbum`] changes shape or meaning (like the id derivation); an old or
+/// unreadable index just means the grid stays empty until the scan streams the albums in, like
+/// before the index existed.
+const INDEX_VERSION: u32 = 3;
 
 /// The persisted album index: the assembled album list minus the cover pixels, so a launch can
 /// show the whole library instantly instead of waiting for the directory walk. The boot scan then
@@ -295,13 +312,20 @@ struct CacheEntry {
     disc: Option<u32>,
 }
 
-impl CacheEntry {
-    /// Where the track sorts within its album: by disc, then track number, then title -- the
-    /// title (not the path) breaks ties so an untagged album orders the same wherever its files
-    /// live. Untagged discs are disc 1; untagged tracks sort after their disc's tagged ones.
-    fn track_order(&self) -> (u32, u32, &str) {
-        (self.disc.unwrap_or(1), self.track.unwrap_or(u32::MAX), &self.title)
-    }
+/// The identity a track's album groups by -- and the album's displayed byline: `(artist, album
+/// title)`, where the artist is the ALBUMARTIST tag when present, else the track's own artist.
+/// The directory plays no part: same key means same album wherever the files live.
+fn album_key(entry: &CacheEntry) -> (&str, &str) {
+    let artist = match entry.album_artist.as_str() {
+        "" => entry.artist.as_str(),
+        a => a,
+    };
+    (artist, entry.album.as_str())
+}
+
+/// The stable album id: [`album_key`], hashed.
+fn album_id(entry: &CacheEntry) -> u64 {
+    stable_id(album_key(entry))
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -310,7 +334,7 @@ struct Cache {
     files: HashMap<PathBuf, CacheEntry>,
 }
 
-const CACHE_VERSION: u32 = 4;
+const CACHE_VERSION: u32 = 5;
 
 /// A stable hash-based identity for albums and covers.
 fn stable_id(parts: impl Hash) -> u64 {
@@ -326,11 +350,228 @@ struct AudioFile {
     size: u64,
 }
 
-/// A directory's worth of scanning work.
+/// A directory's worth of scanning work. The cover candidate is harvested into the
+/// [`Assembler`]'s per-directory cover map before the tag-reading phase.
 struct DirJob {
     dir: PathBuf,
     files: Vec<AudioFile>,
     cover: Option<(PathBuf, SystemTime)>,
+}
+
+/// A track awaiting its album's emission.
+struct PendingTrack {
+    disc: Option<u32>,
+    track: Option<u32>,
+    /// The track's own genre tag (empty when untagged); the album shows its first one.
+    genre: String,
+    info: TrackInfo,
+}
+
+impl PendingTrack {
+    /// Where the track sorts within its album: by disc, then track number, then title -- the
+    /// title (not the path) breaks ties so an untagged album orders the same wherever its files
+    /// live. Untagged discs are disc 1; untagged tracks sort after their disc's tagged ones.
+    fn order(&self) -> (u32, u32, &str, &Path) {
+        (self.disc.unwrap_or(1), self.track.unwrap_or(u32::MAX), &self.info.title, &self.info.path)
+    }
+}
+
+/// An album being assembled from the tracks the walked directories contribute.
+struct PendingAlbum {
+    title: String,
+    artist: String,
+    tracks: Vec<PendingTrack>,
+    /// How many of the album's tracks each directory holds, for choosing its cover.
+    contributions: HashMap<PathBuf, usize>,
+}
+
+/// Cross-directory album assembly: albums grow as directories contribute tracks and are emitted,
+/// possibly repeatedly in their assembled-so-far state, as they become ready.
+///
+/// Readiness is about rescan hygiene: the tag cache predicts, per directory, which albums its
+/// files belong to, so an album is held back until every directory the cache expects of it has
+/// been read. On a warm rescan the prediction is complete and each album emits exactly once,
+/// identical to the consumer's state -- no churn, no index rewrite every five minutes. Files the
+/// cache doesn't know (new or changed) predict nothing, so a cold scan emits albums growing per
+/// contribution and the first launch stays progressive.
+struct Assembler {
+    assembled: HashMap<u64, PendingAlbum>,
+    /// Per album, how many directories the tag cache expects to contribute are still unread.
+    waiting: HashMap<u64, usize>,
+    /// Per unread directory, the albums the tag cache expects it to contribute to (`waiting`'s
+    /// feeder: drained -- decrementing the counts -- as directories complete).
+    expected: HashMap<PathBuf, Vec<u64>>,
+    /// Albums touched since they were last emitted.
+    dirty: HashSet<u64>,
+    /// `(cover id, album id)` pairs already queued for decoding, so a re-emission with an
+    /// unchanged choice doesn't decode the cover again.
+    queued: HashSet<(u64, u64)>,
+    /// Every walked directory's cover image candidate -- including directories without audio
+    /// files, whose covers may dress the albums in their subdirectories (see [`choose_cover`]).
+    covers: HashMap<PathBuf, (PathBuf, SystemTime)>,
+    /// Covers the consumer already holds decoded: never queued.
+    known_covers: HashSet<u64>,
+}
+
+impl Assembler {
+    fn new(
+        jobs: &[DirJob],
+        cache: &Cache,
+        covers: HashMap<PathBuf, (PathBuf, SystemTime)>,
+        known_covers: HashSet<u64>,
+    ) -> Self {
+        let mut waiting: HashMap<u64, usize> = HashMap::new();
+        let mut expected: HashMap<PathBuf, Vec<u64>> = HashMap::new();
+        for job in jobs {
+            let mut ids: Vec<u64> = job
+                .files
+                .iter()
+                .filter_map(|f| cache.files.get(&f.path).filter(|e| e.mtime == f.mtime && e.size == f.size))
+                .map(album_id)
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            for &id in &ids {
+                *waiting.entry(id).or_default() += 1;
+            }
+            if !ids.is_empty() {
+                expected.insert(job.dir.clone(), ids);
+            }
+        }
+        Assembler {
+            assembled: HashMap::new(),
+            waiting,
+            expected,
+            dirty: HashSet::new(),
+            queued: HashSet::new(),
+            covers,
+            known_covers,
+        }
+    }
+
+    /// Takes in one read directory's worth of resolved tags: grows the albums its files belong
+    /// to and retires the directory from every album's expectations.
+    fn absorb(&mut self, dir: &Path, entries: &[(PathBuf, CacheEntry)]) {
+        for (path, entry) in entries {
+            let id = album_id(entry);
+            let (artist, album) = album_key(entry);
+            let pending = self.assembled.entry(id).or_insert_with(|| PendingAlbum {
+                title: album.to_string(),
+                artist: artist.to_string(),
+                tracks: vec![],
+                contributions: HashMap::new(),
+            });
+            pending.tracks.push(PendingTrack {
+                disc: entry.disc,
+                track: entry.track,
+                genre: entry.genre.clone(),
+                info: TrackInfo { path: path.clone(), title: entry.title.clone() },
+            });
+            *pending.contributions.entry(dir.to_path_buf()).or_default() += 1;
+            self.dirty.insert(id);
+        }
+        for id in self.expected.remove(dir).unwrap_or_default() {
+            if let Some(n) = self.waiting.get_mut(&id) {
+                *n = n.saturating_sub(1);
+            }
+        }
+    }
+
+    /// Drains and returns the touched albums that are ready to emit: all their expected
+    /// directories have been read. Sorted for a deterministic emission order.
+    fn ready(&mut self) -> Vec<u64> {
+        let waiting = &self.waiting;
+        let mut ready: Vec<u64> = self.dirty.iter().copied().filter(|id| waiting.get(id).is_none_or(|&n| n == 0)).collect();
+        ready.sort_unstable();
+        for id in &ready {
+            self.dirty.remove(id);
+        }
+        ready
+    }
+
+    /// Drains and returns every still-unemitted album, for the end of the tag phase (an album
+    /// expecting a directory that failed to read, or whose count a stale prediction overshot).
+    fn flush(&mut self) -> Vec<u64> {
+        let mut rest: Vec<u64> = self.dirty.drain().collect();
+        rest.sort_unstable();
+        rest
+    }
+
+    /// The album's current assembled state, plus -- when its chosen cover still needs decoding --
+    /// the cover to queue, as `(cover id, image path, mtime)`.
+    fn snapshot(&mut self, id: u64) -> (Album, Option<(u64, PathBuf, SystemTime)>) {
+        let pending = &self.assembled[&id];
+        let mut tracks: Vec<&PendingTrack> = pending.tracks.iter().collect();
+        tracks.sort_unstable_by(|a, b| a.order().cmp(&b.order()));
+        // Genre is per-album: the first track (in album order) carrying one names the album's.
+        let genre = tracks.iter().map(|t| &t.genre).find(|g| !g.is_empty()).cloned().unwrap_or_default();
+        let cover = choose_cover(&pending.contributions, &self.covers);
+        let cover_id = cover.map(|(path, mtime)| stable_id((path, mtime)));
+        let queue = match (cover, cover_id) {
+            (Some((path, mtime)), Some(cid)) if !self.known_covers.contains(&cid) && self.queued.insert((cid, id)) => {
+                Some((cid, path.clone(), *mtime))
+            }
+            _ => None,
+        };
+        let album = Album {
+            id,
+            title: pending.title.clone(),
+            artist: pending.artist.clone(),
+            genre,
+            cover_id,
+            cover: None,
+            accent: None,
+            tracks: tracks.into_iter().map(|t| t.info.clone()).collect(),
+        };
+        (album, queue)
+    }
+}
+
+/// Picks an album's cover from the directories its tracks live in: the cover of the contributing
+/// directory holding most of its tracks (the lexicographically first directory breaks ties, for
+/// determinism across scan orders). When no contributing directory has a cover, their parents are
+/// tried the same way -- the disc-per-directory layout keeps the cover beside the disc
+/// directories, in the album's own.
+fn choose_cover<'c>(
+    contributions: &HashMap<PathBuf, usize>,
+    covers: &'c HashMap<PathBuf, (PathBuf, SystemTime)>,
+) -> Option<&'c (PathBuf, SystemTime)> {
+    let best = |cover_of: &dyn Fn(&Path) -> Option<&'c (PathBuf, SystemTime)>| {
+        contributions
+            .iter()
+            .filter_map(|(dir, &n)| cover_of(dir).map(|cover| (n, dir, cover)))
+            .max_by(|(n1, d1, _), (n2, d2, _)| n1.cmp(n2).then_with(|| d2.cmp(d1)))
+            .map(|(_, _, cover)| cover)
+    };
+    best(&|dir| covers.get(dir)).or_else(|| best(&|dir| covers.get(dir.parent()?)))
+}
+
+/// Emits the given ready albums, queueing their covers (batched by cover, so a pooled directory's
+/// shared cover decodes once for all its albums). Albums go out before their covers, so a Cover
+/// event can never reach the consumer ahead of the album it belongs to. Returns `false` when the
+/// scan was cancelled (the receiver is gone).
+async fn emit_albums(
+    asm: &mut Assembler,
+    ids: Vec<u64>,
+    tx: &channel::Sender<ScanEvent>,
+    cover_tx: &channel::Sender<(Vec<u64>, PathBuf, SystemTime)>,
+) -> bool {
+    let mut batch: HashMap<u64, (Vec<u64>, PathBuf, SystemTime)> = HashMap::new();
+    for id in ids {
+        let (album, cover) = asm.snapshot(id);
+        if tx.send(ScanEvent::Album(Box::new(album))).await.is_err() {
+            return false;
+        }
+        if let Some((cid, path, mtime)) = cover {
+            batch.entry(cid).or_insert_with(|| (Vec::new(), path, mtime)).0.push(id);
+        }
+    }
+    for (ids, path, mtime) in batch.into_values() {
+        if cover_tx.send((ids, path, mtime)).await.is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
@@ -341,13 +582,18 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     };
 
     // Phase 1: walk the tree, collecting each directory's audio files (with stat data) and its
-    // cover image candidate in a single directory listing.
+    // cover image candidate in a single directory listing. Covers are kept for every directory,
+    // even file-less ones -- a parent directory's cover can dress the albums below it.
     let mut dirs = vec![options.root];
     let mut jobs = Vec::new();
+    let mut covers = HashMap::new();
     while let Some(dir) = dirs.pop() {
-        match dir_job(&dir, &mut dirs).await {
-            Some(job) if !job.files.is_empty() => jobs.push(job),
-            _ => (),
+        let Some(mut job) = dir_job(&dir, &mut dirs).await else { continue };
+        if let Some(cover) = job.cover.take() {
+            covers.insert(job.dir.clone(), cover);
+        }
+        if !job.files.is_empty() {
+            jobs.push(job);
         }
     }
 
@@ -361,17 +607,19 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
         job.files.first().and_then(|file| cache.files.get(&file.path)).map_or_else(
             || (usize::MAX, job.dir.file_name().unwrap_or_default().to_string_lossy().to_lowercase(), String::new()),
             |entry| {
-                let id = stable_id((&job.dir, &entry.album));
-                (rank.get(&id).copied().unwrap_or(usize::MAX), entry.artist.to_lowercase(), entry.album.to_lowercase())
+                let (artist, album) = album_key(entry);
+                (rank.get(&album_id(entry)).copied().unwrap_or(usize::MAX), artist.to_lowercase(), album.to_lowercase())
             },
         )
     });
 
-    // Phases 2 & 3 run concurrently: tag reading emits albums per directory and queues that
-    // directory's cover; cover decoding streams in whenever ready. Sends only fail when the
-    // receiver is gone (scan cancelled), which also cancels these phases via `return`.
+    let mut asm = Assembler::new(&jobs, &cache, covers, options.known_covers);
+
+    // Phases 2 & 3 run concurrently: tag reading grows the albums per directory, emitting the
+    // ready ones and queueing their covers; cover decoding streams in whenever ready. Sends only
+    // fail when the receiver is gone (scan cancelled), which also cancels these phases via
+    // `return`.
     let (cover_tx, cover_rx) = channel::bounded::<(Vec<u64>, PathBuf, SystemTime)>(64);
-    let mut album_ids = Vec::new();
     let mut fresh = HashMap::new();
     let mut n_parsed = 0usize;
 
@@ -379,27 +627,22 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     let read_tags_phase = async {
         let mut per_dir = futures::stream::iter(jobs)
             .map(|job| async move {
-                let albums = albums_in_dir(&job, cache).await;
-                (job, albums)
+                let read = read_dir_tags(&job, cache).await;
+                (job, read)
             })
             .buffer_unordered(concurrency());
-        while let Some((job, (albums, entries, parsed))) = per_dir.next().await {
+        while let Some((job, (entries, parsed))) = per_dir.next().await {
             n_parsed += parsed;
+            asm.absorb(&job.dir, &entries);
             fresh.extend(entries);
-            let mut ids = Vec::with_capacity(albums.len());
-            for album in albums {
-                ids.push(album.id);
-                album_ids.push(album.id);
-                if tx.send(ScanEvent::Album(Box::new(album))).await.is_err() {
-                    return;
-                }
-            }
-            if let Some((path, mtime)) = job.cover
-                && !options.known_covers.contains(&stable_id((&path, mtime)))
-                && cover_tx.send((ids, path, mtime)).await.is_err()
-            {
+            let ready = asm.ready();
+            if !emit_albums(&mut asm, ready, &tx, &cover_tx).await {
                 return;
             }
+        }
+        let rest = asm.flush();
+        if !emit_albums(&mut asm, rest, &tx, &cover_tx).await {
+            return;
         }
         drop(cover_tx); // lets the cover phase finish
     };
@@ -430,6 +673,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     };
 
     futures::join!(read_tags_phase, covers_phase);
+    let album_ids: Vec<u64> = asm.assembled.keys().copied().collect();
     log::info!("scan done: found {} albums ({n_parsed} files (re)parsed)", album_ids.len());
 
     if let Some(path) = &options.cache_file
@@ -478,16 +722,12 @@ async fn dir_job(dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<DirJob> {
     Some(job)
 }
 
-/// Reads the tags of each file (from the cache when it is still valid) and groups them into
-/// albums. Tracks only group into the same album when both their directory and their album tag
-/// agree; within an album they order by their tags (see [`CacheEntry::track_order`]). Returns the
-/// albums, the fresh cache entries, and how many files were actually parsed.
-async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf, CacheEntry)>, usize) {
-    let mut albums: Vec<Album> = Vec::new();
-    let mut by_title: HashMap<String, usize> = HashMap::new();
+/// Reads the tags of each of the directory's files, from the cache when it is still valid.
+/// Returns the resolved entries (fallbacks applied) and how many files were actually parsed;
+/// grouping into albums is the [`Assembler`]'s job.
+async fn read_dir_tags(job: &DirJob, cache: &Cache) -> (Vec<(PathBuf, CacheEntry)>, usize) {
     let mut entries = Vec::with_capacity(job.files.len());
     let mut n_parsed = 0usize;
-    let cover_id = job.cover.as_ref().map(|(path, mtime)| stable_id((path, mtime)));
 
     for file in &job.files {
         let cached = cache.files.get(&file.path).filter(|e| e.mtime == file.mtime && e.size == file.size);
@@ -499,7 +739,8 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
                     log::warn!("could not parse {:?}", file.path);
                     continue;
                 };
-                // Cache the resolved values, fallbacks applied.
+                // Cache the resolved values, fallbacks applied. An untagged album is "Singles":
+                // an artist's loose tracks pool into one album of theirs, wherever the files sit.
                 CacheEntry {
                     mtime: file.mtime,
                     size: file.size,
@@ -512,7 +753,7 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
                         _ => tags.artist,
                     },
                     album: match tags.album.as_str() {
-                        "" => parent_name(&file.path),
+                        "" => "Singles".to_string(),
                         _ => tags.album,
                     },
                     album_artist: tags.album_artist,
@@ -522,41 +763,9 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
                 }
             }
         };
-        let ix = *by_title.entry(entry.album.clone()).or_insert_with(|| {
-            albums.push(Album {
-                id: stable_id((&job.dir, &entry.album)),
-                title: entry.album.clone(),
-                // The album's byline: ALBUMARTIST when tagged, else the first track's artist --
-                // on collaboration albums the latter is some track's "X feat. Y" credit.
-                artist: match entry.album_artist.as_str() {
-                    "" => entry.artist.clone(),
-                    a => a.to_string(),
-                },
-                genre: entry.genre.clone(),
-                cover_id,
-                cover: None,
-                accent: None,
-                tracks: vec![],
-            });
-            albums.len() - 1
-        });
-        // Genre is per-album here: the first track carrying one names the album's.
-        if albums[ix].genre.is_empty() {
-            albums[ix].genre = entry.genre.clone();
-        }
-        albums[ix].tracks.push(TrackInfo { path: file.path.clone(), title: entry.title.clone() });
         entries.push((file.path.clone(), entry));
     }
-    let order: HashMap<&Path, (u32, u32, &str)> = entries.iter().map(|(p, e)| (p.as_path(), e.track_order())).collect();
-    for album in &mut albums {
-        // The sort is stable and the files arrive sorted, so full ties keep their path order.
-        album.tracks.sort_by(|a, b| order[a.path.as_path()].cmp(&order[b.path.as_path()]));
-    }
-    (albums, entries, n_parsed)
-}
-
-fn parent_name(path: &Path) -> String {
-    path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy().to_string()
+    (entries, n_parsed)
 }
 
 fn extension(path: &Path) -> Option<String> {
@@ -815,6 +1024,41 @@ mod test {
         out
     }
 
+    /// A minimal Ogg Opus stream: the two header packets -- with the given vorbis comments --
+    /// and one dummy audio packet. Tags WAV's LIST-INFO can't express (ALBUMARTIST, DISCNUMBER)
+    /// need this.
+    fn opus_bytes(comments: &[(&str, &str)]) -> Vec<u8> {
+        let mut head = Vec::new();
+        head.extend(b"OpusHead");
+        head.push(1); // version
+        head.push(2); // channels
+        head.extend(312u16.to_le_bytes()); // pre-skip
+        head.extend(48000u32.to_le_bytes()); // input sample rate
+        head.extend(0u16.to_le_bytes()); // output gain
+        head.push(0); // channel mapping family 0
+
+        let mut tags = Vec::new();
+        tags.extend(b"OpusTags");
+        let vendor = b"phonoscule-test";
+        tags.extend((vendor.len() as u32).to_le_bytes());
+        tags.extend(vendor);
+        tags.extend((comments.len() as u32).to_le_bytes());
+        for (key, value) in comments {
+            let comment = format!("{key}={value}");
+            tags.extend((comment.len() as u32).to_le_bytes());
+            tags.extend(comment.as_bytes());
+        }
+
+        let serial = 0x5eed;
+        let mut out = Vec::new();
+        let mut writer = ogg::PacketWriter::new(std::io::Cursor::new(&mut out));
+        writer.write_packet(head, serial, ogg::PacketWriteEndInfo::EndPage, 0).unwrap();
+        writer.write_packet(tags, serial, ogg::PacketWriteEndInfo::EndPage, 0).unwrap();
+        writer.write_packet(vec![0xfc], serial, ogg::PacketWriteEndInfo::EndStream, 960).unwrap();
+        drop(writer);
+        out
+    }
+
     /// Scans and applies the event stream the way the GUI does: upsert by album id, then retain
     /// what `Done` reports.
     fn scan_and_apply(albums: &mut Vec<Album>, options: ScanOptions) {
@@ -832,7 +1076,7 @@ mod test {
                         albums.push(*album);
                     }
                     ScanEvent::Cover { albums: ids, art } => {
-                        for album in albums.iter_mut().filter(|a| ids.contains(&a.id)) {
+                        for album in albums.iter_mut().filter(|a| ids.contains(&a.id) && a.cover_id == Some(art.id)) {
                             album.cover = Some(art.clone());
                         }
                     }
@@ -926,6 +1170,131 @@ mod test {
         assert!(accent.r > 0.4 && accent.r > accent.b, "{accent:?}");
     }
 
+    /// Cache-less scan options for a test library at `root`.
+    fn plain_options(root: &Path) -> ScanOptions {
+        ScanOptions {
+            root: root.to_path_buf(),
+            priority: vec![],
+            known_covers: Default::default(),
+            cache_file: None,
+            covers_dir: None,
+        }
+    }
+
+    /// Albums are what the tags say, not what the directories say: two same-named albums by
+    /// different artists stay separate even side by side in one directory, and one album spread
+    /// over several directories assembles into one, its tracks ordered by their numbers.
+    #[test]
+    fn albums_group_by_artist_and_title_across_directories() {
+        let root = std::env::temp_dir().join(format!("phonoscule-group-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("pool")).unwrap();
+        std::fs::write(root.join("pool/a.wav"), wav_bytes("Neon", "FM-84", "Atlas", Some(1))).unwrap();
+        std::fs::write(root.join("pool/b.wav"), wav_bytes("Wishing Wells", "Parkway Drive", "Atlas", Some(1))).unwrap();
+        for (dir, title, track) in [("Spread/CD1", "One", 1), ("Spread/CD2", "Two", 2)] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("t.wav"), wav_bytes(title, "Artist", "Spread", Some(track))).unwrap();
+        }
+
+        let mut albums = Vec::new();
+        scan_and_apply(&mut albums, plain_options(&root));
+        let by_artist: Vec<(&str, &str, usize)> =
+            albums.iter().map(|a| (a.artist.as_str(), a.title.as_str(), a.tracks.len())).collect();
+        assert!(by_artist.contains(&("FM-84", "Atlas", 1)), "{by_artist:?}");
+        assert!(by_artist.contains(&("Parkway Drive", "Atlas", 1)), "{by_artist:?}");
+        assert!(by_artist.contains(&("Artist", "Spread", 2)), "{by_artist:?}");
+        assert_eq!(albums.len(), 3);
+        let spread = albums.iter().find(|a| a.title == "Spread").unwrap();
+        let titles: Vec<&str> = spread.tracks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["One", "Two"], "track numbers order the merged album");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A warm rescan (everything cached) reports a multi-directory album exactly once, fully
+    /// assembled: the tag cache predicts the album's directories, so consumers see none of the
+    /// partial growth a cold scan streams -- and rescans stay churn-free.
+    #[test]
+    fn warm_rescan_reports_each_album_once() {
+        let root = std::env::temp_dir().join(format!("phonoscule-warm-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (dir, title, track) in [("CD1", "One", 1), ("CD2", "Two", 2)] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("t.wav"), wav_bytes(title, "Artist", "Spread", Some(track))).unwrap();
+        }
+        let options = || ScanOptions { cache_file: Some(root.join("cache.json")), ..plain_options(&root) };
+
+        // The cold scan primes the cache (its events may show the album growing).
+        let mut albums = Vec::new();
+        scan_and_apply(&mut albums, options());
+        assert_eq!(albums.len(), 1);
+
+        let mut reports = Vec::new();
+        smol::block_on(async {
+            let mut stream = std::pin::pin!(scan(options()));
+            while let Some(event) = stream.next().await {
+                match event {
+                    ScanEvent::Album(album) => reports.push(album.tracks.len()),
+                    ScanEvent::Cover { .. } => (),
+                    ScanEvent::Done { .. } => break,
+                }
+            }
+        });
+        assert_eq!(reports, [2], "one report, already holding both discs' tracks");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ALBUMARTIST is the grouping identity (and the byline) when present: a compilation whose
+    /// tracks credit different artists stays one album. Without it, the same tracks would
+    /// fragment per artist -- the documented cost of not guessing from paths.
+    #[test]
+    fn album_artist_binds_a_compilation() {
+        let root = std::env::temp_dir().join(format!("phonoscule-albumartist-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (file, title, artist, track) in [("1.opus", "Opener", "First Act", "1"), ("2.opus", "Closer", "Second Act", "2")] {
+            let comments = [
+                ("TITLE", title),
+                ("ARTIST", artist),
+                ("ALBUMARTIST", "Various Artists"),
+                ("ALBUM", "Sampler"),
+                ("TRACKNUMBER", track),
+            ];
+            std::fs::write(root.join(file), opus_bytes(&comments)).unwrap();
+        }
+
+        let mut albums = Vec::new();
+        scan_and_apply(&mut albums, plain_options(&root));
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].artist, "Various Artists");
+        let titles: Vec<&str> = albums[0].tracks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["Opener", "Closer"]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An artist's untagged loose tracks pool into one "Singles" album, wherever the files sit.
+    #[test]
+    fn untagged_albums_pool_into_singles() {
+        let root = std::env::temp_dir().join(format!("phonoscule-singles-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (dir, title) in [("here", "Loosie"), ("there/deeper", "Another")] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("t.wav"), wav_bytes(title, "Artist", "", None)).unwrap();
+        }
+
+        let mut albums = Vec::new();
+        scan_and_apply(&mut albums, plain_options(&root));
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].title, "Singles");
+        assert_eq!(albums[0].artist, "Artist");
+        let titles: Vec<&str> = albums[0].tracks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["Another", "Loosie"], "no numbers: titles order the pool");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Tracks order by their tags: track number first, title for the untagged rest -- never by
     /// the file names.
     #[test]
@@ -940,14 +1309,7 @@ mod test {
         }
 
         let mut albums = Vec::new();
-        let options = ScanOptions {
-            root: root.clone(),
-            priority: vec![],
-            known_covers: Default::default(),
-            cache_file: None,
-            covers_dir: None,
-        };
-        scan_and_apply(&mut albums, options);
+        scan_and_apply(&mut albums, plain_options(&root));
         assert_eq!(albums.len(), 1);
         let titles: Vec<&str> = albums[0].tracks.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["Alpha", "Beta", "A Side", "B Side"]);

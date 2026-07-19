@@ -325,7 +325,8 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
         // items start as placeholders (the file stem for a title, the parent directory hashed as a
         // provisional album key) and the scan below hydrates real tags and album ids by path, with
         // covers following by album id. The engine keeps the provisional keys until the next queue
-        // command; they group identically except for the rare directory holding several albums.
+        // command; they group identically except where the directory layout and the tags disagree
+        // (a directory pooling several albums, or an album spread over several directories).
         app.queue = restored
             .tracks
             .iter()
@@ -532,8 +533,8 @@ fn cover_priority(queue: &[QueueItem], current: usize) -> Vec<u64> {
 }
 
 /// A provisional album grouping key for a track not yet matched to the library: its parent
-/// directory (an album is a directory here), hashed into the album-id key space. Replaced by the
-/// real album id when the scan hydrates the item.
+/// directory (a serviceable stand-in for the tag-derived album until the tags arrive), hashed
+/// into the album-id key space. Replaced by the real album id when the scan hydrates the item.
 fn dir_key(path: &std::path::Path) -> u64 {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut hasher = DefaultHasher::new();

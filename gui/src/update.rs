@@ -195,21 +195,26 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             refresh_filter(app);
         }
         Msg::Library(library::ScanEvent::Cover { albums, art }) => {
-            for album in app.albums.iter_mut().filter(|a| albums.contains(&a.id)) {
+            // Only albums whose current cover choice this art satisfies take it: an album can
+            // outgrow a queued cover mid-scan (see `ScanEvent::Cover`), and the stale decode must
+            // not overwrite the winner -- neither on the album nor on its queue items.
+            let accepted: Vec<u64> =
+                app.albums.iter().filter(|a| albums.contains(&a.id) && a.cover_id == Some(art.id)).map(|a| a.id).collect();
+            for album in app.albums.iter_mut().filter(|a| accepted.contains(&a.id)) {
                 album.cover = Some(art.clone());
                 // Freshly computed, so an accent the index got wrong (or an algorithm change)
                 // heals on the next index save.
                 app.index_dirty |= album.accent != Some(art.accent);
                 album.accent = Some(art.accent);
             }
-            for item in app.queue.iter_mut().filter(|i| albums.contains(&i.album_id)) {
+            for item in app.queue.iter_mut().filter(|i| accepted.contains(&i.album_id)) {
                 item.cover = Some(art.clone());
                 item.accent = Some(art.accent);
             }
             // The playing track's cover art may just have arrived -- notably right after boot,
             // when a restored queue's covers all hydrate through the scan. Re-publish it, and
             // (re)fill the cover flow's high-res window that TrackStarted found coverless.
-            if app.queue.get(app.current).is_some_and(|item| albums.contains(&item.album_id)) {
+            if app.queue.get(app.current).is_some_and(|item| accepted.contains(&item.album_id)) {
                 publish_media(app);
                 return ensure_hires(app);
             }
