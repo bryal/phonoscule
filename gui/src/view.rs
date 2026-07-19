@@ -50,8 +50,8 @@ pub fn view(app: &App) -> Element<'_, Msg> {
         View::Library => library_view(app),
         View::Player => player_view(app),
     };
-    // The top bar (nav tabs, and the library's filter tools) floats over the top as bare shadowed
-    // text, so the body can use the full window height (the covers may touch the top on a short
+    // The top bar (nav tabs, and the library's filter tools) floats over the top as a glass
+    // panel, so the body can use the full window height (the covers may touch the top on a short
     // window); the player floats over the bottom. Both sit above the body, over the backdrop glow.
     let glow = glow_now(app);
     let mut layers: Vec<Element<'_, Msg>> = vec![background::background(glow.color, glow.center).into(), body, top_bar(app)];
@@ -84,9 +84,9 @@ fn tab<'a>(app: &App, label: &'a str, target: View) -> Element<'a, Msg> {
 /// than letting the groups overlap.
 fn top_bar(app: &App) -> Element<'_, Msg> {
     let tabs = || row![tab(app, "Library", View::Library), tab(app, "Player", View::Player)].spacing(20);
-    let padding = iced::Padding { top: 8.0, right: 12.0, bottom: 0.0, left: 12.0 };
+    let padding = iced::Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 };
     if app.view != View::Library || app.albums.is_empty() {
-        return container(tabs()).padding(padding).into();
+        return glass_panel(app, container(tabs()).padding(padding).into(), Edge::Bottom);
     }
     responsive(move |size| {
         let bar: Element<'_, Msg> = if top_bar_fits(app, size.width) {
@@ -94,7 +94,7 @@ fn top_bar(app: &App) -> Element<'_, Msg> {
         } else {
             column![tabs(), container(filter_tools(app)).align_right(Fill)].spacing(6).into()
         };
-        container(bar).padding(padding).into()
+        glass_panel(app, container(bar).padding(padding).into(), Edge::Bottom)
     })
     .into()
 }
@@ -188,9 +188,20 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
         .align_x(Center)
         .width(Fill);
 
-    // Frosted-glass impression: dark glass tinted by the current glow color (so it transitions
-    // with track changes just like the backdrop), with an accent hairline along the top edge as
-    // the glass highlight.
+    Some(glass_panel(app, bar.into(), Edge::Top))
+}
+
+/// The edge of a [`glass_panel`] that carries its highlight hairline: the edge facing the content
+/// the panel floats over (top for a bottom bar, bottom for a top bar).
+enum Edge {
+    Top,
+    Bottom,
+}
+
+/// Frosted-glass impression for a floating bar: dark glass tinted by the current glow color (so
+/// it transitions with track changes just like the backdrop), with an accent hairline along the
+/// given edge as the glass highlight.
+fn glass_panel<'a>(app: &App, content: Element<'a, Msg>, highlight_edge: Edge) -> Element<'a, Msg> {
     let g = glow_now(app).color;
     let tinted = |k: f32, a: f32| Color { r: g.r * k, g: g.g * k, b: g.b * k, a };
     let glass = tinted(0.16, 0.72);
@@ -199,11 +210,14 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
         background: Some(iced::Background::Color(highlight)),
         ..container::Style::default()
     });
-    let panel = container(bar).style(move |_theme| container::Style {
+    let panel = container(content).width(Fill).style(move |_theme| container::Style {
         background: Some(iced::Background::Color(glass)),
         ..container::Style::default()
     });
-    Some(column![hairline, panel].into())
+    match highlight_edge {
+        Edge::Top => column![hairline, panel].into(),
+        Edge::Bottom => column![panel, hairline].into(),
+    }
 }
 
 fn library_view(app: &App) -> Element<'_, Msg> {
