@@ -184,6 +184,10 @@ pub struct App {
     /// The application's volume as the OS mixer last reported it, a factor of 100%; `None` until
     /// the first reading (no server, or none yet), which also hides the volume bar.
     pub volume: Option<f32>,
+    /// The volume last requested of the mixer, held until a reading (about) reaches it -- the
+    /// volume bar's `pending_seek`: a drag or wheel burst moves the bar optimistically, and
+    /// echoes of earlier values still in flight must not yank it back.
+    pub pending_volume: Option<f32>,
     /// High-resolution cover art (FULL² RGBA) for the now-playing cover flow. The flow keeps a
     /// small window around `current` resident (see `ensure_hires`), but this cache outlives that
     /// window: it retains recently-played covers under an LRU bound, so hopping back to an album
@@ -330,6 +334,7 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
             list_scroll: 0.0,
             album_scroll: 0.0,
             volume: None,
+            pending_volume: None,
             hires: HiResCache::new(),
             anim_pos: 0.0,
             glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },

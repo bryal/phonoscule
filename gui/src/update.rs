@@ -622,7 +622,18 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 set_volume(app, volume + 0.05 * vertical);
             }
         }
-        Msg::VolumeChanged(volume) => app.volume = Some(volume),
+        Msg::VolumeChanged(volume) => {
+            // While our own set is in flight, ignore readings until the mixer reaches (about)
+            // the requested value -- see `App::pending_volume`. The tolerance is generous
+            // against the mixer's quantization, narrow against a real 5% step.
+            match app.pending_volume {
+                Some(target) if (volume - target).abs() > 0.005 => (),
+                _ => {
+                    app.pending_volume = None;
+                    app.volume = Some(volume);
+                }
+            }
+        }
         Msg::SeekChanged(frac) => app.seek_drag = Some(frac),
         Msg::SeekReleased => {
             if let (Some(frac), Some(len)) = (app.seek_drag.take(), app.len) {
@@ -939,6 +950,7 @@ fn scroll_notches(delta: ScrollDelta) -> (f32, f32) {
 fn set_volume(app: &mut App, volume: f32) {
     let volume = volume.clamp(0.0, phonoscule_gui::volume::MAX_VOLUME);
     app.volume = Some(volume);
+    app.pending_volume = Some(volume);
     app.mixer.set(volume);
 }
 
