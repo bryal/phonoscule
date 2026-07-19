@@ -173,6 +173,9 @@ pub struct App {
     /// Fractional wheel notches accumulated over the player's track list, so trackpad pixel
     /// deltas add up to whole selection steps (see `Msg::TrackListScrolled`).
     pub list_scroll: f32,
+    /// Like `list_scroll`, for the horizontal wheel axis: whole notches walk the queue's albums
+    /// (see `Msg::PlayerScrolled`).
+    pub album_scroll: f32,
     /// High-resolution cover art (FULL² RGBA) for the now-playing cover flow. The flow keeps a
     /// small window around `current` resident (see `ensure_hires`), but this cache outlives that
     /// window: it retains recently-played covers under an LRU bound, so hopping back to an album
@@ -316,6 +319,7 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
             last_skip: None,
             hold_start: None,
             list_scroll: 0.0,
+            album_scroll: 0.0,
             hires: HiResCache::new(),
             anim_pos: 0.0,
             glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },

@@ -117,10 +117,15 @@ pub enum Msg {
     PrevAlbum,
     NextAlbum,
     CoverClicked(usize),
-    /// The mouse wheel turned over the player's track list overlay: step the playing-track
-    /// selection through the queue -- up towards its start, down towards its end. Carries the
+    /// The mouse wheel turned over the player's track list overlay: the vertical component steps
+    /// the playing-track selection through the queue -- up towards its start, down towards its
+    /// end -- and the horizontal component walks whole albums, like PageUp/PageDown. Carries the
     /// raw delta; notch accounting lives in the handler.
     TrackListScrolled(ScrollDelta),
+    /// The mouse wheel turned over the player view outside the track list: only the horizontal
+    /// component acts, walking whole albums like PageUp/PageDown (scroll left restarts or steps
+    /// back, scroll right jumps to the next album).
+    PlayerScrolled(ScrollDelta),
     SeekChanged(f32),
     SeekReleased,
     /// A relative or absolute seek, from the keyboard or the OS media keys (the seek *bar* uses
@@ -497,14 +502,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::TrackListScrolled(delta) => {
-            // Normalize to wheel notches: line deltas are notches already; trackpad pixel deltas
-            // convert at a typical line height and accumulate across events (a flick arrives as
-            // many small deltas), stepping once per whole notch.
-            let notches = match delta {
-                ScrollDelta::Lines { y, .. } => y,
-                ScrollDelta::Pixels { y, .. } => y / 20.0,
-            };
-            app.list_scroll += notches;
+            let (_, vertical) = scroll_notches(delta);
+            app.list_scroll += vertical;
             let steps = app.list_scroll.trunc();
             app.list_scroll -= steps;
             // Scrolling up moves the selection towards the queue's start, like a list. Jumps
@@ -516,7 +515,9 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                     app.send(player::Cmd::JumpTo(target));
                 }
             }
+            scroll_albums(app, delta);
         }
+        Msg::PlayerScrolled(delta) => scroll_albums(app, delta),
         Msg::SeekChanged(frac) => app.seek_drag = Some(frac),
         Msg::SeekReleased => {
             if let (Some(frac), Some(len)) = (app.seek_drag.take(), app.len) {
@@ -799,6 +800,32 @@ fn preload_cover(app: &mut App, ix: usize) -> Task<Msg> {
     match app.albums.get(ix).and_then(|a| a.cover.as_ref()).map(|c| (c.id, c.file.clone())) {
         Some((id, file)) => app.hires.query(id, file),
         None => Task::none(),
+    }
+}
+
+/// The wheel delta as (horizontal, vertical) notches: line deltas are notches already; trackpad
+/// pixel deltas convert at a typical line height. Fractions accumulate across events (a trackpad
+/// flick arrives as many small deltas), one step firing per whole notch.
+fn scroll_notches(delta: ScrollDelta) -> (f32, f32) {
+    match delta {
+        ScrollDelta::Lines { x, y } => (x, y),
+        ScrollDelta::Pixels { x, y } => (x / 20.0, y / 20.0),
+    }
+}
+
+/// Applies a wheel delta's horizontal component to the queue's albums: scroll left restarts or
+/// steps back like PageUp, scroll right jumps to the next album like PageDown. At most one album
+/// step per event -- the album helpers read `app.current`, which only advances once the engine
+/// reports the jump, so a burst must not stack stale jumps.
+fn scroll_albums(app: &mut App, delta: ScrollDelta) {
+    let (horizontal, _) = scroll_notches(delta);
+    app.album_scroll += horizontal;
+    let steps = app.album_scroll.trunc();
+    app.album_scroll -= steps;
+    if steps > 0.0 {
+        prev_album(app);
+    } else if steps < 0.0 {
+        next_album(app);
     }
 }
 

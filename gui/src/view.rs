@@ -583,7 +583,10 @@ fn player_view(app: &App) -> Element<'_, Msg> {
             .into()
     });
 
-    stack![flow, track_list_overlay].into()
+    // The view-wide wheel: its horizontal axis walks albums like PageUp/PageDown (see
+    // `Msg::PlayerScrolled`). Over the track list the inner mouse_area captures instead, and its
+    // handler routes the horizontal axis the same way; clicks pass through to the flow either way.
+    mouse_area(stack![flow, track_list_overlay]).on_scroll(Msg::PlayerScrolled).into()
 }
 
 /// Per-row height estimate for the player's track list overlay (text, padding, and spacing),
