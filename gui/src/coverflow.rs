@@ -374,6 +374,12 @@ pub struct Pipeline {
     instances: wgpu::Buffer,
     sampler: wgpu::Sampler,
     texture_layout: wgpu::BindGroupLayout,
+    /// The format cover textures are created with, following the render target's color
+    /// convention. iced's default `web-colors` mode renders to a non-sRGB target with sRGB values
+    /// passed through raw (gamma-space blending, like browsers): covers must then upload as plain
+    /// `Rgba8Unorm`, or the hardware sRGB decode has no matching encode and the flow displays
+    /// linear values raw -- visibly crushed darks. On an sRGB target, the sRGB variant round-trips.
+    texture_format: wgpu::TextureFormat,
     /// GPU texture cache, keyed by [`CoverArt::id`].
     textures: HashMap<TexKey, wgpu::BindGroup>,
     placeholder: wgpu::BindGroup,
@@ -507,8 +513,11 @@ impl shader::Pipeline for Pipeline {
             ..Default::default()
         });
 
+        let texture_format =
+            if format.is_srgb() { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm };
         let placeholder_pixels = [40u8, 40, 46, 255].repeat(4);
-        let placeholder = make_texture_bind(device, queue, &texture_layout, (2, 2), &placeholder_pixels, &sampler);
+        let placeholder =
+            make_texture_bind(device, queue, &texture_layout, texture_format, (2, 2), &placeholder_pixels, &sampler);
 
         Pipeline {
             pipeline,
@@ -518,6 +527,7 @@ impl shader::Pipeline for Pipeline {
             instances: instance_buffer(device, 64 * std::mem::size_of::<Instance>() as u64),
             sampler,
             texture_layout,
+            texture_format,
             textures: HashMap::new(),
             placeholder,
         }
@@ -529,7 +539,15 @@ impl Pipeline {
         if self.textures.contains_key(&upload.key) {
             return;
         }
-        let bind = make_texture_bind(device, queue, &self.texture_layout, upload.size, upload.pixels.as_slice(), &self.sampler);
+        let bind = make_texture_bind(
+            device,
+            queue,
+            &self.texture_layout,
+            self.texture_format,
+            upload.size,
+            upload.pixels.as_slice(),
+            &self.sampler,
+        );
         self.textures.insert(upload.key, bind);
     }
 }
@@ -538,6 +556,7 @@ fn make_texture_bind(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
     (width, height): (u32, u32),
     rgba: &[u8],
     sampler: &wgpu::Sampler,
@@ -549,7 +568,7 @@ fn make_texture_bind(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
