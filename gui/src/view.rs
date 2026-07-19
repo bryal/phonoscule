@@ -50,17 +50,11 @@ pub fn view(app: &App) -> Element<'_, Msg> {
         View::Library => library_view(app),
         View::Player => player_view(app),
     };
-    // The nav tabs float over the top-left as bare shadowed text, so the body can use the full
-    // window height (the covers may touch the top on a short window); the player floats over the
-    // bottom. Both sit above the body, over the backdrop glow.
-    let tabs = row![tab(app, "Library", View::Library), tab(app, "Player", View::Player)].spacing(20);
-    let tabs = container(tabs).padding(iced::Padding { top: 10.0, right: 12.0, bottom: 0.0, left: 12.0 });
+    // The top bar (nav tabs, and the library's filter tools) floats over the top as bare shadowed
+    // text, so the body can use the full window height (the covers may touch the top on a short
+    // window); the player floats over the bottom. Both sit above the body, over the backdrop glow.
     let glow = glow_now(app);
-    let mut layers: Vec<Element<'_, Msg>> = vec![background::background(glow.color, glow.center).into(), body, tabs.into()];
-    // The library's filter bar floats top-right, opposite the tabs.
-    if app.view == View::Library && !app.albums.is_empty() {
-        layers.push(filter_bar(app));
-    }
+    let mut layers: Vec<Element<'_, Msg>> = vec![background::background(glow.color, glow.center).into(), body, top_bar(app)];
     if let Some(bar) = player_bar(app) {
         layers.push(container(bar).center_x(Fill).align_bottom(Fill).into());
     }
@@ -82,6 +76,40 @@ pub fn view(app: &App) -> Element<'_, Msg> {
 fn tab<'a>(app: &App, label: &'a str, target: View) -> Element<'a, Msg> {
     let text = if app.view == target { active_text(label, 21.0, 0.95) } else { inactive_text(label, 21.0, 0.8) };
     button(text).style(button::text).padding(4).on_press(Msg::Show(target)).into()
+}
+
+/// The floating top bar: the nav tabs and -- in the library -- the filter tools. When the window
+/// is wide enough they share one row, tabs left and filter right, vertically centered on each
+/// other; too narrow for that, the bar wraps to two rows (tabs above, filter tools below) rather
+/// than letting the groups overlap.
+fn top_bar(app: &App) -> Element<'_, Msg> {
+    let tabs = || row![tab(app, "Library", View::Library), tab(app, "Player", View::Player)].spacing(20);
+    let padding = iced::Padding { top: 8.0, right: 12.0, bottom: 0.0, left: 12.0 };
+    if app.view != View::Library || app.albums.is_empty() {
+        return container(tabs()).padding(padding).into();
+    }
+    responsive(move |size| {
+        let bar: Element<'_, Msg> = if top_bar_fits(app, size.width) {
+            row![tabs(), container(filter_tools(app)).align_right(Fill)].align_y(Center).into()
+        } else {
+            column![tabs(), container(filter_tools(app)).align_right(Fill)].spacing(6).into()
+        };
+        container(bar).padding(padding).into()
+    })
+    .into()
+}
+
+/// Whether the nav tabs and the filter tools fit side by side at this window width. A rough upper
+/// estimate from Iosevka's fixed 0.5 em character advance plus the widgets' paddings and spacings
+/// -- the two-row flip only needs to happen safely before actual overlap, not at an exact pixel.
+fn top_bar_fits(app: &App, width: f32) -> bool {
+    let chars = |s: &str, size: f32| s.chars().count() as f32 * 0.5 * size;
+    let tabs = chars("Library", 21.0) + chars("Player", 21.0) + 2.0 * 8.0 + 20.0;
+    let chips = chars(app.filter.genre.as_deref().unwrap_or("All genres"), 13.0)
+        + chars(app.filter.artist.as_deref().unwrap_or("All artists"), 13.0)
+        + 2.0 * 24.0;
+    let filter = chips + 210.0 /* the search field */ + 3.0 * 30.0 /* clear, play, queue */ + 5.0 * 8.0;
+    tabs + filter + 24.0 /* window padding */ + 24.0 /* breathing room between the groups */ <= width
 }
 
 /// The playing track's title & artist, the seek bar, and the playback controls.
@@ -188,42 +216,48 @@ fn library_view(app: &App) -> Element<'_, Msg> {
     }
     // Room to scroll the last row out from under the floating player bar.
     let bottom_clearance = if app.queue.is_empty() { 16.0 } else { PLAYER_BAR_HEIGHT };
-    // The grid widget owns layout, scrolling, selection, and keyboard navigation (see
-    // `album_grid`); the view supplies each card's cover element and its texts, and receives
-    // whole actions back (Space queues the selection, Ctrl+Space plays it). The selection is
-    // externalized into the model so it survives view switches.
-    let mut grid = album_grid(Msg::PlayAlbum, Msg::QueueAlbum)
-        .top_clearance(TAB_BAR_HEIGHT)
-        .bottom_clearance(bottom_clearance)
-        .selected(app.selected, Msg::AlbumSelected)
-        .on_menu(Msg::OpenTrackMenu)
-        // The track menu is modal: its opaque backdrop only blocks clicks, this blocks the rest.
-        .interactive(app.modal.is_none());
-    // The grid shows the filtered view of the library; its cell indices (which every grid message
-    // carries) are indices into `app.filtered`.
-    for (cell, &ix) in app.filtered.iter().enumerate() {
-        let album = &app.albums[ix];
-        grid = grid.push(album_cover(cell, album), &album.title, &album.artist);
-    }
-    let mut layers: Vec<Element<'_, Msg>> = vec![grid.into()];
-    if app.filtered.is_empty() {
-        layers.push(container(inactive_text("No albums match the filter", 16.0, 0.8)).center(Fill).into());
-    }
-    // The scan status floats over the grid rather than claiming layout space; rescans (the
-    // watcher, the periodic poll) must not shift the albums around.
-    if app.scan == ScanState::Scanning {
-        let status = inactive_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, 0.7);
-        // Sits just above the player bar (when there is one).
-        let padding = iced::Padding { top: 12.0, right: 12.0, bottom: bottom_clearance.max(12.0), left: 12.0 };
-        layers.push(container(status).center_x(Fill).align_bottom(Fill).padding(padding).into());
-    }
-    stack(layers).into()
+    // Responsive for the top clearance only: it must track whether the floating top bar sits in
+    // one row or two (see `top_bar`), which depends on the window width.
+    responsive(move |size| {
+        let top_clearance = if top_bar_fits(app, size.width) { TAB_BAR_HEIGHT } else { TWO_ROW_BAR_HEIGHT };
+        // The grid widget owns layout, scrolling, selection, and keyboard navigation (see
+        // `album_grid`); the view supplies each card's cover element and its texts, and receives
+        // whole actions back (Space queues the selection, Ctrl+Space plays it). The selection is
+        // externalized into the model so it survives view switches.
+        let mut grid = album_grid(Msg::PlayAlbum, Msg::QueueAlbum)
+            .top_clearance(top_clearance)
+            .bottom_clearance(bottom_clearance)
+            .selected(app.selected, Msg::AlbumSelected)
+            .on_menu(Msg::OpenTrackMenu)
+            // The track menu is modal: its opaque backdrop only blocks clicks, this blocks the rest.
+            .interactive(app.modal.is_none());
+        // The grid shows the filtered view of the library; its cell indices (which every grid
+        // message carries) are indices into `app.filtered`.
+        for (cell, &ix) in app.filtered.iter().enumerate() {
+            let album = &app.albums[ix];
+            grid = grid.push(album_cover(cell, album), &album.title, &album.artist);
+        }
+        let mut layers: Vec<Element<'_, Msg>> = vec![grid.into()];
+        if app.filtered.is_empty() {
+            layers.push(container(inactive_text("No albums match the filter", 16.0, 0.8)).center(Fill).into());
+        }
+        // The scan status floats over the grid rather than claiming layout space; rescans (the
+        // watcher, the periodic poll) must not shift the albums around.
+        if app.scan == ScanState::Scanning {
+            let status = inactive_text(format!("Scanning {:?}…", app.conf.music_dir), 14.0, 0.7);
+            // Sits just above the player bar (when there is one).
+            let padding = iced::Padding { top: 12.0, right: 12.0, bottom: bottom_clearance.max(12.0), left: 12.0 };
+            layers.push(container(status).center_x(Fill).align_bottom(Fill).padding(padding).into());
+        }
+        stack(layers).into()
+    })
+    .into()
 }
 
-/// The library's filter bar, floating top-right opposite the nav tabs: genre and artist chips
-/// (each opening its searchable picker), the fuzzy album-title search, and play/queue-all buttons
-/// acting on every album currently matching, in displayed order.
-fn filter_bar(app: &App) -> Element<'_, Msg> {
+/// The library's filter tools, living in the top bar: genre and artist chips (each opening its
+/// searchable picker), the fuzzy album-title search, and play/queue-all buttons acting on every
+/// album currently matching, in displayed order.
+fn filter_tools(app: &App) -> Element<'_, Msg> {
     let chip = |label: &str, subject: PickerSubject| {
         button(text(label.to_owned()).size(13))
             .style(|_theme, status| {
@@ -251,7 +285,7 @@ fn filter_bar(app: &App) -> Element<'_, Msg> {
     // (dimming) when there is nothing to clear.
     let clear = text(FA_XMARK).font(font_awesome_solid()).size(14);
     let clear = button(clear).style(button::text).on_press_maybe((!app.filter.is_empty()).then_some(Msg::ClearFilters));
-    let bar = row![
+    row![
         clear,
         genre,
         artist,
@@ -260,8 +294,8 @@ fn filter_bar(app: &App) -> Element<'_, Msg> {
         button(enqueue).style(button::text).on_press_maybe(enabled.then_some(Msg::QueueAll)),
     ]
     .spacing(8)
-    .align_y(Center);
-    container(bar).align_right(Fill).padding(iced::Padding { top: 8.0, right: 12.0, bottom: 0.0, left: 12.0 }).into()
+    .align_y(Center)
+    .into()
 }
 
 /// The searchable filter picker (see [`Picker`]): its query field is focused on open, so typing
@@ -408,8 +442,11 @@ fn actions_modal(app: &App) -> Element<'_, Msg> {
 /// grid's bottom scroll room, and how far the cover flow and track list are lifted.
 const PLAYER_BAR_HEIGHT: f32 = 152.0;
 
-/// Where the library grid starts, leaving the floating nav tabs clear with a gap below them.
+/// Where the library grid starts, leaving the floating top bar clear with a gap below it.
 const TAB_BAR_HEIGHT: f32 = 60.0;
+
+/// The grid's top clearance when the top bar wraps to two rows (tabs above, filter tools below).
+const TWO_ROW_BAR_HEIGHT: f32 = 96.0;
 
 /// An album's cover element for the grid: the artwork (or a fallback tile) with the floating
 /// action bubbles over it. Size-agnostic -- the grid lays it out to exactly its cover square; it
