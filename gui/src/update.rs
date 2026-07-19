@@ -1,9 +1,9 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{
-    App, Filter, Modal, ModalKind, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, ScanState,
-    TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow, entries, flow_target, glow_blend,
-    hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
+    App, Filter, Modal, ModalKind, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, SEARCH_INPUT_ID,
+    ScanState, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow, entries, flow_target,
+    glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -32,6 +32,12 @@ pub enum Msg {
     AlbumSelected(Option<usize>),
     /// The album-title search field changed: refresh the filtered grid.
     SearchChanged(String),
+    /// Ctrl+F, from any view: bring up the library and focus the album search field.
+    FocusSearch,
+    /// A plain character typed in the library outside any field: append it to the album search
+    /// and focus the field, so just starting to type searches (the rest of the keys land in the
+    /// field directly, once focused).
+    SearchTyped(String),
     /// Clear every library filter (the bar's ✕ button), showing the whole library again.
     ClearFilters,
     /// Play all albums matching the current filter, in their displayed order, replacing the
@@ -284,6 +290,17 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // The old selection would silently point at a different album in the new list.
             app.selected = None;
             refresh_filter(app);
+        }
+        Msg::FocusSearch => {
+            app.view = View::Library;
+            return focus_search();
+        }
+        Msg::SearchTyped(c) => {
+            app.filter.search.push_str(&c);
+            app.selected = None;
+            refresh_filter(app);
+            // Focusing puts the text cursor at the end, right behind the character typed here.
+            return focus_search();
         }
         Msg::ClearFilters => {
             app.filter = Filter::default();
@@ -728,6 +745,13 @@ fn shown_album(app: &App, cell: usize) -> Option<usize> {
     app.filtered.get(cell).copied()
 }
 
+/// Focuses the filter bar's album search field (a no-op while the field isn't rendered, i.e. an
+/// empty library).
+fn focus_search() -> Task<Msg> {
+    use iced::advanced::widget;
+    widget::operate(widget::operation::focusable::focus(widget::Id::new(SEARCH_INPUT_ID)))
+}
+
 /// Applies the picker's slot `slot` to the filter: slot 0 (the standing "(all)" entry) clears it,
 /// slot `n + 1` picks `matches[n]`. Closes the picker, drops the grid selection (it indexes the
 /// filtered list, which is about to change), and refreshes the grid.
@@ -979,8 +1003,10 @@ fn skip_interval(held: Duration) -> Duration {
 /// Alt+s/Alt+z shuffle the other albums/tracks in behind
 /// the playing one (Ctrl instead of Alt shuffles literally everything); Backspace resets playback to the
 /// queue's first track, paused. With a modal open, Escape dismisses it, the track menu gets its
-/// own bindings, and everything else is suppressed. In the library: Ctrl+Enter plays and
-/// Alt+Enter queues everything the filter shows. In the player: Left/Right seek by
+/// own bindings, and everything else is suppressed. Ctrl+F brings up the library with the album
+/// search focused. In the library: Ctrl+Enter plays and
+/// Alt+Enter queues everything the filter shows, and typing any plain character starts the album
+/// search. In the player: Left/Right seek by
 /// [`SEEK_STEP`], Home
 /// restarts the track (or steps back near the start), End steps to the next track, PageUp restarts
 /// the album (or steps to the previous one), PageDown jumps to the next album.
@@ -1080,6 +1106,7 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         }
         (Key::Named(Named::Backspace), false, false) => return one_shot(Msg::ResetPlayback),
         (Key::Character(c), false, true) if c.as_str() == "k" => return one_shot(Msg::ClearQueue),
+        (Key::Character(c), false, true) if c.as_str() == "f" => return one_shot(Msg::FocusSearch),
         _ => {}
     }
 
@@ -1089,6 +1116,11 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         View::Library => match (key, modifiers.alt(), modifiers.control()) {
             (Key::Named(Named::Enter), false, true) => one_shot(Msg::PlayAll),
             (Key::Named(Named::Enter), true, false) => one_shot(Msg::QueueAll),
+            // Starting to type searches: the first character rides along to the field, which
+            // takes over (as the focused widget) for the rest. Letters can carry bindings only
+            // with a modifier, exactly so that this works. Repeats welcome -- held keys repeat
+            // in a text field.
+            (Key::Character(c), false, false) => Some(Msg::SearchTyped(c.to_string())),
             _ => None,
         },
         // The player view binds no Ctrl chords of its own.

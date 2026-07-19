@@ -1,8 +1,8 @@
 //! Rendering the model: the library browser and the player (Cover Flow) views.
 
 use crate::model::{
-    App, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, ScanState, TRACK_MENU_SCROLL_ID, View, album_runs,
-    glow_now, run_of,
+    App, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, SEARCH_INPUT_ID, ScanState, TRACK_MENU_SCROLL_ID,
+    View, album_runs, glow_now, run_of,
 };
 use crate::update::{Grouping, Msg, Promotion, Scope};
 use iced::widget::{
@@ -298,7 +298,8 @@ fn filter_tools(app: &App) -> Element<'_, Msg> {
     };
     let genre = chip(app.filter.genre.as_deref().unwrap_or("All genres"), PickerSubject::Genre);
     let artist = chip(app.filter.artist.as_deref().unwrap_or("All artists"), PickerSubject::Artist);
-    let search = text_input("Search albums…", &app.filter.search).on_input(Msg::SearchChanged).size(13).width(210);
+    let search =
+        text_input("Search albums…", &app.filter.search).id(SEARCH_INPUT_ID).on_input(Msg::SearchChanged).size(13).width(210);
     let enabled = !app.filtered.is_empty();
     let play = text(FA_PLAY).font(font_awesome_solid()).size(13);
     let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(15);
