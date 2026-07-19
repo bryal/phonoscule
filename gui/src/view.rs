@@ -179,14 +179,21 @@ fn player_bar(app: &App) -> Option<Element<'_, Msg>> {
     // A freshly restored queue has placeholder items with empty tags until the scan hydrates
     // them: show nothing rather than a dangling dash.
     let byline = match (current.artist.is_empty(), current.album.is_empty()) {
-        (false, false) => format!("{} — {}", current.artist, current.album),
+        (false, false) => format!("{} · {}", current.artist, current.album),
         _ => format!("{}{}", current.artist, current.album),
     };
-    let bar = column![text(&current.title).size(19), text(byline).size(15).style(text::secondary), seek_bar, controls,]
-        .spacing(5)
-        .padding(16)
-        .align_x(Center)
-        .width(Fill);
+    let bar = column![
+        text(&current.title).size(20),
+        text(byline)
+            .size(16)
+            .style(|theme: &Theme| text::Style { color: Some(theme.extended_palette().secondary.strong.color) }),
+        seek_bar,
+        controls,
+    ]
+    .spacing(5)
+    .padding([14.0, 20.0])
+    .align_x(Center)
+    .width(Fill);
 
     Some(glass_panel(app, bar.into(), Edge::Top))
 }
@@ -454,7 +461,7 @@ fn actions_modal(app: &App) -> Element<'_, Msg> {
 
 /// Approximate height of the floating player bar, used to keep content clear of it: the library
 /// grid's bottom scroll room, and how far the cover flow and track list are lifted.
-const PLAYER_BAR_HEIGHT: f32 = 152.0;
+const PLAYER_BAR_HEIGHT: f32 = 156.0;
 
 /// Where the library grid starts, leaving the floating top bar clear with a gap below it.
 const TAB_BAR_HEIGHT: f32 = 60.0;
