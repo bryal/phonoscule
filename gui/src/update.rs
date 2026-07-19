@@ -51,6 +51,18 @@ pub enum Msg {
     /// Open the searchable filter picker for the given subject (a filter-bar chip), focusing its
     /// search field.
     OpenPicker(PickerSubject),
+    /// Tab / Shift+Tab (`backwards`), outside a modal: cycle the views -- unless the album search
+    /// field holds focus, in which case it moves between the filter inputs instead. Only the
+    /// widget tree knows where focus lives, so the decision is deferred to the handler.
+    TabPressed {
+        backwards: bool,
+    },
+    /// Move between the filter inputs -- genre picker, artist picker, album search, following the
+    /// bar -- from the one currently holding focus (Tab / Shift+Tab in a picker or the focused
+    /// search field).
+    CycleFilterInput {
+        backwards: bool,
+    },
     /// The picker's search field changed: re-rank its matches and reset the selection to the top.
     PickerQuery(String),
     /// Move the picker's keyboard selection one slot up or down (arrow keys -- they pass through
@@ -338,12 +350,39 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 return save_playlist(app);
             }
         }
-        Msg::OpenPicker(subject) => {
-            let matches = picker_matches(app, subject, "");
-            app.modal = Some(Modal::Picker(Picker { subject, query: String::new(), matches, selected: 0 }));
-            // Focus the search field, so typing starts filtering immediately.
+        Msg::OpenPicker(subject) => return open_picker(app, subject),
+        Msg::TabPressed { backwards } => {
+            // What Tab means depends on where focus lives, which only the widget tree knows:
+            // ask it whether the album search is focused, then dispatch. An empty answer (the
+            // field isn't rendered -- another view, an empty library) switches views like an
+            // unfocused one.
             use iced::advanced::widget;
-            return widget::operate(widget::operation::focusable::focus(widget::Id::new(PICKER_INPUT_ID)));
+            let focused = widget::operate(widget::operation::focusable::is_focused(widget::Id::new(SEARCH_INPUT_ID)));
+            let show = Msg::Show(if backwards { app.view.prev() } else { app.view.next() });
+            return focused.collect().map(move |answer| match answer.first() {
+                Some(true) => Msg::CycleFilterInput { backwards },
+                _ => show.clone(),
+            });
+        }
+        Msg::CycleFilterInput { backwards } => {
+            let current = match &app.modal {
+                Some(Modal::Picker(picker)) => Some(picker.subject),
+                _ => None, // the album search field
+            };
+            // The cycle follows the bar, left to right: genre picker, artist picker, search.
+            use PickerSubject::{Artist, Genre};
+            let next = match (current, backwards) {
+                (Some(Genre), false) | (None, true) => Some(Artist),
+                (Some(Artist), true) | (None, false) => Some(Genre),
+                (Some(Genre), true) | (Some(Artist), false) => None,
+            };
+            return match next {
+                Some(subject) => open_picker(app, subject),
+                None => {
+                    app.modal = None;
+                    focus_search()
+                }
+            };
         }
         Msg::PickerQuery(query) => {
             let Some(Modal::Picker(picker)) = &app.modal else { return Task::none() };
@@ -776,6 +815,15 @@ fn focus_search() -> Task<Msg> {
     widget::operate(widget::operation::focusable::focus(widget::Id::new(SEARCH_INPUT_ID)))
 }
 
+/// Opens the filter picker for `subject` and focuses its search field, so typing starts
+/// filtering immediately.
+fn open_picker(app: &mut App, subject: PickerSubject) -> Task<Msg> {
+    let matches = picker_matches(app, subject, "");
+    app.modal = Some(Modal::Picker(Picker { subject, query: String::new(), matches, selected: 0 }));
+    use iced::advanced::widget;
+    widget::operate(widget::operation::focusable::focus(widget::Id::new(PICKER_INPUT_ID)))
+}
+
 /// Applies the picker's slot `slot` to the filter: slot 0 (the standing "(all)" entry) clears it,
 /// slot `n + 1` picks `matches[n]`. Closes the picker, drops the grid selection (it indexes the
 /// filtered list, which is about to change), and refreshes the grid.
@@ -1023,7 +1071,9 @@ fn skip_interval(held: Duration) -> Duration {
 /// Alt+Space: that is the queue-the-selection binding, freeing bare Space for the toggle.
 ///
 /// Global: Space toggles play/pause (too central a function to belong to one view); Tab /
-/// Shift-Tab cycle the view tabs; Escape returns to the library; Alt+r cycles the repeat mode;
+/// Shift-Tab cycle the view tabs -- unless a filter input holds focus (the album search, or an
+/// open filter picker), in which case they move between the filter inputs instead, following the
+/// bar; Escape returns to the library; Alt+r cycles the repeat mode;
 /// Alt+s/Alt+z shuffle the other albums/tracks in behind
 /// the playing one (Ctrl instead of Alt shuffles literally everything); Ctrl+Home / Ctrl+End rest
 /// playback at the queue's first / last track, paused. With a modal open, Escape dismisses it, the track menu gets its
@@ -1102,6 +1152,10 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
                 Key::Character(c) if modifiers.control() && !modifiers.alt() && c.as_str() == "w" => {
                     one_shot(Msg::ClearFilters)
                 }
+                // Tab moves along the filter inputs, not between the views, while one is open.
+                Key::Named(Named::Tab) if !modifiers.control() && !modifiers.alt() => {
+                    one_shot(Msg::CycleFilterInput { backwards: modifiers.shift() })
+                }
                 _ => None,
             };
         }
@@ -1113,8 +1167,7 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
     // missed enqueue, not a toggle request).
     match (&key, modifiers.shift(), modifiers.control()) {
         (Key::Named(Named::Space), false, false) if modifiers.is_empty() => return one_shot(Msg::Toggle),
-        (Key::Named(Named::Tab), false, false) => return one_shot(Msg::Show(view.next())),
-        (Key::Named(Named::Tab), true, false) => return one_shot(Msg::Show(view.prev())),
+        (Key::Named(Named::Tab), backwards, false) => return one_shot(Msg::TabPressed { backwards }),
         (Key::Named(Named::Escape), _, false) => return one_shot(Msg::Show(View::Library)),
         (Key::Character(c), false, false) if modifiers.alt() && c.as_str() == "r" => return one_shot(Msg::CycleRepeat),
         // Exactly one modifier: Alt shuffles the others, Ctrl shuffles all -- Ctrl+Alt is nothing.
