@@ -60,7 +60,7 @@ pub enum Msg {
     OpenActionsMenu,
     /// Dismiss whatever modal is up (Escape, or a click outside it).
     CloseModal,
-    /// Cycle the repeat mode: off -> track -> album -> playlist -> off (the `r` key, and the
+    /// Cycle the repeat mode: off -> track -> album -> playlist -> off (Alt+r, and the
     /// player bar's repeat button).
     CycleRepeat,
     /// Shuffle the queue, in place and visibly, per the grouping (single tracks, or whole albums
@@ -973,8 +973,8 @@ fn skip_interval(held: Duration) -> Duration {
 /// Alt+Space: that is the queue-the-selection binding, freeing bare Space for the toggle.
 ///
 /// Global: Space toggles play/pause (too central a function to belong to one view); Tab /
-/// Shift-Tab cycle the view tabs; `l`/`p` jump to Library/Player; Escape returns to
-/// the library; `r` cycles the repeat mode; Alt+s/Alt+z shuffle the other albums/tracks in behind
+/// Shift-Tab cycle the view tabs; Escape returns to the library; Alt+r cycles the repeat mode;
+/// Alt+s/Alt+z shuffle the other albums/tracks in behind
 /// the playing one (Ctrl instead of Alt shuffles literally everything); Backspace resets playback to the
 /// queue's first track, paused. With a modal open, Escape dismisses it, the track menu gets its
 /// own bindings, and everything else is suppressed. In the player: Left/Right seek by
@@ -984,11 +984,12 @@ fn skip_interval(held: Duration) -> Duration {
 pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
-    // Alt/Logo chords belong to the window manager -- all but the few we bind: Alt+Space and the
-    // Alt+s/Alt+z shuffles. Letters carry no bare bindings, so plain typing stays free for a
-    // future type-to-search.
+    // Alt/Logo chords belong to the window manager -- all but the few we bind: Alt+Space, the
+    // Alt+s/Alt+z shuffles, and the Alt+r repeat cycle. Letters and typing keys carry no bare
+    // bindings, so plain typing stays free for a future type-to-search.
     let alt_ours = modifiers.alt()
-        && (matches!(key, Key::Named(Named::Space)) || matches!(&key, Key::Character(c) if matches!(c.as_str(), "s" | "z")));
+        && (matches!(key, Key::Named(Named::Space))
+            || matches!(&key, Key::Character(c) if matches!(c.as_str(), "s" | "z" | "r")));
     if (modifiers.alt() && !alt_ours) || modifiers.logo() {
         return None;
     }
@@ -1019,7 +1020,7 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
             return match (key, modifiers.control()) {
                 (Key::Named(Named::Escape), false) => one_shot(Msg::CloseModal),
                 (Key::Named(Named::Space), false) if modifiers.is_empty() => one_shot(Msg::Toggle),
-                (Key::Character(c), false) if c.as_str() == "r" => one_shot(Msg::CycleRepeat),
+                (Key::Character(c), false) if modifiers.alt() && c.as_str() == "r" => one_shot(Msg::CycleRepeat),
                 // Exactly one modifier, like the global bindings: Alt = others, Ctrl = all.
                 (Key::Character(c), ctrl) if modifiers.alt() != ctrl && c.as_str() == "s" => one_shot(Msg::Shuffle {
                     grouping: Grouping::Albums,
@@ -1058,9 +1059,7 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         (Key::Named(Named::Tab), false, false) => return one_shot(Msg::Show(view.next())),
         (Key::Named(Named::Tab), true, false) => return one_shot(Msg::Show(view.prev())),
         (Key::Named(Named::Escape), _, false) => return one_shot(Msg::Show(View::Library)),
-        (Key::Character(c), false, false) if c.as_str() == "l" => return one_shot(Msg::Show(View::Library)),
-        (Key::Character(c), false, false) if c.as_str() == "p" => return one_shot(Msg::Show(View::Player)),
-        (Key::Character(c), false, false) if c.as_str() == "r" => return one_shot(Msg::CycleRepeat),
+        (Key::Character(c), false, false) if modifiers.alt() && c.as_str() == "r" => return one_shot(Msg::CycleRepeat),
         // Exactly one modifier: Alt shuffles the others, Ctrl shuffles all -- Ctrl+Alt is nothing.
         (Key::Character(c), false, ctrl) if modifiers.alt() != ctrl && c.as_str() == "s" => {
             return one_shot(Msg::Shuffle {
