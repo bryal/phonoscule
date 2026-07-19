@@ -569,33 +569,53 @@ fn player_view(app: &App) -> Element<'_, Msg> {
     let glow = glow_now(app);
     let flow = cover_flow(covers, app.anim_pos, glow.color, glow.center, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
 
-    let track_list_overlay = container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(iced::Padding {
-        top: TAB_BAR_HEIGHT,
-        bottom: PLAYER_BAR_HEIGHT,
-        left: 0.0,
-        right: 10.0,
+    // The track list floats over the flow, windowed to the space between the bars. Clicks pass
+    // through it (bare text, no buttons) so the covers behind stay clickable; the wheel, over the
+    // list, steps the playing-track selection instead of scrolling a view (see
+    // `Msg::TrackListScrolled`) -- the window follows the selection.
+    let track_list_overlay = responsive(move |size| {
+        let rows = ((size.height - TAB_BAR_HEIGHT - PLAYER_BAR_HEIGHT) / TRACK_ROW_HEIGHT).max(1.0) as usize;
+        let list = mouse_area(run_tracks_overlay(app, rows)).on_scroll(Msg::TrackListScrolled);
+        container(list)
+            .align_right(Fill)
+            .center_y(Fill)
+            .padding(iced::Padding { top: TAB_BAR_HEIGHT, bottom: PLAYER_BAR_HEIGHT, left: 0.0, right: 10.0 })
+            .into()
     });
 
     stack![flow, track_list_overlay].into()
 }
 
+/// Per-row height estimate for the player's track list overlay (text, padding, and spacing),
+/// rounded up: over-estimating only trims the window, under-estimating would overflow the region.
+const TRACK_ROW_HEIGHT: f32 = 28.0;
+
 /// The current album run's track list, overlaid in translucent text with the playing track
-/// highlighted; clicking a track jumps playback there. Scrolls (without a visible scrollbar)
-/// when an album has more tracks than fit.
-fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
+/// highlighted. Deliberately inert to the mouse -- clicks fall through to the cover flow; only
+/// the wheel acts, via the enclosing `mouse_area` (see `player_view`). When the run holds more
+/// tracks than `rows`, a window of them shows, placed so the selection sits at its proportional
+/// position -- at fraction f of the run, f of the way down the window -- like the pickers' snap.
+fn run_tracks_overlay(app: &App, rows: usize) -> Element<'_, Msg> {
     let runs = album_runs(&app.queue);
     let run = runs.get(run_of(&runs, app.current)).cloned().unwrap_or(0..0);
-    let list = run.map(|ix| {
+    let window = if run.len() <= rows {
+        run
+    } else {
+        let pos = app.current - run.start;
+        let fraction = pos as f32 / (run.len() - 1) as f32;
+        let selection_row = (fraction * (rows - 1) as f32).round() as usize;
+        let first = run.start + pos.saturating_sub(selection_row).min(run.len() - rows);
+        first..first + rows
+    };
+    let list = window.map(|ix| {
         let item = &app.queue[ix];
         let label =
             if ix == app.current { active_text(&item.title, 16.0, 0.90) } else { inactive_text(&item.title, 16.0, 0.80) };
-        button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)).into()
+        container(label).padding([2, 8]).into()
     });
     // Right-aligned: the list hugs the window's right edge, so the titles' ragged side faces
     // the content.
-    let list = column(list).spacing(2).align_x(iced::Alignment::End);
-    let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
-    scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar)).into()
+    column(list).spacing(2).align_x(iced::Alignment::End).into()
 }
 
 /// Bright-white text lit by a top-left `primary`-colored glow over the usual drop shadow (the active list entry / nav tab).

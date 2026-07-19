@@ -7,6 +7,7 @@ use crate::model::{
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
+use iced::mouse::ScrollDelta;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::{media, player, playlist};
 use std::sync::Arc;
@@ -116,7 +117,10 @@ pub enum Msg {
     PrevAlbum,
     NextAlbum,
     CoverClicked(usize),
-    TrackClicked(usize),
+    /// The mouse wheel turned over the player's track list overlay: step the playing-track
+    /// selection through the queue -- up towards its start, down towards its end. Carries the
+    /// raw delta; notch accounting lives in the handler.
+    TrackListScrolled(ScrollDelta),
     SeekChanged(f32),
     SeekReleased,
     /// A relative or absolute seek, from the keyboard or the OS media keys (the seek *bar* uses
@@ -492,7 +496,27 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.send(player::Cmd::JumpTo(run.start));
             }
         }
-        Msg::TrackClicked(ix) => app.send(player::Cmd::JumpTo(ix)),
+        Msg::TrackListScrolled(delta) => {
+            // Normalize to wheel notches: line deltas are notches already; trackpad pixel deltas
+            // convert at a typical line height and accumulate across events (a flick arrives as
+            // many small deltas), stepping once per whole notch.
+            let notches = match delta {
+                ScrollDelta::Lines { y, .. } => y,
+                ScrollDelta::Pixels { y, .. } => y / 20.0,
+            };
+            app.list_scroll += notches;
+            let steps = app.list_scroll.trunc();
+            app.list_scroll -= steps;
+            // Scrolling up moves the selection towards the queue's start, like a list. Jumps
+            // rather than the transport commands: Cmd::Prev restarts the track when far enough
+            // in, and Cmd::Next past the last track would end the queue -- a selection clamps.
+            if steps != 0.0 && !app.queue.is_empty() {
+                let target = (app.current as f32 - steps).clamp(0.0, (app.queue.len() - 1) as f32) as usize;
+                if target != app.current {
+                    app.send(player::Cmd::JumpTo(target));
+                }
+            }
+        }
         Msg::SeekChanged(frac) => app.seek_drag = Some(frac),
         Msg::SeekReleased => {
             if let (Some(frac), Some(len)) = (app.seek_drag.take(), app.len) {
