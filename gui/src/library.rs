@@ -615,18 +615,21 @@ pub fn accent_color(rgb: &[u8]) -> iced::Color {
         let bucket = &mut buckets[((r >> 4 << 8) | (g >> 4 << 4) | (b >> 4)) as usize];
         *bucket = [bucket[0] + 1, bucket[1] + r, bucket[2] + g, bucket[3] + b];
     }
+    let samples = (rgb.len() / 3).div_ceil(7) as u64;
     let score = |&[n, r, g, b]: &[u64; 4]| {
         if n == 0 {
             return 0.0;
         }
         let (r, g, b) = ((r / n) as f32 / 255.0, (g / n) as f32 / 255.0, (b / n) as f32 / 255.0);
         let chroma = r.max(g).max(b) - r.min(g).min(b);
-        // Vividness must dominate size: chroma counts cubed, and the population floor is only a
-        // tiebreaker so that grayscale art degrades to its most common shade. Absolute chroma,
-        // not a max-relative saturation ratio: near-black pixels have huge channel *ratios* from
-        // a color cast alone, and covers have masses of them (hair, shadow) that would
-        // out-populate any genuinely vivid region.
-        n as f32 * (0.01 + chroma.powi(3))
+        // Vividness must dominate size -- a small vivid region (a logo, a lit screen) IS the
+        // accent of a mostly-dark cover, so the population floor is tiny: a tiebreaker letting
+        // grayscale art degrade to its most common shade, never a rival to real color. Absolute
+        // chroma, not a max-relative ratio, so near-black masses can't ride their color cast. A
+        // vivid bucket must still cover ~0.1% of the art: JPEG noise on dark covers yields lone
+        // max-chroma pixels.
+        let vivid = if n * 1000 >= samples { chroma.powi(3) } else { 0.0 };
+        n as f32 * (1e-4 + vivid)
     };
     let best = buckets.iter().max_by(|a, b| score(a).total_cmp(&score(b)));
     match best {
@@ -819,6 +822,22 @@ mod test {
         }
         let accent = accent_color(&rgb);
         assert!(accent.b > 0.5 && accent.b > accent.g, "{accent:?}");
+    }
+
+    #[test]
+    fn accent_prefers_a_vivid_sliver_over_a_dark_mass() {
+        // Almost entirely near-black, with a small vivid red region (~1%, a lit phone screen on
+        // a dark cover): the red is the only real color and must win.
+        let mut rgb = Vec::new();
+        for i in 0..10_000 {
+            if i % 100 == 0 {
+                rgb.extend([180u8, 30, 40]);
+            } else {
+                rgb.extend([7u8, 8, 12]);
+            }
+        }
+        let accent = accent_color(&rgb);
+        assert!(accent.r > 0.4 && accent.r > accent.b, "{accent:?}");
     }
 
     #[test]

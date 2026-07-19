@@ -580,19 +580,26 @@ pub fn glow_center(album_id: u64) -> (f32, f32) {
     (CENTERS_X[(album_id % nx) as usize], CENTERS_Y[(album_id / nx % ny) as usize])
 }
 
-/// The glow the currently playing album should ultimately show: its accent at full brightness
-/// (normalized so the strongest channel saturates) placed at its scattered position; black when
-/// nothing is playing. The backdrop shader decides how much of the color to actually show.
+/// The glow the currently playing album should ultimately show: its accent, saturated to full
+/// brightness in proportion to how much color it actually has, placed at its scattered position;
+/// black when nothing is playing. The backdrop shader decides how much of the color to show.
 pub fn current_glow(app: &App) -> GlowState {
     // Read from the item's own accent (known from the index at boot), not through the loaded
     // cover: the glow must not wait for thumbnails.
     let color = match app.queue.get(app.current).and_then(|item| item.accent) {
         Some(accent) => {
             let max = accent.r.max(accent.g).max(accent.b);
+            let min = accent.r.min(accent.g).min(accent.b);
             if max <= f32::EPSILON {
                 iced::Color::BLACK
             } else {
-                iced::Color { r: accent.r / max, g: accent.g / max, b: accent.b / max, a: 1.0 }
+                // Saturate the hue only in proportion to the accent's chroma: a grayscale
+                // cover's accent is its dominant shade, whose channel ratios are noise --
+                // normalizing them outright turned black covers vivid blue. With little chroma
+                // the glow stays the shade itself (black art glows dark, white art white).
+                let trust = ((max - min) / 0.15).clamp(0.0, 1.0);
+                let channel = |c: f32| c + (c / max - c) * trust;
+                iced::Color { r: channel(accent.r), g: channel(accent.g), b: channel(accent.b), a: 1.0 }
             }
         }
         None => iced::Color::BLACK,
