@@ -45,7 +45,7 @@ mod test {
                 Tag::Title(s) => self.title = s.into(),
                 Tag::Artist(s) => self.artist = s.into(),
                 Tag::Album(s) => self.album = s.into(),
-                Tag::AlbumArtist(_) | Tag::Genre(_) => {}
+                Tag::AlbumArtist(_) | Tag::Genre(_) | Tag::TrackNumber(_) | Tag::DiscNumber(_) => {}
             }
         }
     }

@@ -20,6 +20,12 @@ pub enum Tag<'s> {
     Album(&'s str),
     AlbumArtist(&'s str),
     Genre(&'s str),
+    /// The track's position within its album, as the raw tag text: usually plain digits, but "3/12"
+    /// (position of total) style values occur in the wild, so consumers should parse leniently.
+    TrackNumber(&'s str),
+    /// The disc the track belongs to on a multi-disc album, as the raw tag text (see
+    /// [`TrackNumber`](Tag::TrackNumber) about lenient parsing).
+    DiscNumber(&'s str),
 }
 
 /// Reads a `size`-byte text field from `inp` into `scratch`, decoding UTF-8 (invalid sequences

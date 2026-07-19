@@ -559,6 +559,10 @@ fn parse_opus_tags(on_tag: &mut impl FnMut(Tag<'_>), data: &[u8]) {
                 on_tag(Tag::Genre(value))
             } else if key.eq_ignore_ascii_case("ALBUMARTIST") || key.eq_ignore_ascii_case("ALBUM ARTIST") {
                 on_tag(Tag::AlbumArtist(value))
+            } else if key.eq_ignore_ascii_case("TRACKNUMBER") || key.eq_ignore_ascii_case("TRACK") {
+                on_tag(Tag::TrackNumber(value))
+            } else if key.eq_ignore_ascii_case("DISCNUMBER") || key.eq_ignore_ascii_case("DISC") {
+                on_tag(Tag::DiscNumber(value))
             } else {
                 log::trace!("ignored comment {key}");
             }

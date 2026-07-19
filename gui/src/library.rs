@@ -289,6 +289,19 @@ struct CacheEntry {
     album_artist: String,
     /// Empty when the file carries no genre tag.
     genre: String,
+    /// The track's position within its album, when tagged (parsed leniently -- see [`number`]).
+    track: Option<u32>,
+    /// The disc the track belongs to on a multi-disc album, when tagged.
+    disc: Option<u32>,
+}
+
+impl CacheEntry {
+    /// Where the track sorts within its album: by disc, then track number, then title -- the
+    /// title (not the path) breaks ties so an untagged album orders the same wherever its files
+    /// live. Untagged discs are disc 1; untagged tracks sort after their disc's tagged ones.
+    fn track_order(&self) -> (u32, u32, &str) {
+        (self.disc.unwrap_or(1), self.track.unwrap_or(u32::MAX), &self.title)
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -297,7 +310,7 @@ struct Cache {
     files: HashMap<PathBuf, CacheEntry>,
 }
 
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 
 /// A stable hash-based identity for albums and covers.
 fn stable_id(parts: impl Hash) -> u64 {
@@ -467,7 +480,8 @@ async fn dir_job(dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<DirJob> {
 
 /// Reads the tags of each file (from the cache when it is still valid) and groups them into
 /// albums. Tracks only group into the same album when both their directory and their album tag
-/// agree. Returns the albums, the fresh cache entries, and how many files were actually parsed.
+/// agree; within an album they order by their tags (see [`CacheEntry::track_order`]). Returns the
+/// albums, the fresh cache entries, and how many files were actually parsed.
 async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf, CacheEntry)>, usize) {
     let mut albums: Vec<Album> = Vec::new();
     let mut by_title: HashMap<String, usize> = HashMap::new();
@@ -503,6 +517,8 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
                     },
                     album_artist: tags.album_artist,
                     genre: tags.genre,
+                    track: tags.track,
+                    disc: tags.disc,
                 }
             }
         };
@@ -531,6 +547,11 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
         albums[ix].tracks.push(TrackInfo { path: file.path.clone(), title: entry.title.clone() });
         entries.push((file.path.clone(), entry));
     }
+    let order: HashMap<&Path, (u32, u32, &str)> = entries.iter().map(|(p, e)| (p.as_path(), e.track_order())).collect();
+    for album in &mut albums {
+        // The sort is stable and the files arrive sorted, so full ties keep their path order.
+        album.tracks.sort_by(|a, b| order[a.path.as_path()].cmp(&order[b.path.as_path()]));
+    }
     (albums, entries, n_parsed)
 }
 
@@ -551,6 +572,8 @@ struct FileTags {
     album: String,
     album_artist: String,
     genre: String,
+    track: Option<u32>,
+    disc: Option<u32>,
 }
 
 impl FileTags {
@@ -561,8 +584,17 @@ impl FileTags {
             Tag::Album(s) => s.clone_into(&mut self.album),
             Tag::AlbumArtist(s) => s.clone_into(&mut self.album_artist),
             Tag::Genre(s) => s.clone_into(&mut self.genre),
+            Tag::TrackNumber(s) => self.track = number(s),
+            Tag::DiscNumber(s) => self.disc = number(s),
         }
     }
+}
+
+/// Parses a track or disc number leniently: its leading digits, so the "3/12" (position of total)
+/// values some taggers write read as 3. No digits (or an overflowing count) is no number.
+fn number(s: &str) -> Option<u32> {
+    let digits = &s[..s.bytes().take_while(u8::is_ascii_digit).count()];
+    digits.parse().ok()
 }
 
 async fn read_tags(path: &Path) -> Option<FileTags> {
@@ -748,7 +780,7 @@ mod test {
     }
 
     /// A minimal valid WAV: 48 kHz stereo 16-bit PCM silence with LIST-INFO tags.
-    fn wav_bytes(title: &str, artist: &str, album: &str) -> Vec<u8> {
+    fn wav_bytes(title: &str, artist: &str, album: &str, track: Option<u32>) -> Vec<u8> {
         fn chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
             let mut out = Vec::with_capacity(8 + body.len() + 1);
             out.extend(id);
@@ -769,9 +801,12 @@ mod test {
         fmt.extend((48000u32 * 4).to_le_bytes()); // avg bytes per second
         fmt.extend(4u16.to_le_bytes()); // block size
         fmt.extend(16u16.to_le_bytes()); // bits per sample
-        let list =
+        let mut list =
             [&b"INFO"[..], &info(b"INAM", title), &info(b"IART", artist), &info(b"IPRD", album), &info(b"IGNR", "Test Genre")]
                 .concat();
+        if let Some(track) = track {
+            list.extend(info(b"ITRK", &track.to_string()));
+        }
         let riff = [&b"WAVE"[..], &chunk(b"fmt ", &fmt), &chunk(b"LIST", &list), &chunk(b"data", &[0u8; 4800])].concat();
         let mut out = Vec::new();
         out.extend(b"RIFF");
@@ -891,13 +926,42 @@ mod test {
         assert!(accent.r > 0.4 && accent.r > accent.b, "{accent:?}");
     }
 
+    /// Tracks order by their tags: track number first, title for the untagged rest -- never by
+    /// the file names.
+    #[test]
+    fn tracks_order_by_their_tags() {
+        let root = std::env::temp_dir().join(format!("phonoscule-order-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (file, title, track) in
+            [("w.wav", "Beta", Some(2)), ("x.wav", "Alpha", Some(1)), ("y.wav", "B Side", None), ("z.wav", "A Side", None)]
+        {
+            std::fs::write(root.join(file), wav_bytes(title, "Artist", "Album", track)).unwrap();
+        }
+
+        let mut albums = Vec::new();
+        let options = ScanOptions {
+            root: root.clone(),
+            priority: vec![],
+            known_covers: Default::default(),
+            cache_file: None,
+            covers_dir: None,
+        };
+        scan_and_apply(&mut albums, options);
+        assert_eq!(albums.len(), 1);
+        let titles: Vec<&str> = albums[0].tracks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["Alpha", "Beta", "A Side", "B Side"]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn cached_incremental_rescans() {
         let root = std::env::temp_dir().join(format!("phonoscule-library-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for (dir, title) in [("One", "First Song"), ("Two", "Second Song")] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
-            std::fs::write(root.join(dir).join("track.wav"), wav_bytes(title, "Artist", dir)).unwrap();
+            std::fs::write(root.join(dir).join("track.wav"), wav_bytes(title, "Artist", dir, None)).unwrap();
         }
         let cache_file = root.join("cache.json");
         let options = || ScanOptions {
@@ -923,7 +987,7 @@ mod test {
         assert_eq!(ids, (albums[0].id, albums[1].id));
 
         // A modified file (different size => cache miss) is re-parsed.
-        std::fs::write(root.join("One/track.wav"), wav_bytes("First Song, Remastered", "Artist", "One")).unwrap();
+        std::fs::write(root.join("One/track.wav"), wav_bytes("First Song, Remastered", "Artist", "One", None)).unwrap();
         scan_and_apply(&mut albums, options());
         assert_eq!(albums[0].tracks[0].title, "First Song, Remastered");
 
@@ -931,7 +995,7 @@ mod test {
         // is, by design, not noticed -- the cached tags remain.
         let path = root.join("One/track.wav");
         let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
-        std::fs::write(&path, wav_bytes("Sneaky Edit Same Size!", "Artist", "One")).unwrap();
+        std::fs::write(&path, wav_bytes("Sneaky Edit Same Size!", "Artist", "One", None)).unwrap();
         std::fs::File::options().write(true).open(&path).unwrap().set_modified(mtime).unwrap();
         scan_and_apply(&mut albums, options());
         assert_eq!(albums[0].tracks[0].title, "First Song, Remastered");
