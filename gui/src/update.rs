@@ -82,7 +82,7 @@ pub enum Msg {
     /// The cursor entered a track menu row: move the selection there, so the mouse and the arrow
     /// keys drive the same highlight.
     MenuHover(usize),
-    /// Append the track menu's selected track to the queue (Space), stepping the selection to the
+    /// Append the track menu's selected track to the queue (Alt+Space), stepping the selection to the
     /// next track so successive presses queue an album run.
     MenuQueue,
     /// Play the track menu's selected track, replacing the queue (Ctrl+Space or Enter).
@@ -969,46 +969,53 @@ fn skip_interval(held: Duration) -> Duration {
 /// selection actions internally (see `album_grid`), so this covers the global view switching, the
 /// playback-mode keys, and the player bindings. `repeat` marks auto-repeat from a held key:
 /// continuous actions honor it (seek/scrub, walking the queue), while one-shot ones don't (holding
-/// Space must not machine-gun play/pause). Alt/Logo always pass through to the window manager.
+/// Space must not machine-gun play/pause). Alt/Logo pass through to the window manager, except
+/// Alt+Space: that is the queue-the-selection binding, freeing bare Space for the toggle.
 ///
-/// Global: Tab / Shift-Tab cycle the view tabs; `l`/`p` jump to Library/Player; Escape returns to
+/// Global: Space toggles play/pause (too central a function to belong to one view); Tab /
+/// Shift-Tab cycle the view tabs; `l`/`p` jump to Library/Player; Escape returns to
 /// the library; `r` cycles the repeat mode; `s`/`z` shuffle the other albums/tracks in behind the
 /// playing one (Ctrl promotes to shuffling literally everything); Backspace resets playback to the
 /// queue's first track, paused. With a modal open, Escape dismisses it, the track menu gets its
 /// own bindings, and everything else is suppressed. In the player: Left/Right seek by
-/// [`SEEK_STEP`], Space toggles play/pause, Home
+/// [`SEEK_STEP`], Home
 /// restarts the track (or steps back near the start), End steps to the next track, PageUp restarts
 /// the album (or steps to the previous one), PageDown jumps to the next album.
 pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
-    // Alt/Logo aren't bound anywhere; leave them (and their chords) to the window manager.
-    if modifiers.alt() || modifiers.logo() {
+    // Alt/Logo chords belong to the window manager -- all but Alt+Space (see above).
+    let alt_space = modifiers.alt() && matches!(key, Key::Named(Named::Space));
+    if (modifiers.alt() && !alt_space) || modifiers.logo() {
         return None;
     }
     let one_shot = |msg| if repeat { None } else { Some(msg) };
 
     match modal {
         // The track menu is modal: it gets its own bindings and everything else is suppressed.
-        // Mirrors the grid's vocabulary one level down -- arrows move the selection, Space queues
-        // it, Ctrl+Space (or Enter, which opened the menu) plays it -- and Escape dismisses.
+        // Mirrors the grid's vocabulary one level down -- arrows move the selection, Alt+Space
+        // queues it, Ctrl+Space (or Enter, which opened the menu) plays it -- and Escape
+        // dismisses. Bare Space stays the global play/pause toggle even here.
         Some(ModalKind::Tracks) => {
             return match (key, modifiers.control()) {
                 (Key::Named(Named::Escape), false) => one_shot(Msg::CloseModal),
                 (Key::Named(Named::ArrowUp), false) if modifiers.is_empty() => Some(Msg::MenuMove(MenuDir::Up)),
                 (Key::Named(Named::ArrowDown), false) if modifiers.is_empty() => Some(Msg::MenuMove(MenuDir::Down)),
-                // One queue per press: holding Space must not machine-gun the queue.
-                (Key::Named(Named::Space), false) if modifiers.is_empty() => one_shot(Msg::MenuQueue),
+                // One queue per press: holding Alt+Space must not machine-gun the queue.
+                (Key::Named(Named::Space), false) if modifiers.alt() => one_shot(Msg::MenuQueue),
+                (Key::Named(Named::Space), false) if modifiers.is_empty() => one_shot(Msg::Toggle),
                 (Key::Named(Named::Space), true) => one_shot(Msg::MenuPlay),
                 (Key::Named(Named::Enter), false) if modifiers.is_empty() => one_shot(Msg::MenuPlay),
                 _ => None,
             };
         }
         // The actions menu: Escape dismisses; its actions keep their global keys (the entries
-        // display them as hints, and the handlers dismiss the menu themselves).
+        // display them as hints, and the handlers dismiss the menu themselves), and so does the
+        // play/pause toggle.
         Some(ModalKind::Actions) => {
             return match (key, modifiers.control()) {
                 (Key::Named(Named::Escape), false) => one_shot(Msg::CloseModal),
+                (Key::Named(Named::Space), false) if modifiers.is_empty() => one_shot(Msg::Toggle),
                 (Key::Character(c), false) if c.as_str() == "r" => one_shot(Msg::CycleRepeat),
                 (Key::Character(c), ctrl) if c.as_str() == "s" => one_shot(Msg::Shuffle {
                     grouping: Grouping::Albums,
@@ -1039,8 +1046,11 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         None => {}
     }
 
-    // View-independent navigation takes precedence over the per-view bindings below.
+    // View-independent navigation takes precedence over the per-view bindings below. Bare Space
+    // toggles play/pause in every view (an uncaptured Alt+Space -- no grid selection -- is a
+    // missed enqueue, not a toggle request).
     match (&key, modifiers.shift(), modifiers.control()) {
+        (Key::Named(Named::Space), false, false) if modifiers.is_empty() => return one_shot(Msg::Toggle),
         (Key::Named(Named::Tab), false, false) => return one_shot(Msg::Show(view.next())),
         (Key::Named(Named::Tab), true, false) => return one_shot(Msg::Show(view.prev())),
         (Key::Named(Named::Escape), _, false) => return one_shot(Msg::Show(View::Library)),
@@ -1073,7 +1083,6 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         View::Player => match key {
             Key::Named(Named::ArrowLeft) => Some(Msg::Seek(Seek::By(SeekDir::Backward, SEEK_STEP))),
             Key::Named(Named::ArrowRight) => Some(Msg::Seek(Seek::By(SeekDir::Forward, SEEK_STEP))),
-            Key::Named(Named::Space) => one_shot(Msg::Toggle),
             Key::Named(Named::Home) => Some(Msg::PrevOrRestart { repeat }),
             Key::Named(Named::End) => Some(Msg::Next { repeat }),
             // One album per press: a held key mustn't fly through the whole queue.

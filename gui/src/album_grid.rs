@@ -9,7 +9,8 @@
 //!   and the grid respects capture), so they act without the grid reacting.
 //! - Arrow-key navigation in two dimensions; when nothing is selected, an arrow key picks up the
 //!   first album in view. The selection is always scrolled fully into view, minimally.
-//! - Space queues the selected album and Ctrl+Space plays it, published via `on_queue`/`on_play`.
+//! - Alt+Space queues the selected album and Ctrl+Space plays it, published via
+//!   `on_queue`/`on_play`; bare Space passes through to the global play/pause toggle.
 //! - Left-clicking a cover, or Enter on the selection, asks for the album's track menu
 //!   (published via `on_menu`; the menu itself is the caller's).
 //!
@@ -76,7 +77,7 @@ pub struct AlbumGrid<'a, Message> {
     bottom_clearance: f32,
     /// Play the album (replacing the queue): Ctrl+Space on the selection.
     on_play: fn(usize) -> Message,
-    /// Append the album to the queue: Space on the selection.
+    /// Append the album to the queue: Alt+Space on the selection.
     on_queue: fn(usize) -> Message,
     /// Ask for an album's track menu: left-clicking a cover, or Enter on the selection. The menu
     /// itself is the caller's business; the grid only reports the ask.
@@ -331,8 +332,9 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                     Named::ArrowRight if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Right),
                     Named::ArrowUp if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Up),
                     Named::ArrowDown if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Down),
-                    // One album per press: holding Space must not machine-gun the queue.
-                    Named::Space if modifiers.is_empty() && !repeat => match state.selected {
+                    // Bare Space is NOT the grid's: it passes through to the global play/pause
+                    // toggle. One album per press: holding must not machine-gun the queue.
+                    Named::Space if *modifiers == keyboard::Modifiers::ALT && !repeat => match state.selected {
                         Some(ix) => {
                             shell.publish((self.on_queue)(ix));
                             true

@@ -96,7 +96,7 @@ pub const PICKER_INPUT_ID: &str = "picker-input";
 pub const PICKER_SCROLL_ID: &str = "picker-list";
 
 /// The open track menu: which album (an index into [`App::albums`]) and which of its tracks the
-/// keyboard selection sits on (Up/Down move it; Space queues, Ctrl+Space or Enter plays).
+/// keyboard selection sits on (Up/Down move it; Alt+Space queues, Ctrl+Space or Enter plays).
 #[derive(Debug, Clone, Copy)]
 pub struct TrackMenu {
     pub album: usize,

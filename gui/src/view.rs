@@ -243,7 +243,7 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         let top_clearance = if top_bar_fits(app, size.width) { TAB_BAR_HEIGHT } else { TWO_ROW_BAR_HEIGHT };
         // The grid widget owns layout, scrolling, selection, and keyboard navigation (see
         // `album_grid`); the view supplies each card's cover element and its texts, and receives
-        // whole actions back (Space queues the selection, Ctrl+Space plays it). The selection is
+        // whole actions back (Alt+Space queues the selection, Ctrl+Space plays it). The selection is
         // externalized into the model so it survives view switches.
         let mut grid = album_grid(Msg::PlayAlbum, Msg::QueueAlbum)
             .top_clearance(top_clearance)
