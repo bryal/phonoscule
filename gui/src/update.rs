@@ -148,6 +148,16 @@ pub enum Msg {
     /// component acts, walking whole albums like PageUp/PageDown (scroll left restarts or steps
     /// back, scroll right jumps to the next album).
     PlayerScrolled(ScrollDelta),
+    /// Set the volume to an absolute factor of 100% (a click or drag on the volume bar).
+    SetVolume(f32),
+    /// Nudge the volume by a factor of 100% (Up/Down in the player: ±5%; repeats welcome, so a
+    /// held key ramps).
+    BumpVolume(f32),
+    /// The mouse wheel turned over the volume bar: 5% per notch, up is louder.
+    VolumeScrolled(ScrollDelta),
+    /// The OS mixer reported our volume: the initial reading, an echo of our own set, or an
+    /// external change (some mixer applet). Mirror it -- never set back, or we'd loop.
+    VolumeChanged(f32),
     SeekChanged(f32),
     SeekReleased,
     /// A relative or absolute seek, from the keyboard or the OS media keys (the seek *bar* uses
@@ -600,6 +610,19 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             scroll_albums(app, delta);
         }
         Msg::PlayerScrolled(delta) => scroll_albums(app, delta),
+        Msg::SetVolume(volume) => set_volume(app, volume),
+        Msg::BumpVolume(delta) => {
+            if let Some(volume) = app.volume {
+                set_volume(app, volume + delta);
+            }
+        }
+        Msg::VolumeScrolled(delta) => {
+            let (_, vertical) = scroll_notches(delta);
+            if let Some(volume) = app.volume {
+                set_volume(app, volume + 0.05 * vertical);
+            }
+        }
+        Msg::VolumeChanged(volume) => app.volume = Some(volume),
         Msg::SeekChanged(frac) => app.seek_drag = Some(frac),
         Msg::SeekReleased => {
             if let (Some(frac), Some(len)) = (app.seek_drag.take(), app.len) {
@@ -911,6 +934,14 @@ fn scroll_notches(delta: ScrollDelta) -> (f32, f32) {
     }
 }
 
+/// Requests `volume` (clamped) from the OS mixer and mirrors it optimistically, so the bar
+/// tracks a drag or a wheel burst instantly while the mixer's echo trails behind.
+fn set_volume(app: &mut App, volume: f32) {
+    let volume = volume.clamp(0.0, phonoscule_gui::volume::MAX_VOLUME);
+    app.volume = Some(volume);
+    app.mixer.set(volume);
+}
+
 /// Applies a wheel delta's horizontal component to the queue's albums: scroll left restarts or
 /// steps back like PageUp, scroll right jumps to the next album like PageDown. At most one album
 /// step per event -- the album helpers read `app.current`, which only advances once the engine
@@ -1081,7 +1112,7 @@ fn skip_interval(held: Duration) -> Duration {
 /// search focused; Ctrl+W clears every filter (unfocusing its inputs). In the library: Ctrl+Enter plays and
 /// Alt+Enter queues everything the filter shows, and typing any plain character starts the album
 /// search. In the player: Left/Right seek by
-/// [`SEEK_STEP`], Home
+/// [`SEEK_STEP`], Up/Down nudge the volume by 5%, Home
 /// restarts the track (or steps back near the start), End steps to the next track, PageUp restarts
 /// the album (or steps to the previous one), PageDown jumps to the next album.
 pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
@@ -1211,6 +1242,8 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         View::Player => match key {
             Key::Named(Named::ArrowLeft) => Some(Msg::Seek(Seek::By(SeekDir::Backward, SEEK_STEP))),
             Key::Named(Named::ArrowRight) => Some(Msg::Seek(Seek::By(SeekDir::Forward, SEEK_STEP))),
+            Key::Named(Named::ArrowUp) => Some(Msg::BumpVolume(0.05)),
+            Key::Named(Named::ArrowDown) => Some(Msg::BumpVolume(-0.05)),
             Key::Named(Named::Home) => Some(Msg::PrevOrRestart { repeat }),
             Key::Named(Named::End) => Some(Msg::Next { repeat }),
             // One album per press: a held key mustn't fly through the whole queue.

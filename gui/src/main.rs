@@ -89,6 +89,7 @@ fn watch_subscription(app: &App) -> Subscription<Msg> {
 fn subscription(app: &App) -> Subscription<Msg> {
     let player = channel_subscription("player-events", app.engine.events.clone()).map(Msg::Player);
     let media = channel_subscription("media-events", app.media.events.clone()).map(Msg::Media);
+    let mixer = channel_subscription("volume-events", app.mixer.events.clone()).map(Msg::VolumeChanged);
     let watch = watch_subscription(app);
     let rescan = iced::time::every(RESCAN_INTERVAL).map(|_| Msg::Rescan);
 
@@ -108,5 +109,5 @@ fn subscription(app: &App) -> Subscription<Msg> {
             },
         );
 
-    Subscription::batch([player, media, watch, rescan, frames, keys])
+    Subscription::batch([player, media, mixer, watch, rescan, frames, keys])
 }

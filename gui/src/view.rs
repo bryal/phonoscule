@@ -27,6 +27,7 @@ const FA_LIST: &str = "\u{f03a}";
 const FA_REPEAT: &str = "\u{f363}";
 const FA_ELLIPSIS: &str = "\u{f141}";
 const FA_XMARK: &str = "\u{f00d}";
+const FA_VOLUME: &str = "\u{f028}";
 
 fn font_awesome_solid() -> iced::Font {
     iced::Font {
@@ -85,7 +86,15 @@ fn tab<'a>(app: &App, label: &'a str, target: View) -> Element<'a, Msg> {
 fn top_bar(app: &App) -> Element<'_, Msg> {
     let tabs = || row![tab(app, "Library", View::Library), tab(app, "Player", View::Player)].spacing(20);
     let padding = iced::Padding { top: 8.0, right: 12.0, bottom: 8.0, left: 12.0 };
-    if app.view != View::Library || app.albums.is_empty() {
+    if app.view == View::Player {
+        // The player's top bar has room to spare: the volume bar fills its right side.
+        let mut bar = row![tabs()].align_y(Center);
+        if let Some(volume) = volume_bar(app) {
+            bar = bar.push(container(volume).align_right(Fill));
+        }
+        return glass_panel(app, container(bar).padding(padding).into(), Edge::Bottom);
+    }
+    if app.albums.is_empty() {
         return glass_panel(app, container(tabs()).padding(padding).into(), Edge::Bottom);
     }
     responsive(move |size| {
@@ -97,6 +106,19 @@ fn top_bar(app: &App) -> Element<'_, Msg> {
         glass_panel(app, container(bar).padding(padding).into(), Edge::Bottom)
     })
     .into()
+}
+
+/// The volume bar: a slider over the OS mixer's volume for this application (see the volume
+/// module), 0..=125% -- click or drag to set, wheel to nudge (Up/Down do too, see `key_to_msg`).
+/// `None` until the mixer reports a volume (or ever, without an audio server).
+fn volume_bar(app: &App) -> Option<Element<'_, Msg>> {
+    let volume = app.volume?;
+    let icon = text(FA_VOLUME).font(font_awesome_solid()).size(13);
+    let bar = slider(0.0..=phonoscule_gui::volume::MAX_VOLUME, volume, Msg::SetVolume).step(0.01_f32).width(140);
+    // Right-aligned in a fixed box, so the bar doesn't wiggle as the digit count changes.
+    let readout = container(text(format!("{:.0}%", volume * 100.0)).size(13)).width(38).align_right(Fill);
+    let bar = row![icon, bar, readout].spacing(8).align_y(Center);
+    Some(mouse_area(bar).on_scroll(Msg::VolumeScrolled).into())
 }
 
 /// Whether the nav tabs and the filter tools fit side by side at this window width. A rough upper

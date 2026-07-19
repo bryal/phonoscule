@@ -5,7 +5,7 @@ use futures::StreamExt;
 use iced::Task;
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
-use phonoscule_gui::{media, player, playlist, watcher};
+use phonoscule_gui::{media, player, playlist, volume, watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -128,6 +128,8 @@ pub struct App {
     /// [`publish_media`](crate::update)); a worker coalesces and pushes them, so the update loop
     /// holds no rate-limiting state of its own.
     pub media: media::Media,
+    /// Handle to the OS mixer (see the volume module): [`App::volume`] mirrors its readings.
+    pub mixer: volume::VolumeControl,
     pub watcher: watcher::Watcher,
     pub conf: Conf,
     pub scan: ScanState,
@@ -179,6 +181,9 @@ pub struct App {
     /// Like `list_scroll`, for the horizontal wheel axis: whole notches walk the queue's albums
     /// (see `Msg::PlayerScrolled`).
     pub album_scroll: f32,
+    /// The application's volume as the OS mixer last reported it, a factor of 100%; `None` until
+    /// the first reading (no server, or none yet), which also hides the volume bar.
+    pub volume: Option<f32>,
     /// High-resolution cover art (FULL² RGBA) for the now-playing cover flow. The flow keeps a
     /// small window around `current` resident (see `ensure_hires`), but this cache outlives that
     /// window: it retains recently-played covers under an LRU bound, so hopping back to an album
@@ -301,6 +306,7 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
         let mut app = App {
             engine: player::start(),
             media,
+            mixer: volume::start(),
             watcher: watcher::start(&conf.music_dir),
             conf: conf.clone(),
             scan: ScanState::Scanning,
@@ -323,6 +329,7 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
             hold_start: None,
             list_scroll: 0.0,
             album_scroll: 0.0,
+            volume: None,
             hires: HiResCache::new(),
             anim_pos: 0.0,
             glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
