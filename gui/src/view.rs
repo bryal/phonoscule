@@ -596,15 +596,15 @@ fn player_view(app: &App) -> Element<'_, Msg> {
 fn run_tracks_overlay(app: &App) -> Element<'_, Msg> {
     let runs = album_runs(&app.queue);
     let run = runs.get(run_of(&runs, app.current)).cloned().unwrap_or(0..0);
-    // Right-aligned: the list hugs the window's right edge, so the titles' ragged side faces
-    // the content.
-    let mut list = column![].spacing(2).align_x(iced::Alignment::End);
-    for ix in run {
+    let list = run.map(|ix| {
         let item = &app.queue[ix];
         let label =
-            if ix == app.current { active_text(&item.title, 16.0, 0.85) } else { inactive_text(&item.title, 16.0, 0.7) };
-        list = list.push(button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)));
-    }
+            if ix == app.current { active_text(&item.title, 16.0, 0.90) } else { inactive_text(&item.title, 16.0, 0.80) };
+        button(label).padding([2, 8]).style(button::text).on_press(Msg::TrackClicked(ix)).into()
+    });
+    // Right-aligned: the list hugs the window's right edge, so the titles' ragged side faces
+    // the content.
+    let list = column(list).spacing(2).align_x(iced::Alignment::End);
     let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
     scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar)).into()
 }
