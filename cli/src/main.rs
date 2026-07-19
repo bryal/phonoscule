@@ -102,7 +102,7 @@ impl TrackSamples {
 }
 
 struct Track {
-    metadata: StaticMetadata,
+    title: String,
     sample_rate: u32,
     /// Total number of samples, when the container states it up front (WAV does, Ogg doesn't).
     len_samples: Option<u64>,
@@ -114,20 +114,26 @@ impl Track {
         let mut magic = [0u8; 4];
         File::open(path).await.ok()?.read_exact(&mut magic).await.ok()?;
         let f = Skippable(FromFutures::new(BufReader::new(File::open(path).await.ok()?)));
+        let mut title = String::new();
+        let on_tag = |tag: Tag<'_>| {
+            if let Tag::Title(s) = tag {
+                s.clone_into(&mut title);
+            }
+        };
         match &magic {
             b"RIFF" => {
-                let wav = Wav::<StaticMetadata, _>::parse(f).await?;
+                let wav = Wav::parse(f, on_tag).await?;
                 Some(Track {
-                    metadata: wav.metadata,
+                    title,
                     sample_rate: wav.format.sample_rate(),
                     len_samples: Some(wav.format.len_samples()),
                     samples: TrackSamples::Wav(wav.samples),
                 })
             }
             b"OggS" => {
-                let opus = OggOpus::<StaticMetadata, _>::parse_seekable(f).await?;
+                let opus = OggOpus::parse_seekable(f, on_tag).await?;
                 Some(Track {
-                    metadata: opus.metadata,
+                    title,
                     sample_rate: opus.format.sample_rate(),
                     len_samples: opus.format.len_samples,
                     samples: TrackSamples::Opus(Box::new(opus.samples)),
@@ -268,7 +274,7 @@ async fn main_() {
                 continue 'pls_entry;
             };
             status_tx
-                .send(Status::Track(match track.metadata.title() {
+                .send(Status::Track(match track.title.as_str() {
                     "" => path.to_string_lossy().to_string(),
                     name => name.to_string(),
                 }))

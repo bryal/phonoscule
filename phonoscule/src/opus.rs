@@ -15,7 +15,7 @@
 //!   skips.
 
 use crate::{
-    metadata::Metadata,
+    metadata::Tag,
     plumbing::{FastForward, Source},
     sample::{PcmS16Le, Stereo},
 };
@@ -32,8 +32,7 @@ const MAX_FRAME: usize = 5760;
 /// An Ogg page is at most this many bytes (header + segment table + maximal body).
 const MAX_PAGE_SIZE: u64 = 27 + 255 + 255 * 255;
 
-pub struct OggOpus<Md, R> {
-    pub metadata: Md,
+pub struct OggOpus<R> {
     pub format: Format,
     pub samples: OpusReader<R>,
 }
@@ -53,19 +52,21 @@ impl Format {
     }
 }
 
-/// The parsed Ogg Opus headers: metadata and format, plus what's needed to continue into
-/// decoding. Parsing only this is much cheaper than a full [`OggOpus::parse`] (no decoder state,
-/// no frame buffer), which matters when scanning a library for tags.
-pub struct Headers<Md> {
-    pub metadata: Md,
+/// The parsed Ogg Opus headers: the format, plus what's needed to continue into decoding (the
+/// metadata tags are pushed to `parse`'s callback). Parsing only this is much cheaper than a full
+/// [`OggOpus::parse`] (no decoder state, no frame buffer), which matters when scanning a library
+/// for tags.
+pub struct Headers {
     pub format: Format,
     channels: Channels,
     serial: u32,
     packets: BasePacketReader,
 }
 
-impl<Md: Metadata> Headers<Md> {
-    pub async fn parse<R: Read>(inp: &mut R) -> Option<Self> {
+impl Headers {
+    /// Parses the two header packets, pushing each metadata tag to `on_tag` (see [`Tag`]; the
+    /// text borrows straight from the tags packet -- no copies).
+    pub async fn parse<R: Read>(inp: &mut R, mut on_tag: impl FnMut(Tag<'_>)) -> Option<Self> {
         let mut packets = BasePacketReader::new();
         // The first two packets of an Ogg Opus stream are the headers: OpusHead, then OpusTags.
         let PacketRead::Packet(head) = next_packet(&mut packets, inp).await? else {
@@ -77,21 +78,19 @@ impl<Md: Metadata> Headers<Md> {
             log::error!("stream ended before the OpusTags header");
             return None;
         };
-        let mut metadata = Md::default();
-        parse_opus_tags(&mut metadata, &tags.data);
+        parse_opus_tags(&mut on_tag, &tags.data);
         let format = Format { n_channels: channels.count() as u16, pre_skip, len_samples: None };
-        Some(Headers { metadata, format, channels, serial: head.stream_serial(), packets })
+        Some(Headers { format, channels, serial: head.stream_serial(), packets })
     }
 }
 
-impl<Md, R> OggOpus<Md, R>
+impl<R> OggOpus<R>
 where
-    Md: Metadata,
     R: Read,
 {
-    pub async fn parse(mut inp: R) -> Option<Self> {
-        let headers = Headers::parse(&mut inp).await?;
-        let Headers { metadata, format, channels, serial, packets } = headers;
+    pub async fn parse(mut inp: R, on_tag: impl FnMut(Tag<'_>)) -> Option<Self> {
+        let headers = Headers::parse(&mut inp, on_tag).await?;
+        let Headers { format, channels, serial, packets } = headers;
         let samples = OpusReader {
             packets,
             inp,
@@ -104,18 +103,18 @@ where
             pre_skip: format.pre_skip as usize,
             total_pre_skip: format.pre_skip as u64,
         };
-        Some(OggOpus { metadata, format, samples })
+        Some(OggOpus { format, samples })
     }
 
     /// Like [`OggOpus::parse`], but additionally determines [`Format::len_samples`] by scanning
     /// the tail of the stream for the last Ogg page and reading its granule position. Costs one
     /// extra read of up to ~64 KiB plus three seeks. If the scan fails the stream still plays,
     /// just with an unknown length.
-    pub async fn parse_seekable(inp: R) -> Option<Self>
+    pub async fn parse_seekable(inp: R, on_tag: impl FnMut(Tag<'_>)) -> Option<Self>
     where
         R: Seek,
     {
-        let mut this = Self::parse(inp).await?;
+        let mut this = Self::parse(inp, on_tag).await?;
         let samples = &mut this.samples;
         match scan_len_samples(&mut samples.inp, samples.serial, this.format.pre_skip).await {
             Some(len) => this.format.len_samples = Some(len),
@@ -517,9 +516,10 @@ fn parse_opus_head(data: &[u8]) -> Option<(Channels, u16)> {
     Some((channels, pre_skip))
 }
 
-/// Parses an `OpusTags` packet (RFC 7845 §5.2, Vorbis comments) into `metadata`. Unknown or
-/// malformed comments are skipped; a malformed packet just leaves the remaining fields empty.
-fn parse_opus_tags(metadata: &mut impl Metadata, data: &[u8]) {
+/// Parses an `OpusTags` packet (RFC 7845 §5.2, Vorbis comments), pushing recognized comments to
+/// `on_tag` borrowed straight from the packet. Unknown or malformed comments are skipped; a
+/// malformed packet just ends the tags early.
+fn parse_opus_tags(on_tag: &mut impl FnMut(Tag<'_>), data: &[u8]) {
     fn read_u32(data: &[u8], pos: &mut usize) -> Option<usize> {
         let bs = data.get(*pos..*pos + 4)?;
         *pos += 4;
@@ -550,15 +550,15 @@ fn parse_opus_tags(metadata: &mut impl Metadata, data: &[u8]) {
                 continue;
             };
             if key.eq_ignore_ascii_case("TITLE") {
-                metadata.set_title(value)
+                on_tag(Tag::Title(value))
             } else if key.eq_ignore_ascii_case("ARTIST") {
-                metadata.set_artist(value)
+                on_tag(Tag::Artist(value))
             } else if key.eq_ignore_ascii_case("ALBUM") {
-                metadata.set_album(value)
+                on_tag(Tag::Album(value))
             } else if key.eq_ignore_ascii_case("GENRE") {
-                metadata.set_genre(value)
+                on_tag(Tag::Genre(value))
             } else if key.eq_ignore_ascii_case("ALBUMARTIST") || key.eq_ignore_ascii_case("ALBUM ARTIST") {
-                metadata.set_album_artist(value)
+                on_tag(Tag::AlbumArtist(value))
             } else {
                 log::trace!("ignored comment {key}");
             }

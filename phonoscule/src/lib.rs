@@ -31,15 +31,35 @@ mod test {
         })
     }
 
+    /// Collects pushed tags for assertions.
+    #[derive(Default)]
+    struct Tags {
+        title: String,
+        artist: String,
+        album: String,
+    }
+
+    impl Tags {
+        fn set(&mut self, tag: Tag<'_>) {
+            match tag {
+                Tag::Title(s) => self.title = s.into(),
+                Tag::Artist(s) => self.artist = s.into(),
+                Tag::Album(s) => self.album = s.into(),
+                Tag::AlbumArtist(_) | Tag::Genre(_) => {}
+            }
+        }
+    }
+
     #[test]
     fn parse_a_wav_file() {
         init();
         smol::block_on(async {
             let f = Skippable(FromFutures::new(BufReader::new(File::open("../assets/Listless-s16.wav").await.unwrap())));
-            let wav = Wav::<StaticMetadata, _>::parse(f).await.unwrap();
-            assert_eq!(wav.metadata.title(), "Listless");
-            assert_eq!(wav.metadata.album(), "Listless/Second Skin 2019 Single");
-            assert_eq!(wav.metadata.artist(), "Siamese Twins");
+            let mut tags = Tags::default();
+            let wav = Wav::parse(f, |tag| tags.set(tag)).await.unwrap();
+            assert_eq!(tags.title, "Listless");
+            assert_eq!(tags.album, "Listless/Second Skin 2019 Single");
+            assert_eq!(tags.artist, "Siamese Twins");
             let mut samples = match wav.samples {
                 sample::MultiReader::StereoPcmS16(s) => s,
                 _ => panic!("unexpected format, {:?}", wav.format),
@@ -111,7 +131,7 @@ mod test {
             let minute = 60 * 48000u64;
             let data = silence_opus(9000); // 3 minutes of silence
             let f = FromFutures::new(smol::io::Cursor::new(&data[..]));
-            let opus = OggOpus::<StaticMetadata, _>::parse_seekable(f).await.unwrap();
+            let opus = OggOpus::parse_seekable(f, |_| {}).await.unwrap();
             let len = opus.format.len_samples.unwrap();
             assert_eq!(len, 9000 * 960 - 312); // total decoded minus the pre-skip
             let mut samples = opus.samples;
@@ -151,10 +171,11 @@ mod test {
         init();
         smol::block_on(async {
             let f = Skippable(FromFutures::new(BufReader::new(File::open("../assets/Listless.opus").await.unwrap())));
-            let opus = OggOpus::<StaticMetadata, _>::parse_seekable(f).await.unwrap();
-            assert_eq!(opus.metadata.title(), "Listless");
-            assert_eq!(opus.metadata.album(), "Listless/Second Skin 2019 Single");
-            assert_eq!(opus.metadata.artist(), "Siamese Twins");
+            let mut tags = Tags::default();
+            let opus = OggOpus::parse_seekable(f, |tag| tags.set(tag)).await.unwrap();
+            assert_eq!(tags.title, "Listless");
+            assert_eq!(tags.album, "Listless/Second Skin 2019 Single");
+            assert_eq!(tags.artist, "Siamese Twins");
             assert_eq!(opus.format.n_channels, 2);
             let len = opus.format.len_samples.expect("tail scan should find the last page granule");
             let mut samples = opus.samples;

@@ -13,30 +13,29 @@
 
 use crate::{
     io::{ReadExt, Skip, Take},
-    metadata::*,
+    metadata::{Tag, read_text},
     sample::*,
 };
 use embedded_io_async::Read;
 
-pub struct Wav<Md, R> {
-    pub metadata: Md,
+pub struct Wav<R> {
     pub format: Format,
     pub samples: MultiReader<R>,
 }
 
-impl<Md, R> Wav<Md, Take<R>>
+impl<R> Wav<Take<R>>
 where
-    Md: Metadata,
     R: Read + Skip,
 {
-    pub async fn parse(mut inp: R) -> Option<Self> {
+    /// Parses the headers, pushing each metadata tag to `on_tag` as it is encountered (see
+    /// [`Tag`]), and returns the stream positioned at the audio data.
+    pub async fn parse(mut inp: R, mut on_tag: impl FnMut(Tag<'_>)) -> Option<Self> {
         if FourCc::parse(&mut inp).await?.as_str() != "RIFF" {
             return None;
         }
         let size = inp.read_u32_le().await.ok()? as usize;
         let mut inp = inp.take(size as u64);
         let mut format = None::<Format>;
-        let mut metadata = Md::default();
         let data_size = {
             if FourCc::parse(&mut inp).await?.as_str() != "WAVE" {
                 return None;
@@ -106,7 +105,7 @@ where
                             let mut inp = (&mut inp).take_exact(chunk_size as u64);
                             let tag = FourCc::parse(&mut inp).await?;
                             if tag.as_str() == "INFO" {
-                                parse_metadata(&mut metadata, &mut inp).await?
+                                parse_metadata(&mut on_tag, &mut inp).await?
                             } else {
                                 log::trace!("ignored LIST chunk with tag {:?}", tag.as_str());
                             }
@@ -145,7 +144,7 @@ where
                 None
             }
         }?;
-        Some(Wav { metadata, format, samples })
+        Some(Wav { format, samples })
     }
 }
 
@@ -173,20 +172,32 @@ const WAVE_FORMAT_PCM: u16 = 0x0001;
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 0x0003;
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 
-async fn parse_metadata<R>(m: &mut impl Metadata, inp: &mut R) -> Option<()>
+/// One INFO field's scratch: WAV streams field bytes, so they must land somewhere before a
+/// borrowed [`Tag`] can be pushed. Per field and reused, so no field's length affects another;
+/// generous for LIST-INFO in the wild, and longer fields simply truncate.
+const TAG_SCRATCH: usize = 512;
+
+async fn parse_metadata<R>(on_tag: &mut impl FnMut(Tag<'_>), inp: &mut R) -> Option<()>
 where
     R: Read + Skip,
 {
+    let mut scratch = [0u8; TAG_SCRATCH];
     while let Some(chunk_id) = FourCc::parse(inp).await {
         let mut buf = [0; 4];
         inp.read_exact(&mut buf).await.ok()?;
         let chunk_size = u32::from_le_bytes(buf) as usize;
         log::trace!("INFO subchunk id: {}, size: {}", chunk_id.as_str(), chunk_size);
         let nread = match chunk_id.as_str() {
-            "INAM" => m.read_title(chunk_size, inp).await.ok()?,
-            "IPRD" => m.read_album(chunk_size, inp).await.ok()?,
-            "IART" => m.read_artist(chunk_size, inp).await.ok()?,
-            "IGNR" => m.read_genre(chunk_size, inp).await.ok()?,
+            id @ ("INAM" | "IPRD" | "IART" | "IGNR") => {
+                let (text, consumed) = read_text(&mut scratch, chunk_size, inp).await.ok()?;
+                on_tag(match id {
+                    "INAM" => Tag::Title(text),
+                    "IPRD" => Tag::Album(text),
+                    "IART" => Tag::Artist(text),
+                    _ => Tag::Genre(text),
+                });
+                consumed
+            }
             id => {
                 log::trace!("ignored INFO subchunk {:?}", id);
                 0

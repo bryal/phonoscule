@@ -5,13 +5,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use embedded_io_adapters::futures_03::FromFutures;
-use phonoscule::{
-    io::Skippable,
-    metadata::{Metadata, StaticMetadata},
-    opus::OggOpus,
-    plumbing::FastForward,
-    wav::Wav,
-};
+use phonoscule::{io::Skippable, metadata::Tag, opus::OggOpus, plumbing::FastForward, wav::Wav};
 use std::hint::black_box;
 
 /// Builds a valid Ogg Opus stream: OpusHead, OpusTags with the given comments, and `n_packets`
@@ -98,9 +92,16 @@ fn tag_parsing(c: &mut Criterion) {
     c.bench_function("opus_tags", |b| {
         b.iter(|| {
             smol::block_on(async {
-                let parsed = OggOpus::<StaticMetadata, _>::parse(&opus[..]).await.unwrap();
-                assert_eq!(parsed.metadata.title(), "Some Title");
-                black_box(parsed.metadata)
+                let mut title = String::new();
+                let parsed = OggOpus::parse(&opus[..], |tag| {
+                    if let Tag::Title(s) = tag {
+                        s.clone_into(&mut title);
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(title, "Some Title");
+                black_box((parsed.format, title))
             })
         })
     });
@@ -110,9 +111,16 @@ fn tag_parsing(c: &mut Criterion) {
         b.iter(|| {
             smol::block_on(async {
                 let mut inp = &opus[..];
-                let parsed = phonoscule::opus::Headers::<StaticMetadata>::parse(&mut inp).await.unwrap();
-                assert_eq!(parsed.metadata.title(), "Some Title");
-                black_box(parsed.metadata)
+                let mut title = String::new();
+                let parsed = phonoscule::opus::Headers::parse(&mut inp, |tag| {
+                    if let Tag::Title(s) = tag {
+                        s.clone_into(&mut title);
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(title, "Some Title");
+                black_box((parsed.format, title))
             })
         })
     });
@@ -121,9 +129,16 @@ fn tag_parsing(c: &mut Criterion) {
         b.iter(|| {
             smol::block_on(async {
                 let f = Skippable(FromFutures::new(smol::io::Cursor::new(&wav[..])));
-                let parsed = Wav::<StaticMetadata, _>::parse(f).await.unwrap();
-                assert_eq!(parsed.metadata.title(), "Some Title");
-                black_box(parsed.metadata)
+                let mut title = String::new();
+                let parsed = Wav::parse(f, |tag| {
+                    if let Tag::Title(s) = tag {
+                        s.clone_into(&mut title);
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(title, "Some Title");
+                black_box((parsed.format, title))
             })
         })
     });
@@ -144,7 +159,7 @@ fn seeking(c: &mut Criterion) {
         b.iter(|| {
             smol::block_on(async {
                 let f = FromFutures::new(smol::io::Cursor::new(&data[..]));
-                let mut opus = OggOpus::<StaticMetadata, _>::parse(f).await.unwrap();
+                let mut opus = OggOpus::parse(f, |_| {}).await.unwrap();
                 black_box(opus.samples.seek_samples(target).await.unwrap())
             })
         })
@@ -153,7 +168,7 @@ fn seeking(c: &mut Criterion) {
         b.iter(|| {
             smol::block_on(async {
                 let f = FromFutures::new(smol::io::Cursor::new(&data[..]));
-                let mut opus = OggOpus::<StaticMetadata, _>::parse(f).await.unwrap();
+                let mut opus = OggOpus::parse(f, |_| {}).await.unwrap();
                 black_box(opus.samples.fast_forward(target).await.unwrap())
             })
         })

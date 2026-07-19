@@ -7,7 +7,6 @@
 use embedded_io_adapters::futures_03::FromFutures;
 use phonoscule::{
     io::{Skippable, Take},
-    metadata::StaticMetadata,
     opus::{OggOpus, OpusReader},
     plumbing::*,
     sample::{MultiReader, PcmS16Le, Stereo},
@@ -474,7 +473,8 @@ impl Track {
         let f = Skippable(FromFutures::new(BufReader::new(File::open(path).await.ok()?)));
         match &magic {
             b"RIFF" => {
-                let wav = Wav::<StaticMetadata, _>::parse(f).await?;
+                // Playback doesn't use the tags (the queue items carry them): drop them.
+                let wav = Wav::parse(f, |_| {}).await?;
                 Some(Track {
                     sample_rate: wav.format.sample_rate(),
                     len_samples: Some(wav.format.len_samples()),
@@ -482,7 +482,7 @@ impl Track {
                 })
             }
             b"OggS" => {
-                let opus = OggOpus::<StaticMetadata, _>::parse_seekable(f).await?;
+                let opus = OggOpus::parse_seekable(f, |_| {}).await?;
                 Some(Track {
                     sample_rate: opus.format.sample_rate(),
                     len_samples: opus.format.len_samples,

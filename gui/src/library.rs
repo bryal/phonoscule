@@ -14,12 +14,7 @@
 use embedded_io_adapters::futures_03::FromFutures;
 use embedded_io_async::{Read as _, Seek as _, SeekFrom};
 use futures::{StreamExt, stream};
-use phonoscule::{
-    io::Skippable,
-    metadata::{Metadata, StaticMetadata},
-    opus,
-    wav::Wav,
-};
+use phonoscule::{io::Skippable, metadata::Tag, opus, wav::Wav};
 use serde::{Deserialize, Serialize};
 use smol::{channel, fs::File, io::BufReader, stream::Stream};
 use std::{
@@ -494,20 +489,20 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
                 CacheEntry {
                     mtime: file.mtime,
                     size: file.size,
-                    title: match tags.title() {
+                    title: match tags.title.as_str() {
                         "" => file.path.file_stem().unwrap_or_default().to_string_lossy().to_string(),
-                        t => t.to_string(),
+                        _ => tags.title,
                     },
-                    artist: match tags.artist() {
+                    artist: match tags.artist.as_str() {
                         "" => "Unknown Artist".to_string(),
-                        a => a.to_string(),
+                        _ => tags.artist,
                     },
-                    album: match tags.album() {
+                    album: match tags.album.as_str() {
                         "" => parent_name(&file.path),
-                        a => a.to_string(),
+                        _ => tags.album,
                     },
-                    album_artist: tags.album_artist().to_string(),
-                    genre: tags.genre().to_string(),
+                    album_artist: tags.album_artist,
+                    genre: tags.genre,
                 }
             }
         };
@@ -547,22 +542,45 @@ fn extension(path: &Path) -> Option<String> {
     Some(path.extension()?.to_string_lossy().to_lowercase())
 }
 
-/// [`StaticMetadata`] packs its fields into one shared buffer, truncating overflow at a point
-/// that depends on the *other* fields' lengths -- so an overlong album name would truncate
-/// differently per track (different artists) and split one album into several. Big enough that
-/// real-world tags never overflow.
-type ScanMetadata = StaticMetadata<2048>;
+/// A file's tags, collected from the parser's [`Tag`] pushes. A repeated tag overwrites: the last
+/// occurrence wins, matching most players' reading of multi-value vorbis comments.
+#[derive(Default)]
+struct FileTags {
+    title: String,
+    artist: String,
+    album: String,
+    album_artist: String,
+    genre: String,
+}
 
-async fn read_tags(path: &Path) -> Option<ScanMetadata> {
+impl FileTags {
+    fn set(&mut self, tag: Tag<'_>) {
+        match tag {
+            Tag::Title(s) => s.clone_into(&mut self.title),
+            Tag::Artist(s) => s.clone_into(&mut self.artist),
+            Tag::Album(s) => s.clone_into(&mut self.album),
+            Tag::AlbumArtist(s) => s.clone_into(&mut self.album_artist),
+            Tag::Genre(s) => s.clone_into(&mut self.genre),
+        }
+    }
+}
+
+async fn read_tags(path: &Path) -> Option<FileTags> {
     let mut f = Skippable(FromFutures::new(BufReader::new(File::open(path).await.ok()?)));
     let mut magic = [0u8; 4];
     f.read_exact(&mut magic).await.ok()?;
     f.seek(SeekFrom::Start(0)).await.ok()?;
+    let mut tags = FileTags::default();
     match &magic {
-        b"RIFF" => Some(Wav::<ScanMetadata, _>::parse(f).await?.metadata),
-        b"OggS" => Some(opus::Headers::<ScanMetadata>::parse(&mut f).await?.metadata),
-        _ => None,
+        b"RIFF" => {
+            Wav::parse(f, |tag| tags.set(tag)).await?;
+        }
+        b"OggS" => {
+            opus::Headers::parse(&mut f, |tag| tags.set(tag)).await?;
+        }
+        _ => return None,
     }
+    Some(tags)
 }
 
 /// Number of bytes in a cached thumbnail: [`THUMB`]²  RGB.
