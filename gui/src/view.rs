@@ -569,25 +569,14 @@ fn player_view(app: &App) -> Element<'_, Msg> {
     let glow = glow_now(app);
     let flow = cover_flow(covers, app.anim_pos, glow.color, glow.center, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
 
-    // The track list is centered in a vertical region. That region reserves the player bar's
-    // space when the list is short (so it sits comfortably above the bar), but gives that space
-    // back continuously as the list grows, down to none -- so as the window shrinks the list
-    // slides into and behind the translucent bar smoothly, never jumping between two placements
-    // or cropping at the boundary.
-    let runs = album_runs(&app.queue);
-    let run_len = runs.get(run_of(&runs, app.current)).map_or(0, |r| r.len());
-    let overlay = responsive(move |size| {
-        const MARGIN: f32 = 24.0;
-        // Per-row height estimate (title + button padding + spacing), rounded up: over-
-        // estimating only adds slack, whereas under-estimating would crop the list.
-        const ROW_HEIGHT: f32 = 30.0;
-        let list_height = run_len as f32 * ROW_HEIGHT;
-        let region = list_height.clamp(size.height - PLAYER_BAR_HEIGHT - MARGIN, size.height - MARGIN);
-        let bottom = (size.height - MARGIN - region).max(0.0);
-        let padding = iced::Padding { top: MARGIN, right: MARGIN, bottom, left: MARGIN };
-        container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(padding).into()
+    let track_list_overlay = container(run_tracks_overlay(app)).align_right(Fill).center_y(Fill).padding(iced::Padding {
+        top: TAB_BAR_HEIGHT,
+        bottom: PLAYER_BAR_HEIGHT,
+        left: 0.0,
+        right: 10.0,
     });
-    stack![flow, overlay].into()
+
+    stack![flow, track_list_overlay].into()
 }
 
 /// The current album run's track list, overlaid in translucent text with the playing track
