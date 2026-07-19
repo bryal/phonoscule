@@ -34,9 +34,11 @@ pub enum Msg {
     SearchChanged(String),
     /// Clear every library filter (the bar's ✕ button), showing the whole library again.
     ClearFilters,
-    /// Play all albums matching the current filter, in their displayed order, replacing the queue.
+    /// Play all albums matching the current filter, in their displayed order, replacing the
+    /// queue (the filter bar's ▶ button, or Ctrl+Enter in the library).
     PlayAll,
-    /// Append all albums matching the current filter, in their displayed order, to the queue.
+    /// Append all albums matching the current filter, in their displayed order, to the queue
+    /// (the filter bar's ＋ button, or Alt+Enter in the library).
     QueueAll,
     /// Open the searchable filter picker for the given subject (a filter-bar chip), focusing its
     /// search field.
@@ -977,7 +979,8 @@ fn skip_interval(held: Duration) -> Duration {
 /// Alt+s/Alt+z shuffle the other albums/tracks in behind
 /// the playing one (Ctrl instead of Alt shuffles literally everything); Backspace resets playback to the
 /// queue's first track, paused. With a modal open, Escape dismisses it, the track menu gets its
-/// own bindings, and everything else is suppressed. In the player: Left/Right seek by
+/// own bindings, and everything else is suppressed. In the library: Ctrl+Enter plays and
+/// Alt+Enter queues everything the filter shows. In the player: Left/Right seek by
 /// [`SEEK_STEP`], Home
 /// restarts the track (or steps back near the start), End steps to the next track, PageUp restarts
 /// the album (or steps to the previous one), PageDown jumps to the next album.
@@ -988,7 +991,7 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
     // Alt+s/Alt+z shuffles, and the Alt+r repeat cycle. Letters and typing keys carry no bare
     // bindings, so plain typing stays free for a future type-to-search.
     let alt_ours = modifiers.alt()
-        && (matches!(key, Key::Named(Named::Space))
+        && (matches!(key, Key::Named(Named::Space) | Key::Named(Named::Enter))
             || matches!(&key, Key::Character(c) if matches!(c.as_str(), "s" | "z" | "r")));
     if (modifiers.alt() && !alt_ours) || modifiers.logo() {
         return None;
@@ -1081,7 +1084,13 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
     }
 
     match view {
-        View::Library => None,
+        // Play or queue every album the current filter lets through (the whole library when it
+        // is empty), in displayed order -- the keyboard forms of the filter bar's ▶/＋ buttons.
+        View::Library => match (key, modifiers.alt(), modifiers.control()) {
+            (Key::Named(Named::Enter), false, true) => one_shot(Msg::PlayAll),
+            (Key::Named(Named::Enter), true, false) => one_shot(Msg::QueueAll),
+            _ => None,
+        },
         // The player view binds no Ctrl chords of its own.
         View::Player if modifiers.control() => None,
         View::Player => match key {
