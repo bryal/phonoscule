@@ -116,7 +116,7 @@ fn volume_bar(app: &App) -> Option<Element<'_, Msg>> {
     let icon = text(FA_VOLUME).font(font_awesome_solid()).size(13);
     let bar = slider(0.0..=phonoscule_gui::volume::MAX_VOLUME, volume, Msg::SetVolume).step(0.01_f32).width(140);
     // Right-aligned in a fixed box, so the bar doesn't wiggle as the digit count changes.
-    let readout = container(text(format!("{:.0}%", volume * 100.0)).size(13)).width(38).align_right(Fill);
+    let readout = container(text(format!("{:.0}%", volume * 100.0)).size(13)).align_right(38);
     let bar = row![icon, bar, readout].spacing(8).align_y(Center);
     Some(mouse_area(bar).on_scroll(Msg::VolumeScrolled).into())
 }
