@@ -65,7 +65,7 @@ pub enum Msg {
     CycleRepeat,
     /// Shuffle the queue, in place and visibly, per the grouping (single tracks, or whole albums
     /// with their tracks kept together) and scope (everything behind the playing item, or
-    /// literally everything). `s`/`z` shuffle the other albums/tracks, Ctrl promotes to all; see
+    /// literally everything). Alt+s/Alt+z shuffle the other albums/tracks, Ctrl+s/Ctrl+z all; see
     /// `shuffle_queue`.
     Shuffle {
         grouping: Grouping,
@@ -617,7 +617,7 @@ pub enum Grouping {
 
 /// Whether a [`Scope::Others`] shuffle may promote to [`Scope::All`] when playback sits paused on
 /// the queue's first track, nothing begun -- a state that reads "shuffle me a fresh playlist",
-/// not "keep my current track first". The bare `s`/`z` keys promote; the actions menu's entries
+/// not "keep my current track first". The Alt+s/Alt+z keys promote; the actions menu's entries
 /// say exactly what they do, so they stay literal.
 #[derive(Debug, Clone, Copy)]
 pub enum Promotion {
@@ -974,8 +974,8 @@ fn skip_interval(held: Duration) -> Duration {
 ///
 /// Global: Space toggles play/pause (too central a function to belong to one view); Tab /
 /// Shift-Tab cycle the view tabs; `l`/`p` jump to Library/Player; Escape returns to
-/// the library; `r` cycles the repeat mode; `s`/`z` shuffle the other albums/tracks in behind the
-/// playing one (Ctrl promotes to shuffling literally everything); Backspace resets playback to the
+/// the library; `r` cycles the repeat mode; Alt+s/Alt+z shuffle the other albums/tracks in behind
+/// the playing one (Ctrl instead of Alt shuffles literally everything); Backspace resets playback to the
 /// queue's first track, paused. With a modal open, Escape dismisses it, the track menu gets its
 /// own bindings, and everything else is suppressed. In the player: Left/Right seek by
 /// [`SEEK_STEP`], Home
@@ -984,9 +984,12 @@ fn skip_interval(held: Duration) -> Duration {
 pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
-    // Alt/Logo chords belong to the window manager -- all but Alt+Space (see above).
-    let alt_space = modifiers.alt() && matches!(key, Key::Named(Named::Space));
-    if (modifiers.alt() && !alt_space) || modifiers.logo() {
+    // Alt/Logo chords belong to the window manager -- all but the few we bind: Alt+Space and the
+    // Alt+s/Alt+z shuffles. Letters carry no bare bindings, so plain typing stays free for a
+    // future type-to-search.
+    let alt_ours = modifiers.alt()
+        && (matches!(key, Key::Named(Named::Space)) || matches!(&key, Key::Character(c) if matches!(c.as_str(), "s" | "z")));
+    if (modifiers.alt() && !alt_ours) || modifiers.logo() {
         return None;
     }
     let one_shot = |msg| if repeat { None } else { Some(msg) };
@@ -1017,12 +1020,13 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
                 (Key::Named(Named::Escape), false) => one_shot(Msg::CloseModal),
                 (Key::Named(Named::Space), false) if modifiers.is_empty() => one_shot(Msg::Toggle),
                 (Key::Character(c), false) if c.as_str() == "r" => one_shot(Msg::CycleRepeat),
-                (Key::Character(c), ctrl) if c.as_str() == "s" => one_shot(Msg::Shuffle {
+                // Exactly one modifier, like the global bindings: Alt = others, Ctrl = all.
+                (Key::Character(c), ctrl) if modifiers.alt() != ctrl && c.as_str() == "s" => one_shot(Msg::Shuffle {
                     grouping: Grouping::Albums,
                     scope: if ctrl { Scope::All } else { Scope::Others },
                     promotion: Promotion::Auto,
                 }),
-                (Key::Character(c), ctrl) if c.as_str() == "z" => one_shot(Msg::Shuffle {
+                (Key::Character(c), ctrl) if modifiers.alt() != ctrl && c.as_str() == "z" => one_shot(Msg::Shuffle {
                     grouping: Grouping::Tracks,
                     scope: if ctrl { Scope::All } else { Scope::Others },
                     promotion: Promotion::Auto,
@@ -1057,14 +1061,15 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         (Key::Character(c), false, false) if c.as_str() == "l" => return one_shot(Msg::Show(View::Library)),
         (Key::Character(c), false, false) if c.as_str() == "p" => return one_shot(Msg::Show(View::Player)),
         (Key::Character(c), false, false) if c.as_str() == "r" => return one_shot(Msg::CycleRepeat),
-        (Key::Character(c), false, ctrl) if c.as_str() == "s" => {
+        // Exactly one modifier: Alt shuffles the others, Ctrl shuffles all -- Ctrl+Alt is nothing.
+        (Key::Character(c), false, ctrl) if modifiers.alt() != ctrl && c.as_str() == "s" => {
             return one_shot(Msg::Shuffle {
                 grouping: Grouping::Albums,
                 scope: if ctrl { Scope::All } else { Scope::Others },
                 promotion: Promotion::Auto,
             });
         }
-        (Key::Character(c), false, ctrl) if c.as_str() == "z" => {
+        (Key::Character(c), false, ctrl) if modifiers.alt() != ctrl && c.as_str() == "z" => {
             return one_shot(Msg::Shuffle {
                 grouping: Grouping::Tracks,
                 scope: if ctrl { Scope::All } else { Scope::Others },

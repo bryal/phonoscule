@@ -428,7 +428,7 @@ fn actions_modal(app: &App) -> Element<'_, Msg> {
             .on_press(msg)
     };
     let list = column![
-        entry("Shuffle other albums", "s", Msg::Shuffle {
+        entry("Shuffle other albums", "alt+s", Msg::Shuffle {
             grouping: Grouping::Albums,
             scope: Scope::Others,
             promotion: Promotion::Literal
@@ -438,7 +438,7 @@ fn actions_modal(app: &App) -> Element<'_, Msg> {
             scope: Scope::All,
             promotion: Promotion::Literal
         }),
-        entry("Shuffle other tracks", "z", Msg::Shuffle {
+        entry("Shuffle other tracks", "alt+z", Msg::Shuffle {
             grouping: Grouping::Tracks,
             scope: Scope::Others,
             promotion: Promotion::Literal
