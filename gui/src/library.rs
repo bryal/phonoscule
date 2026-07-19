@@ -290,6 +290,8 @@ struct CacheEntry {
     title: String,
     artist: String,
     album: String,
+    /// Empty when the file carries no ALBUMARTIST tag.
+    album_artist: String,
     /// Empty when the file carries no genre tag.
     genre: String,
 }
@@ -300,7 +302,7 @@ struct Cache {
     files: HashMap<PathBuf, CacheEntry>,
 }
 
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 
 /// A stable hash-based identity for albums and covers.
 fn stable_id(parts: impl Hash) -> u64 {
@@ -504,6 +506,7 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
                         "" => parent_name(&file.path),
                         a => a.to_string(),
                     },
+                    album_artist: tags.album_artist().to_string(),
                     genre: tags.genre().to_string(),
                 }
             }
@@ -512,7 +515,12 @@ async fn albums_in_dir(job: &DirJob, cache: &Cache) -> (Vec<Album>, Vec<(PathBuf
             albums.push(Album {
                 id: stable_id((&job.dir, &entry.album)),
                 title: entry.album.clone(),
-                artist: entry.artist.clone(),
+                // The album's byline: ALBUMARTIST when tagged, else the first track's artist --
+                // on collaboration albums the latter is some track's "X feat. Y" credit.
+                artist: match entry.album_artist.as_str() {
+                    "" => entry.artist.clone(),
+                    a => a.to_string(),
+                },
                 genre: entry.genre.clone(),
                 cover_id,
                 cover: None,
@@ -539,14 +547,20 @@ fn extension(path: &Path) -> Option<String> {
     Some(path.extension()?.to_string_lossy().to_lowercase())
 }
 
-async fn read_tags(path: &Path) -> Option<StaticMetadata> {
+/// [`StaticMetadata`] packs its fields into one shared buffer, truncating overflow at a point
+/// that depends on the *other* fields' lengths -- so an overlong album name would truncate
+/// differently per track (different artists) and split one album into several. Big enough that
+/// real-world tags never overflow.
+type ScanMetadata = StaticMetadata<2048>;
+
+async fn read_tags(path: &Path) -> Option<ScanMetadata> {
     let mut f = Skippable(FromFutures::new(BufReader::new(File::open(path).await.ok()?)));
     let mut magic = [0u8; 4];
     f.read_exact(&mut magic).await.ok()?;
     f.seek(SeekFrom::Start(0)).await.ok()?;
     match &magic {
-        b"RIFF" => Some(Wav::<StaticMetadata, _>::parse(f).await?.metadata),
-        b"OggS" => Some(opus::Headers::<StaticMetadata>::parse(&mut f).await?.metadata),
+        b"RIFF" => Some(Wav::<ScanMetadata, _>::parse(f).await?.metadata),
+        b"OggS" => Some(opus::Headers::<ScanMetadata>::parse(&mut f).await?.metadata),
         _ => None,
     }
 }

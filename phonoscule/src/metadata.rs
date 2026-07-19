@@ -6,14 +6,17 @@ pub trait Metadata: Default {
     fn title(&self) -> &str;
     fn album(&self) -> &str;
     fn artist(&self) -> &str;
+    fn album_artist(&self) -> &str;
     fn genre(&self) -> &str;
     async fn read_title<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
     async fn read_album<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
     async fn read_artist<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
+    async fn read_album_artist<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
     async fn read_genre<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error>;
     fn set_title(&mut self, inp: &str);
     fn set_album(&mut self, inp: &str);
     fn set_artist(&mut self, inp: &str);
+    fn set_album_artist(&mut self, inp: &str);
     fn set_genre(&mut self, inp: &str);
 }
 
@@ -23,12 +26,13 @@ pub struct StaticMetadata<const BUF_SIZE: usize = 256> {
     buf: [u8; BUF_SIZE],
 }
 
-const STATIC_METADATA_N_FIELDS: usize = 4;
+const STATIC_METADATA_N_FIELDS: usize = 5;
 impl<const BUF_SIZE: usize> StaticMetadata<BUF_SIZE> {
     const TITLE: usize = 0;
     const ARTIST: usize = 1;
     const ALBUM: usize = 2;
     const GENRE: usize = 3;
+    const ALBUM_ARTIST: usize = 4;
 
     async fn read_field<R: Read>(&mut self, field: usize, size: usize, inp: &mut R) -> Result<usize, R::Error> {
         let mut field_buf = [0u8; BUF_SIZE];
@@ -110,6 +114,9 @@ impl<const BUF_SIZE: usize> Metadata for StaticMetadata<BUF_SIZE> {
     fn artist(&self) -> &str {
         self.field_str(Self::ARTIST)
     }
+    fn album_artist(&self) -> &str {
+        self.field_str(Self::ALBUM_ARTIST)
+    }
     fn genre(&self) -> &str {
         self.field_str(Self::GENRE)
     }
@@ -122,6 +129,9 @@ impl<const BUF_SIZE: usize> Metadata for StaticMetadata<BUF_SIZE> {
     async fn read_artist<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error> {
         self.read_field(Self::ARTIST, size, inp).await
     }
+    async fn read_album_artist<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error> {
+        self.read_field(Self::ALBUM_ARTIST, size, inp).await
+    }
     async fn read_genre<R: Read>(&mut self, size: usize, inp: &mut R) -> Result<usize, R::Error> {
         self.read_field(Self::GENRE, size, inp).await
     }
@@ -133,6 +143,9 @@ impl<const BUF_SIZE: usize> Metadata for StaticMetadata<BUF_SIZE> {
     }
     fn set_artist(&mut self, inp: &str) {
         self.set_field(Self::ARTIST, inp)
+    }
+    fn set_album_artist(&mut self, inp: &str) {
+        self.set_field(Self::ALBUM_ARTIST, inp)
     }
     fn set_genre(&mut self, inp: &str) {
         self.set_field(Self::GENRE, inp)
@@ -161,6 +174,7 @@ impl<const BUF_SIZE: usize> std::fmt::Debug for StaticMetadata<BUF_SIZE> {
             .field("title", &self.title())
             .field("artist", &self.artist())
             .field("album", &self.album())
+            .field("album_artist", &self.album_artist())
             .field("genre", &self.genre())
             .finish()
     }
@@ -263,5 +277,22 @@ mod test {
         assert_eq!(md.title(), "Foo!");
         assert_eq!(md.artist(), "");
         assert_eq!(md.album(), "");
+    }
+
+    /// The buffer is shared across fields, so an overlong album truncates at a point that depends
+    /// on its siblings' lengths -- two tracks of one album can then disagree on its name (and
+    /// split it in a consumer grouping by name) unless the buffer fits real-world tags whole.
+    #[test]
+    fn long_tags_survive_untruncated_at_scanner_buffer_size() {
+        let album = "Music to listen to~".repeat(15); // ~285 bytes, a real-world extreme
+        for artist in ["Band", "Band feat. A Very Long List of Guests & Friends"] {
+            let mut md = StaticMetadata::<2048>::default();
+            md.set_title("Track");
+            md.set_artist(artist);
+            md.set_album(&album);
+            md.set_album_artist("Band");
+            md.set_genre("Genre");
+            assert_eq!(md.album(), album, "artist {artist:?} must not eat into the album");
+        }
     }
 }
