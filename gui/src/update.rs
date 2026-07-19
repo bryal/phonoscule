@@ -80,8 +80,8 @@ pub enum Msg {
         scope: Scope,
         promotion: Promotion,
     },
-    /// Reset playback: jump to the first track of the queue, paused (Backspace).
-    ResetPlayback,
+    /// Rest playback at an edge of the queue, paused and ready to play (Ctrl+Home / Ctrl+End).
+    RestAt(QueueEdge),
     /// Clear the queue entirely (Ctrl+K, or the actions menu): playback stops, the player bar
     /// disappears, and the session restores queueless -- a fresh start.
     ClearQueue,
@@ -167,6 +167,13 @@ pub enum SeekDir {
 pub enum MenuDir {
     Up,
     Down,
+}
+
+/// The queue edge a [`Msg::RestAt`] rests playback on.
+#[derive(Debug, Clone, Copy)]
+pub enum QueueEdge {
+    First,
+    Last,
 }
 
 pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
@@ -385,13 +392,20 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             return save_player(app);
         }
         Msg::Shuffle { grouping, scope, promotion } => return shuffle_queue(app, grouping, scope, promotion),
-        Msg::ResetPlayback => {
+        Msg::RestAt(edge) => {
             if !app.queue.is_empty() {
-                app.current = 0;
+                app.current = match edge {
+                    QueueEdge::First => 0,
+                    QueueEdge::Last => app.queue.len() - 1,
+                };
                 app.anim_pos = flow_target(app);
-                // Replacing the queue with itself reopens the first track paused: ready to play,
-                // its length on the seek bar -- the same way a restored session comes up.
-                app.send(player::Cmd::SetQueue { tracks: entries(&app.queue), start: 0, play: player::PlayState::Paused });
+                // Replacing the queue with itself reopens the track paused: ready to play, its
+                // length on the seek bar -- the same way a restored session comes up.
+                app.send(player::Cmd::SetQueue {
+                    tracks: entries(&app.queue),
+                    start: app.current,
+                    play: player::PlayState::Paused,
+                });
                 return save_player(app);
             }
         }
@@ -660,7 +674,7 @@ pub enum Scope {
 /// other queue change, so a restart resumes the same order), and the cover flow snaps to the
 /// cursor's new position rather than sweeping. See [`Scope`] for what moves and what keeps
 /// playing, and [`Promotion`] for when a shuffle of the others becomes a shuffle of everything
-/// (it's the state Backspace resets to, making Ctrl+s and Backspace-then-s equivalent).
+/// (it's the state Ctrl+Home resets to, making Ctrl+s and Ctrl+Home-then-Alt+s equivalent).
 fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope, promotion: Promotion) -> Task<Msg> {
     if app.queue.is_empty() {
         return Task::none();
@@ -1001,8 +1015,8 @@ fn skip_interval(held: Duration) -> Duration {
 /// Global: Space toggles play/pause (too central a function to belong to one view); Tab /
 /// Shift-Tab cycle the view tabs; Escape returns to the library; Alt+r cycles the repeat mode;
 /// Alt+s/Alt+z shuffle the other albums/tracks in behind
-/// the playing one (Ctrl instead of Alt shuffles literally everything); Backspace resets playback to the
-/// queue's first track, paused. With a modal open, Escape dismisses it, the track menu gets its
+/// the playing one (Ctrl instead of Alt shuffles literally everything); Ctrl+Home / Ctrl+End rest
+/// playback at the queue's first / last track, paused. With a modal open, Escape dismisses it, the track menu gets its
 /// own bindings, and everything else is suppressed. Ctrl+F brings up the library with the album
 /// search focused. In the library: Ctrl+Enter plays and
 /// Alt+Enter queues everything the filter shows, and typing any plain character starts the album
@@ -1104,7 +1118,8 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
                 promotion: Promotion::Auto,
             });
         }
-        (Key::Named(Named::Backspace), false, false) => return one_shot(Msg::ResetPlayback),
+        (Key::Named(Named::Home), false, true) => return one_shot(Msg::RestAt(QueueEdge::First)),
+        (Key::Named(Named::End), false, true) => return one_shot(Msg::RestAt(QueueEdge::Last)),
         (Key::Character(c), false, true) if c.as_str() == "k" => return one_shot(Msg::ClearQueue),
         (Key::Character(c), false, true) if c.as_str() == "f" => return one_shot(Msg::FocusSearch),
         _ => {}
