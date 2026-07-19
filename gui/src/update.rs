@@ -38,7 +38,9 @@ pub enum Msg {
     /// and focus the field, so just starting to type searches (the rest of the keys land in the
     /// field directly, once focused).
     SearchTyped(String),
-    /// Clear every library filter (the bar's ✕ button), showing the whole library again.
+    /// Clear every library filter (the bar's ✕ button, or Ctrl+W), showing the whole library
+    /// again. Also unfocuses any filter input and dismisses an open filter picker, so it works
+    /// as a full "out of the filtering business" gesture mid-typing.
     ClearFilters,
     /// Play all albums matching the current filter, in their displayed order, replacing the
     /// queue (the filter bar's ▶ button, or Ctrl+Enter in the library).
@@ -310,9 +312,17 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             return focus_search();
         }
         Msg::ClearFilters => {
+            // Clearing the filters dismisses the picker choosing one, when open (Ctrl+W).
+            if matches!(app.modal, Some(Modal::Picker(_))) {
+                app.modal = None;
+            }
             app.filter = Filter::default();
             app.selected = None;
             refresh_filter(app);
+            // Unfocus whatever filter input held focus: the next keystrokes are bindings (or a
+            // fresh type-to-search), not leftovers into a cleared field.
+            use iced::advanced::widget;
+            return widget::operate(widget::operation::focusable::unfocus());
         }
         Msg::PlayAll => {
             let items: Vec<QueueItem> = app.filtered.iter().flat_map(|&ix| queue_items(&app.albums[ix])).collect();
@@ -1018,7 +1028,7 @@ fn skip_interval(held: Duration) -> Duration {
 /// the playing one (Ctrl instead of Alt shuffles literally everything); Ctrl+Home / Ctrl+End rest
 /// playback at the queue's first / last track, paused. With a modal open, Escape dismisses it, the track menu gets its
 /// own bindings, and everything else is suppressed. Ctrl+F brings up the library with the album
-/// search focused. In the library: Ctrl+Enter plays and
+/// search focused; Ctrl+W clears every filter (unfocusing its inputs). In the library: Ctrl+Enter plays and
 /// Alt+Enter queues everything the filter shows, and typing any plain character starts the album
 /// search. In the player: Left/Right seek by
 /// [`SEEK_STEP`], Home
@@ -1088,6 +1098,10 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
                 Key::Named(Named::ArrowUp) if modifiers.is_empty() => Some(Msg::PickerMove(MenuDir::Up)),
                 Key::Named(Named::ArrowDown) if modifiers.is_empty() => Some(Msg::PickerMove(MenuDir::Down)),
                 Key::Named(Named::Enter) if modifiers.is_empty() => one_shot(Msg::PickerPick),
+                // Clearing every filter includes the one being picked: the handler dismisses us.
+                Key::Character(c) if modifiers.control() && !modifiers.alt() && c.as_str() == "w" => {
+                    one_shot(Msg::ClearFilters)
+                }
                 _ => None,
             };
         }
@@ -1122,6 +1136,7 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         (Key::Named(Named::End), false, true) => return one_shot(Msg::RestAt(QueueEdge::Last)),
         (Key::Character(c), false, true) if c.as_str() == "k" => return one_shot(Msg::ClearQueue),
         (Key::Character(c), false, true) if c.as_str() == "f" => return one_shot(Msg::FocusSearch),
+        (Key::Character(c), false, true) if c.as_str() == "w" => return one_shot(Msg::ClearFilters),
         _ => {}
     }
 
