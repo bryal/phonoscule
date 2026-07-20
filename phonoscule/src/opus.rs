@@ -563,6 +563,8 @@ fn parse_opus_tags(on_tag: &mut impl FnMut(Tag<'_>), data: &[u8]) {
                 on_tag(Tag::TrackNumber(value))
             } else if key.eq_ignore_ascii_case("DISCNUMBER") || key.eq_ignore_ascii_case("DISC") {
                 on_tag(Tag::DiscNumber(value))
+            } else if key.eq_ignore_ascii_case("DATE") || key.eq_ignore_ascii_case("YEAR") {
+                on_tag(Tag::Date(value))
             } else {
                 log::trace!("ignored comment {key}");
             }

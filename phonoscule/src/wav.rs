@@ -188,13 +188,14 @@ where
         let chunk_size = u32::from_le_bytes(buf) as usize;
         log::trace!("INFO subchunk id: {}, size: {}", chunk_id.as_str(), chunk_size);
         let nread = match chunk_id.as_str() {
-            id @ ("INAM" | "IPRD" | "IART" | "IGNR" | "ITRK") => {
+            id @ ("INAM" | "IPRD" | "IART" | "IGNR" | "ITRK" | "ICRD") => {
                 let (text, consumed) = read_text(&mut scratch, chunk_size, inp).await.ok()?;
                 on_tag(match id {
                     "INAM" => Tag::Title(text),
                     "IPRD" => Tag::Album(text),
                     "IART" => Tag::Artist(text),
                     "ITRK" => Tag::TrackNumber(text),
+                    "ICRD" => Tag::Date(text),
                     _ => Tag::Genre(text),
                 });
                 consumed

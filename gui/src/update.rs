@@ -208,10 +208,11 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             match app.albums.iter().position(|a| a.id == album.id) {
                 Some(ix) => {
                     // `cover`/`accent` are runtime-only: scan events never carry them.
-                    let Album { id: _, title, artist, genre, cover_id, cover: _, accent: _, tracks } = &app.albums[ix];
+                    let Album { id: _, title, artist, genre, year, cover_id, cover: _, accent: _, tracks } = &app.albums[ix];
                     if *title == album.title
                         && *artist == album.artist
                         && *genre == album.genre
+                        && *year == album.year
                         && *cover_id == album.cover_id
                         && *tracks == album.tracks
                     {

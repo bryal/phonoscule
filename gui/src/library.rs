@@ -45,6 +45,9 @@ pub struct Album {
     pub artist: String,
     /// Empty when no track of the album carries a genre tag.
     pub genre: String,
+    /// The album's release year: the most recent of its tracks' dates. `None` when no track
+    /// carries a parseable date.
+    pub year: Option<u32>,
     /// The id the cover art for this album has (or would have, when not loaded yet).
     pub cover_id: Option<u64>,
     pub cover: Option<CoverArt>,
@@ -138,7 +141,7 @@ pub fn default_index_file() -> Option<PathBuf> {
 /// Bumped when [`SavedAlbum`] changes shape or meaning (like the id derivation); an old or
 /// unreadable index just means the grid stays empty until the scan streams the albums in, like
 /// before the index existed.
-const INDEX_VERSION: u32 = 3;
+const INDEX_VERSION: u32 = 4;
 
 /// The persisted album index: the assembled album list minus the cover pixels, so a launch can
 /// show the whole library instantly instead of waiting for the directory walk. The boot scan then
@@ -157,6 +160,7 @@ struct SavedAlbum {
     title: String,
     artist: String,
     genre: String,
+    year: Option<u32>,
     cover_id: Option<u64>,
     /// The cover's accent color as linear RGB components.
     accent: Option<[f32; 3]>,
@@ -191,6 +195,7 @@ pub async fn load_index(path: Option<PathBuf>) -> Vec<Album> {
             title: a.title,
             artist: a.artist,
             genre: a.genre,
+            year: a.year,
             cover_id: a.cover_id,
             cover: None,
             accent: a.accent.map(|[r, g, b]| iced::Color { r, g, b, a: 1.0 }),
@@ -211,6 +216,7 @@ pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output
                 title: a.title.clone(),
                 artist: a.artist.clone(),
                 genre: a.genre.clone(),
+                year: a.year,
                 cover_id: a.cover_id,
                 accent: a.accent.map(|c| [c.r, c.g, c.b]),
                 tracks: a.tracks.clone(),
@@ -310,6 +316,8 @@ struct CacheEntry {
     track: Option<u32>,
     /// The disc the track belongs to on a multi-disc album, when tagged.
     disc: Option<u32>,
+    /// The track's release year, when its date tag carries one (parsed leniently -- see [`year`]).
+    year: Option<u32>,
 }
 
 /// The identity a track's album groups by -- and the album's displayed byline: `(artist, album
@@ -334,7 +342,7 @@ struct Cache {
     files: HashMap<PathBuf, CacheEntry>,
 }
 
-const CACHE_VERSION: u32 = 5;
+const CACHE_VERSION: u32 = 6;
 
 /// A stable hash-based identity for albums and covers.
 fn stable_id(parts: impl Hash) -> u64 {
@@ -364,6 +372,8 @@ struct PendingTrack {
     track: Option<u32>,
     /// The track's own genre tag (empty when untagged); the album shows its first one.
     genre: String,
+    /// The track's release year, when tagged; the album takes the most recent across its tracks.
+    year: Option<u32>,
     info: TrackInfo,
 }
 
@@ -465,6 +475,7 @@ impl Assembler {
                 disc: entry.disc,
                 track: entry.track,
                 genre: entry.genre.clone(),
+                year: entry.year,
                 info: TrackInfo { path: path.clone(), title: entry.title.clone() },
             });
             *pending.contributions.entry(dir.to_path_buf()).or_default() += 1;
@@ -505,6 +516,9 @@ impl Assembler {
         tracks.sort_unstable_by(|a, b| a.order().cmp(&b.order()));
         // Genre is per-album: the first track (in album order) carrying one names the album's.
         let genre = tracks.iter().map(|t| &t.genre).find(|g| !g.is_empty()).cloned().unwrap_or_default();
+        // The album's year is the most recent of its tracks' -- a remaster or bonus track dates
+        // the edition (and it keeps reissues apart from the originals under a year sort).
+        let year = tracks.iter().filter_map(|t| t.year).max();
         let cover = choose_cover(&pending.contributions, &self.covers);
         let cover_id = cover.map(|(path, mtime)| stable_id((path, mtime)));
         let queue = match (cover, cover_id) {
@@ -518,6 +532,7 @@ impl Assembler {
             title: pending.title.clone(),
             artist: pending.artist.clone(),
             genre,
+            year,
             cover_id,
             cover: None,
             accent: None,
@@ -760,6 +775,7 @@ async fn read_dir_tags(job: &DirJob, cache: &Cache) -> (Vec<(PathBuf, CacheEntry
                     genre: tags.genre,
                     track: tags.track,
                     disc: tags.disc,
+                    year: tags.year,
                 }
             }
         };
@@ -783,6 +799,7 @@ struct FileTags {
     genre: String,
     track: Option<u32>,
     disc: Option<u32>,
+    year: Option<u32>,
 }
 
 impl FileTags {
@@ -795,6 +812,7 @@ impl FileTags {
             Tag::Genre(s) => s.clone_into(&mut self.genre),
             Tag::TrackNumber(s) => self.track = number(s),
             Tag::DiscNumber(s) => self.disc = number(s),
+            Tag::Date(s) => self.year = year(s),
         }
     }
 }
@@ -804,6 +822,12 @@ impl FileTags {
 fn number(s: &str) -> Option<u32> {
     let digits = &s[..s.bytes().take_while(u8::is_ascii_digit).count()];
     digits.parse().ok()
+}
+
+/// Parses a release year from a date tag: the first run of exactly four digits, so a bare "2019"
+/// and an ISO "2019-05-03" both read as 2019. A format with no four-digit run yields no year.
+fn year(s: &str) -> Option<u32> {
+    s.split(|c: char| !c.is_ascii_digit()).find(|run| run.len() == 4).and_then(|run| run.parse().ok())
 }
 
 async fn read_tags(path: &Path) -> Option<FileTags> {
@@ -967,6 +991,7 @@ mod test {
             title: "One".into(),
             artist: "Artist".into(),
             genre: "Genre".into(),
+            year: Some(2019),
             cover_id: Some(9),
             cover: None,
             accent: Some(iced::Color { r: 0.25, g: 0.5, b: 0.75, a: 1.0 }),
@@ -979,6 +1004,7 @@ mod test {
             assert_eq!(loaded[0].id, album.id);
             assert_eq!(loaded[0].title, album.title);
             assert_eq!(loaded[0].genre, album.genre);
+            assert_eq!(loaded[0].year, album.year, "the release year round-trips");
             assert_eq!(loaded[0].cover_id, album.cover_id);
             assert_eq!(loaded[0].tracks, album.tracks);
             assert_eq!(loaded[0].accent, album.accent, "the accent color round-trips");
@@ -1291,6 +1317,34 @@ mod test {
         assert_eq!(albums[0].artist, "Artist");
         let titles: Vec<&str> = albums[0].tracks.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["Another", "Loosie"], "no numbers: titles order the pool");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The album's year is the most recent of its tracks' dates, parsed leniently from bare years
+    /// and ISO dates alike; an album with no dated track has none.
+    #[test]
+    fn album_year_is_the_most_recent_track() {
+        let root = std::env::temp_dir().join(format!("phonoscule-year-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // One album, three tracks: a bare year, an ISO date a year later, and an undated track.
+        let dated = [("1.opus", "2018"), ("2.opus", "2020-03-01")];
+        for (file, date) in dated {
+            let comments = [("TITLE", file), ("ARTIST", "Artist"), ("ALBUM", "Dated"), ("DATE", date)];
+            std::fs::write(root.join(file), opus_bytes(&comments)).unwrap();
+        }
+        let undated = [("TITLE", "3.opus"), ("ARTIST", "Artist"), ("ALBUM", "Dated")];
+        std::fs::write(root.join("3.opus"), opus_bytes(&undated)).unwrap();
+        // A second album with no dates at all.
+        std::fs::write(root.join("u.wav"), wav_bytes("Solo", "Artist", "Undated", None)).unwrap();
+
+        let mut albums = Vec::new();
+        scan_and_apply(&mut albums, plain_options(&root));
+        let dated = albums.iter().find(|a| a.title == "Dated").unwrap();
+        assert_eq!(dated.year, Some(2020), "the most recent track's year wins");
+        let undated = albums.iter().find(|a| a.title == "Undated").unwrap();
+        assert_eq!(undated.year, None, "no dated track, no album year");
 
         let _ = std::fs::remove_dir_all(&root);
     }

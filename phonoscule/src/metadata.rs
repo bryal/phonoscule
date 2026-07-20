@@ -26,6 +26,9 @@ pub enum Tag<'s> {
     /// The disc the track belongs to on a multi-disc album, as the raw tag text (see
     /// [`TrackNumber`](Tag::TrackNumber) about lenient parsing).
     DiscNumber(&'s str),
+    /// The recording/release date, as the raw tag text: often a bare year, but ISO dates like
+    /// "2019-05-03" are common, so consumers wanting a year should parse leniently.
+    Date(&'s str),
 }
 
 /// Reads a `size`-byte text field from `inp` into `scratch`, decoding UTF-8 (invalid sequences
