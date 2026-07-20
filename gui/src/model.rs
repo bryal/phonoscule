@@ -175,8 +175,8 @@ pub struct App {
     /// When the current held Home/End press began, so its auto-repeat can accelerate the longer
     /// it's held (see `skip_interval`). Reset on each fresh press.
     pub hold_start: Option<Instant>,
-    /// Fractional wheel notches accumulated over the player's track list, so trackpad pixel
-    /// deltas add up to whole selection steps (see `Msg::TrackListScrolled`).
+    /// Fractional vertical wheel notches accumulated over the player body, so trackpad pixel
+    /// deltas add up to whole track-selection steps (see `Msg::PlayerScrolled`).
     pub list_scroll: f32,
     /// Like `list_scroll`, for the horizontal wheel axis: whole notches walk the queue's albums
     /// (see `Msg::PlayerScrolled`).

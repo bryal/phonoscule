@@ -139,14 +139,11 @@ pub enum Msg {
     PrevAlbum,
     NextAlbum,
     CoverClicked(usize),
-    /// The mouse wheel turned over the player's track list overlay: the vertical component steps
-    /// the playing-track selection through the queue -- up towards its start, down towards its
-    /// end -- and the horizontal component walks whole albums, like PageUp/PageDown. Carries the
-    /// raw delta; notch accounting lives in the handler.
-    TrackListScrolled(ScrollDelta),
-    /// The mouse wheel turned over the player view outside the track list: only the horizontal
-    /// component acts, walking whole albums like PageUp/PageDown (scroll left restarts or steps
-    /// back, scroll right jumps to the next album).
+    /// The mouse wheel turned over the player body (anywhere but the bars): the vertical component
+    /// steps the playing-track selection through the queue -- up towards its start, down towards
+    /// its end -- and the horizontal component walks whole albums, like PageUp/PageDown (scroll
+    /// left restarts or steps back, scroll right jumps to the next album). Carries the raw delta;
+    /// notch accounting lives in the handler.
     PlayerScrolled(ScrollDelta),
     /// Set the volume to an absolute factor of 100% (a click or drag on the volume bar).
     SetVolume(f32),
@@ -593,7 +590,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.send(player::Cmd::JumpTo(run.start));
             }
         }
-        Msg::TrackListScrolled(delta) => {
+        Msg::PlayerScrolled(delta) => {
             let (_, vertical) = scroll_notches(delta);
             app.list_scroll += vertical;
             let steps = app.list_scroll.trunc();
@@ -609,7 +606,6 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
             scroll_albums(app, delta);
         }
-        Msg::PlayerScrolled(delta) => scroll_albums(app, delta),
         Msg::SetVolume(volume) => set_volume(app, volume),
         Msg::BumpVolume(delta) => {
             if let Some(volume) = app.volume {

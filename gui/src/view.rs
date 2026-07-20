@@ -616,22 +616,21 @@ fn player_view(app: &App) -> Element<'_, Msg> {
     let flow = cover_flow(covers, app.anim_pos, glow.color, glow.center, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
 
     // The track list floats over the flow, windowed to the space between the bars. Clicks pass
-    // through it (bare text, no buttons) so the covers behind stay clickable; the wheel, over the
-    // list, steps the playing-track selection instead of scrolling a view (see
-    // `Msg::TrackListScrolled`) -- the window follows the selection.
+    // through it (bare text, no buttons) so the covers behind stay clickable; the wheel is handled
+    // by the view-wide mouse_area below, not here -- the track window follows the selection it
+    // steps.
     let track_list_overlay = responsive(move |size| {
         let rows = ((size.height - TAB_BAR_HEIGHT - PLAYER_BAR_HEIGHT) / TRACK_ROW_HEIGHT).max(1.0) as usize;
-        let list = mouse_area(run_tracks_overlay(app, rows)).on_scroll(Msg::TrackListScrolled);
-        container(list)
+        container(run_tracks_overlay(app, rows))
             .align_right(Fill)
             .center_y(Fill)
             .padding(iced::Padding { top: TAB_BAR_HEIGHT, bottom: PLAYER_BAR_HEIGHT, left: 0.0, right: 10.0 })
             .into()
     });
 
-    // The view-wide wheel: its horizontal axis walks albums like PageUp/PageDown (see
-    // `Msg::PlayerScrolled`). Over the track list the inner mouse_area captures instead, and its
-    // handler routes the horizontal axis the same way; clicks pass through to the flow either way.
+    // The wheel over the whole player body (the bars have their own): its vertical axis steps the
+    // playing track through the queue, its horizontal axis walks whole albums (see
+    // `Msg::PlayerScrolled`). Clicks fall through to the cover flow underneath.
     mouse_area(stack![flow, track_list_overlay]).on_scroll(Msg::PlayerScrolled).into()
 }
 
