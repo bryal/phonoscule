@@ -109,18 +109,22 @@ impl<Message> CoverFlow<Message> {
         let tab_edge = 1.0 - 2.0 * self.obscured_top / height;
         let player_edge = -1.0 + 2.0 * self.obscured_bottom / height;
         let strip = (tab_edge - player_edge).max(0.0);
-        // Shrink the whole scene about the window center so the cover fits with a little air above and below; a window tall
-        // enough to hold it keeps the natural size (scale == 1). Reflections and side covers scale with it.
+        // Size the cover to fill the strip up to `MAX_GROW` of its natural size, leaving a little air above and below, and
+        // shrink it below natural only when even that won't fit. Growing it a little keeps a fixed-height cover from reading as
+        // too small on a short, wide window; reflections and side covers scale with it.
         const MARGIN: f32 = 0.05; // fraction of the strip kept clear above and below the cover
+        const MAX_GROW: f32 = 1.1; // largest the cover may grow past its natural (roomy-window) size
         let natural = (cover_top - cover_bottom).max(f32::EPSILON);
-        let scale = (strip * (1.0 - 2.0 * MARGIN) / natural).min(1.0);
+        let scale = (strip * (1.0 - 2.0 * MARGIN) / natural).min(MAX_GROW);
         let (scaled_top, scaled_bottom) = (scale * cover_top, scale * cover_bottom);
         let scaled_mid = (scaled_top + scaled_bottom) / 2.0;
-        // Center the scaled cover in the strip, then clamp so it stays clear of both bars regardless of the cover's own
-        // asymmetry. The shift is a uniform NDC offset at every depth (the clip-space translation adds `shift * w` before the
-        // perspective divide, see the free `view_proj`); the reflections, scaled and shifted with it, run on behind the bar.
+        // Center the scaled cover a little above the strip's midpoint -- the empty margin above it is worth less than the
+        // reflection below -- then clamp so it stays clear of both bars regardless of the cover's own asymmetry. The shift is a
+        // uniform NDC offset at every depth (the clip-space translation adds `shift * w` before the perspective divide, see the
+        // free `view_proj`); the reflections, scaled and shifted with it, run on behind the bar.
+        const CENTER: f32 = 0.45; // the cover's center sits this fraction of the strip below the tab bar (0.5 is the midpoint)
         let margin = MARGIN * strip;
-        let want = (tab_edge + player_edge) / 2.0 - scaled_mid;
+        let want = tab_edge - CENTER * strip - scaled_mid;
         let (lo, hi) = ((player_edge + margin) - scaled_bottom, (tab_edge - margin) - scaled_top);
         let shift = if lo <= hi { want.clamp(lo, hi) } else { (lo + hi) / 2.0 };
         Mat4::from_translation(Vec3::new(0.0, shift, 0.0)) * Mat4::from_scale(Vec3::new(scale, scale, 1.0)) * base
