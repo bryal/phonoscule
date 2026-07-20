@@ -1,95 +1,53 @@
 # Phonoscule
 
-Phonoscule is a music player built around your album art: a graphical application
-([`phonoscule-gui`](gui)), a terminal player ([`phonoscule-cli`](cli)), and the
-[`phonoscule`](phonoscule) library they share.
+Phonoscule is a framework for building music players: a Rust library of the reusable
+backend pieces — reading tags, decoding audio, seeking, sample-format conversion, and a
+small source/sink plumbing layer to connect a decoder to an output. It needs only an
+async ([embedded-io](https://crates.io/crates/embedded-io-async)) reader, is
+`no_std`-friendly and light on allocation, and is built to run anywhere from a desktop
+application down to a microcontroller.
 
-The graphical app is the centrepiece — an album-cover-centric library browser with a
-Cover Flow-style now-playing view, meant as a lightweight, native replacement for
-cover-grid MPD clients.
+It is also the name of the reference application built on that framework: **[Phonoscule
+GUI](gui)**, a graphical music player that arranges your library by its cover art. Most
+of what makes that app pleasant to use is a choice of the reference application, not of
+the framework itself, so its details live in [`gui/README.md`](gui/README.md).
 
-## The graphical player (`phonoscule-gui`)
+## The framework (`phonoscule`)
 
-- **Album-cover library.** A grid of cover art you browse by sight, grouped into albums
-  from the files' tags (album artist + album title) rather than the directory layout, so
-  a multi-disc album spread over folders is one album and two same-named albums by
-  different artists stay apart.
-- **Filtering, search, and sorting.** Genre and artist chips, fuzzy album search (just
-  start typing), and a configurable, persisted sort order.
-- **Cover Flow now-playing view.** The queue's covers on a reflective floor over a
-  backdrop that glows with the current cover's colour, with the album's track list
-  alongside.
-- **Playback.** A play queue with album runs, shuffle (by album or track), four repeat
-  modes, seeking, and per-application volume driven through the OS mixer.
-- **Desktop integration.** An MPRIS server (media keys and now-playing in your desktop),
-  and the session — queue, position, sort — restored across runs.
-- **Keyboard-driven.** Nearly everything is reachable from the keyboard (see
-  [Controls](#controls)).
+- **Tags.** Reads metadata as it parses — title, artist, album, album artist, genre,
+  track/disc number, and date — from WAV `LIST`/`INFO` chunks and Ogg Opus (Vorbis)
+  comments.
+- **Decoding.** WAV (8/16/24/32-bit integer and 32-bit float, mono or stereo) and Ogg
+  Opus, the latter via the sibling [opuscule](https://codeberg.org/jojo-laplace/opuscule)
+  decoder.
+- **Playback plumbing.** Sample-accurate seeking, sample-format conversion, and a small
+  `Source`/`Sink` layer for wiring a decoder to whatever plays it.
+- **Portable.** `no_std`-friendly and async; hand it an `embedded-io` reader and it runs,
+  desktop to microcontroller.
 
-## The terminal player (`phonoscule-cli`)
+FLAC and other formats are on the roadmap, not in this release.
 
-A minimal REPL-style player: pass audio files on the command line and control playback
-from the keyboard (play/pause, seek, next/previous). A thin wrapper over the library,
-useful as a reference and for quick playback.
+## The reference application (`phonoscule-gui`)
 
-## The library (`phonoscule`)
-
-`no_std`-friendly, async building blocks for a music player: metadata/tag reading, WAV
-and Ogg Opus decoding (Opus via the sibling [opuscule](https://codeberg.org/jojo-laplace/opuscule)
-crate), sample-accurate seeking, sample-format conversion, and a small source/sink
-plumbing layer. It only requires an async ([embedded-io](https://crates.io/crates/embedded-io-async))
-reader, so the same code runs from a desktop application down to a microcontroller.
-
-## Formats & platform
-
-- **Audio:** WAV (8/16/24/32-bit integer and 32-bit float, mono or stereo) and Ogg Opus.
-- **Cover art:** folder images (`cover.jpg`, `folder.png`, `front.*`, `albumart.*`).
-- **Output:** the players play through PulseAudio (and PipeWire, via pipewire-pulse) on
-  Linux; the library itself is platform-agnostic.
-
-Not in this release, but on the roadmap: FLAC and other formats, cover art embedded in
-the audio files, and audio output beyond Linux/PulseAudio.
-
-## Building & running
-
-The graphical player:
+A graphical, album-art-centric music player — a lightweight native alternative to
+cover-grid MPD clients. Browse a wall of covers, filter and search, and play into a Cover
+Flow-style now-playing view, with desktop media integration and keyboard-driven controls.
 
 ```sh
 cargo run --release -p phonoscule-gui
 ```
 
-The terminal player:
+It plays through PulseAudio (and PipeWire) on Linux. See [`gui/README.md`](gui/README.md)
+for its features, configuration, and controls.
+
+## A terminal example (`phonoscule-cli`)
+
+A small worked example of driving the framework — a terminal player that takes files on
+the command line, with a few keyboard controls. More an example than an application.
 
 ```sh
-cargo run --release -p phonoscule-cli -- track.opus another.wav
+cargo run --release -p phonoscule-cli -- track.opus
 ```
-
-The graphical player reads its music directory from `~/.config/phonoscule.toml` (or
-`$XDG_CONFIG_HOME/phonoscule.toml`):
-
-```toml
-music-dir = "~/Music"
-```
-
-Without a config file it defaults to `~/Music`. Relative paths are resolved against the
-config file's location; `~` and environment variables are expanded.
-
-## Controls
-
-The essentials of the graphical player:
-
-- **Space** — play / pause (from anywhere)
-- **Tab / Shift+Tab** — switch between the Library and Player views
-- In the Library: **type** to search albums, **Ctrl+F** to focus the search, **Ctrl+W**
-  to clear the filters; **Enter** opens an album's track list, **Ctrl+Enter** / **Alt+Enter**
-  play / queue everything currently shown
-- On a selected album: **Ctrl+Space** plays it, **Alt+Space** queues it
-- In the Player: **←/→** seek, **↑/↓** volume, **Home/End** previous/next track,
-  **PageUp/PageDown** previous/next album, **Ctrl+Home/End** jump to the queue's ends
-- **Alt+R** cycles the repeat mode; **Alt+S** / **Alt+Z** shuffle albums / tracks (hold
-  **Ctrl** to shuffle the whole queue); **Ctrl+K** clears the queue
-- The mouse wheel over the Player scrolls tracks (vertically) or albums (horizontally);
-  over the volume bar it sets the volume
 
 ## License
 
@@ -97,5 +55,5 @@ Released under the **Mozilla Public License 2.0** (see [`LICENSE`](LICENSE)).
 Copyright (c) 2026 Jojo <jo@jo.zone>.
 
 Opus decoding is provided by the sibling [opuscule](https://codeberg.org/jojo-laplace/opuscule)
-crate (also MPL 2.0), which is itself a derivative of the libopus reference decoder; its
-upstream BSD notices and Opus patent grants travel with that crate.
+crate (also MPL 2.0), itself a derivative of the libopus reference decoder; its upstream
+BSD notices and Opus patent grants travel with that crate.
