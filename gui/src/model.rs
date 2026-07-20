@@ -6,6 +6,7 @@ use iced::Task;
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::{media, player, playlist, volume, watcher};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -50,6 +51,8 @@ pub enum Modal {
     Actions,
     /// A searchable filter picker (see [`Picker`]), opened from the library's filter bar.
     Picker(Picker),
+    /// The sort-order picker (see [`SortMenu`]), opened from the filter bar's sort chip.
+    Sort(SortMenu),
 }
 
 impl Modal {
@@ -60,6 +63,7 @@ impl Modal {
             Modal::Tracks(_) => ModalKind::Tracks,
             Modal::Actions => ModalKind::Actions,
             Modal::Picker(_) => ModalKind::Picker,
+            Modal::Sort(_) => ModalKind::Sort,
         }
     }
 }
@@ -69,6 +73,7 @@ pub enum ModalKind {
     Tracks,
     Actions,
     Picker,
+    Sort,
 }
 
 /// What a [`Picker`] picks a filter value for.
@@ -94,6 +99,16 @@ pub struct Picker {
 /// scrollable (so keyboard navigation can snap it to the selection).
 pub const PICKER_INPUT_ID: &str = "picker-input";
 pub const PICKER_SCROLL_ID: &str = "picker-list";
+
+/// The open sort picker: the keyboard selection as an index into [`SortOrder::ALL`]. Unlike the
+/// filter picker it has no search field -- the option set is small and fixed.
+#[derive(Debug, Clone, Copy)]
+pub struct SortMenu {
+    pub selected: usize,
+}
+
+/// Widget id of the sort picker's scrollable, so keyboard navigation can snap it to the selection.
+pub const SORT_SCROLL_ID: &str = "sort-list";
 
 /// Widget id of the filter bar's album search field, so Ctrl+F and type-to-search can focus it.
 pub const SEARCH_INPUT_ID: &str = "album-search";
@@ -140,6 +155,9 @@ pub struct App {
     pub index_dirty: bool,
     /// The library filter: which albums the grid shows, of everything in `albums`.
     pub filter: Filter,
+    /// The order the grid shows albums in (the filter bar's sort chip). Not persisted -- it
+    /// resets to the default each launch.
+    pub sort: SortOrder,
     /// The filtered view of `albums` the grid displays: indices into it, in display order
     /// (alphabetical like `albums`; a search re-ranks by match quality). Derived state -- kept
     /// fresh by [`refresh_filter`] on every filter change and scan event. Grid messages carry
@@ -317,6 +335,7 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
             albums: index.clone(),
             index_dirty: false,
             filter: Filter::default(),
+            sort: SortOrder::default(),
             filtered: vec![],
             view: View::Library,
             selected: None,
@@ -434,11 +453,116 @@ impl Filter {
     }
 }
 
-/// Recomputes [`App::filtered`] from the filter inputs: albums by the picked artist (if any)
-/// whose titles contain every whitespace-split word of the search (case-insensitively). Album
-/// order (alphabetical) is kept, except that a non-empty search re-ranks by [`search_rank`] --
-/// the sort is stable, so ties stay alphabetical.
+/// A sort direction, shown in the UI as ascending ↑ / descending ↓.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    Asc,
+    Desc,
+}
+
+impl Dir {
+    /// Orients an ascending comparison to this direction.
+    fn apply(self, ord: Ordering) -> Ordering {
+        match self {
+            Dir::Asc => ord,
+            Dir::Desc => ord.reverse(),
+        }
+    }
+
+    fn arrow(self) -> &'static str {
+        match self {
+            Dir::Asc => "↑",
+            Dir::Desc => "↓",
+        }
+    }
+}
+
+/// The album attribute a sort orders by within a group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortField {
+    Name,
+    Year,
+}
+
+/// A sort order for the album grid: an optional artist grouping (the groups ordered by artist
+/// name in the given direction), then the field within each group. The filter bar's sort picker
+/// offers every combination -- see [`SortOrder::ALL`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortOrder {
+    /// `Some(dir)` groups albums by artist and orders the groups by artist name in `dir`; `None`
+    /// sorts the whole library by the field alone.
+    pub group_by_artist: Option<Dir>,
+    pub field: SortField,
+    pub field_dir: Dir,
+}
+
+impl Default for SortOrder {
+    fn default() -> Self {
+        // "Name ↓": the whole library by album name, descending.
+        SortOrder { group_by_artist: None, field: SortField::Name, field_dir: Dir::Desc }
+    }
+}
+
+impl SortOrder {
+    /// Every offered order, in the sort picker's display order: the ungrouped fields first, then
+    /// the artist-grouped ones, each descending before ascending.
+    pub const ALL: [SortOrder; 12] = {
+        use Dir::{Asc, Desc};
+        use SortField::{Name, Year};
+        [
+            SortOrder { group_by_artist: None, field: Name, field_dir: Desc },
+            SortOrder { group_by_artist: None, field: Name, field_dir: Asc },
+            SortOrder { group_by_artist: None, field: Year, field_dir: Desc },
+            SortOrder { group_by_artist: None, field: Year, field_dir: Asc },
+            SortOrder { group_by_artist: Some(Desc), field: Name, field_dir: Desc },
+            SortOrder { group_by_artist: Some(Desc), field: Name, field_dir: Asc },
+            SortOrder { group_by_artist: Some(Asc), field: Name, field_dir: Desc },
+            SortOrder { group_by_artist: Some(Asc), field: Name, field_dir: Asc },
+            SortOrder { group_by_artist: Some(Desc), field: Year, field_dir: Desc },
+            SortOrder { group_by_artist: Some(Desc), field: Year, field_dir: Asc },
+            SortOrder { group_by_artist: Some(Asc), field: Year, field_dir: Desc },
+            SortOrder { group_by_artist: Some(Asc), field: Year, field_dir: Asc },
+        ]
+    };
+
+    /// The chip/menu label, e.g. "Name ↓" or "Artist ↓, Year ↑".
+    pub fn label(self) -> String {
+        let field = match self.field {
+            SortField::Name => "Name",
+            SortField::Year => "Year",
+        };
+        match self.group_by_artist {
+            Some(dir) => format!("Artist {}, {} {}", dir.arrow(), field, self.field_dir.arrow()),
+            None => format!("{} {}", field, self.field_dir.arrow()),
+        }
+    }
+
+    /// Orders two albums by this sort. Artist grouping (when enabled) is the primary key; then the
+    /// field; then a fixed name/id tiebreak, so equal keys keep a stable, repeatable order. A
+    /// missing year sorts as the smallest value (last under a descending year sort).
+    pub fn cmp(self, a: &Album, b: &Album) -> Ordering {
+        let group = match self.group_by_artist {
+            Some(dir) => dir.apply(a.artist.to_lowercase().cmp(&b.artist.to_lowercase())),
+            None => Ordering::Equal,
+        };
+        let field = match self.field {
+            SortField::Name => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+            SortField::Year => a.year.cmp(&b.year),
+        };
+        group
+            .then_with(|| self.field_dir.apply(field))
+            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            .then_with(|| a.id.cmp(&b.id))
+    }
+}
+
+/// Recomputes [`App::filtered`] from the filter inputs: albums by the picked genre and artist (if
+/// any) whose titles contain every whitespace-split word of the search (case-insensitively),
+/// ordered by [`App::sort`]. A non-empty search takes precedence over the configured order,
+/// ranking best matches first (with the sort order breaking rank ties); an empty search leaves
+/// the configured order alone (every album ranks equal).
 pub fn refresh_filter(app: &mut App) {
+    let sort = app.sort;
     let mut scored: Vec<(usize, usize)> = app
         .albums
         .iter()
@@ -447,7 +571,7 @@ pub fn refresh_filter(app: &mut App) {
         .filter(|(_, album)| app.filter.artist.as_ref().is_none_or(|artist| album.artist == *artist))
         .filter_map(|(ix, album)| Some((ix, search_rank(&album.title, &app.filter.search)?)))
         .collect();
-    scored.sort_by(|(_, a), (_, b)| b.cmp(a));
+    scored.sort_by(|&(ia, ra), &(ib, rb)| rb.cmp(&ra).then_with(|| sort.cmp(&app.albums[ia], &app.albums[ib])));
     app.filtered = scored.into_iter().map(|(ix, _)| ix).collect();
 }
 
@@ -730,5 +854,68 @@ mod test {
         assert_eq!(search_rank("Darkness on the Far Side", "dark side"), Some(5), "scattered words score the longest run");
         assert_eq!(search_rank("The Wall", "dark side"), None, "every word must be contained");
         assert_eq!(search_rank("MONO no aware", "mono"), Some(4), "matching is case-insensitive");
+    }
+
+    fn album(artist: &str, title: &str, year: Option<u32>) -> Album {
+        Album {
+            // Irrelevant to these assertions (the id only breaks ties between identical titles).
+            id: 0,
+            title: title.into(),
+            artist: artist.into(),
+            genre: String::new(),
+            year,
+            cover_id: None,
+            cover: None,
+            accent: None,
+            tracks: vec![],
+        }
+    }
+
+    /// Sorting a small library by each order gives the expected album sequence.
+    #[test]
+    fn sort_orders_albums() {
+        use Dir::{Asc, Desc};
+        use SortField::{Name, Year};
+        let sorted = |sort: SortOrder, albums: &[Album]| -> Vec<String> {
+            let mut ixs: Vec<usize> = (0..albums.len()).collect();
+            ixs.sort_by(|&a, &b| sort.cmp(&albums[a], &albums[b]));
+            ixs.into_iter().map(|i| albums[i].title.clone()).collect()
+        };
+        // Two artists; "Zoo" has an undated album to exercise the missing-year end.
+        let albums = [
+            album("Az", "Beta", Some(2001)),
+            album("Az", "Alpha", Some(2010)),
+            album("Zoo", "Gamma", Some(2005)),
+            album("Zoo", "Delta", None),
+        ];
+
+        let name_desc = SortOrder { group_by_artist: None, field: Name, field_dir: Desc };
+        assert_eq!(sorted(name_desc, &albums), ["Gamma", "Delta", "Beta", "Alpha"], "Name ↓ is the default");
+        assert_eq!(name_desc, SortOrder::default());
+
+        let name_asc = SortOrder { group_by_artist: None, field: Name, field_dir: Asc };
+        assert_eq!(sorted(name_asc, &albums), ["Alpha", "Beta", "Delta", "Gamma"]);
+
+        let year_desc = SortOrder { group_by_artist: None, field: Year, field_dir: Desc };
+        assert_eq!(sorted(year_desc, &albums), ["Alpha", "Gamma", "Beta", "Delta"], "the undated album sorts last");
+
+        let year_asc = SortOrder { group_by_artist: None, field: Year, field_dir: Asc };
+        assert_eq!(sorted(year_asc, &albums), ["Delta", "Beta", "Gamma", "Alpha"], "and first, ascending");
+
+        // Group by artist descending (Zoo before Az), albums by name ascending within each group.
+        let grouped = SortOrder { group_by_artist: Some(Desc), field: Name, field_dir: Asc };
+        assert_eq!(sorted(grouped, &albums), ["Delta", "Gamma", "Alpha", "Beta"]);
+    }
+
+    /// The offered orders are the twelve distinct combinations, with the expected labels.
+    #[test]
+    fn sort_options_are_labelled() {
+        assert_eq!(SortOrder::ALL.len(), 12);
+        let labels: Vec<String> = SortOrder::ALL.iter().map(|s| s.label()).collect();
+        let unique: std::collections::HashSet<&String> = labels.iter().collect();
+        assert_eq!(unique.len(), 12, "every option is distinct");
+        assert_eq!(SortOrder::ALL[0].label(), "Name ↓");
+        assert!(labels.contains(&"Artist ↓, Name ↓".to_string()));
+        assert!(labels.contains(&"Artist ↑, Year ↑".to_string()));
     }
 }

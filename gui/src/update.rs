@@ -2,8 +2,8 @@
 
 use crate::model::{
     App, Filter, Modal, ModalKind, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, SEARCH_INPUT_ID,
-    ScanState, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow, entries, flow_target,
-    glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
+    SORT_SCROLL_ID, ScanState, SortMenu, SortOrder, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id,
+    current_glow, entries, flow_target, glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -57,12 +57,22 @@ pub enum Msg {
     TabPressed {
         backwards: bool,
     },
-    /// Move between the filter inputs -- genre picker, artist picker, album search, following the
-    /// bar -- from the one currently holding focus (Tab / Shift+Tab in a picker or the focused
-    /// search field).
+    /// Move between the filter inputs -- genre picker, artist picker, sort picker, album search,
+    /// following the bar -- from the one currently open/focused (Tab / Shift+Tab in a picker, the
+    /// sort menu, or the focused search field).
     CycleFilterInput {
         backwards: bool,
     },
+    /// Open the sort-order picker (the filter bar's sort chip).
+    OpenSort,
+    /// Move the sort picker's keyboard selection one option up or down (arrow keys).
+    SortMove(MenuDir),
+    /// The cursor entered a sort picker row: move the selection there.
+    SortHover(usize),
+    /// Pick the sort picker row under the mouse (a click).
+    SortChoose(usize),
+    /// Pick the sort picker's selected row (Enter).
+    SortPick,
     /// The picker's search field changed: re-rank its matches and reset the selection to the top.
     PickerQuery(String),
     /// Move the picker's keyboard selection one slot up or down (arrow keys -- they pass through
@@ -332,8 +342,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             return focus_search();
         }
         Msg::ClearFilters => {
-            // Clearing the filters dismisses the picker choosing one, when open (Ctrl+W).
-            if matches!(app.modal, Some(Modal::Picker(_))) {
+            // Clearing the filters dismisses an open filter picker or the sort picker (Ctrl+W).
+            if matches!(app.modal, Some(Modal::Picker(_) | Modal::Sort(_))) {
                 app.modal = None;
             }
             app.filter = Filter::default();
@@ -373,20 +383,22 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             });
         }
         Msg::CycleFilterInput { backwards } => {
-            let current = match &app.modal {
-                Some(Modal::Picker(picker)) => Some(picker.subject),
-                _ => None, // the album search field
-            };
-            // The cycle follows the bar, left to right: genre picker, artist picker, search.
+            // The filter inputs, in bar order; Tab walks this ring. The current stop is read from
+            // the open modal (or the focused search field, when none is up -- stop 3).
             use PickerSubject::{Artist, Genre};
-            let next = match (current, backwards) {
-                (Some(Genre), false) | (None, true) => Some(Artist),
-                (Some(Artist), true) | (None, false) => Some(Genre),
-                (Some(Genre), true) | (Some(Artist), false) => None,
+            let current = match &app.modal {
+                Some(Modal::Picker(picker)) if picker.subject == Genre => 0,
+                Some(Modal::Picker(picker)) if picker.subject == Artist => 1,
+                Some(Modal::Sort(_)) => 2,
+                _ => 3, // the album search field
             };
+            let stops = 4;
+            let next = if backwards { (current + stops - 1) % stops } else { (current + 1) % stops };
             return match next {
-                Some(subject) => open_picker(app, subject),
-                None => {
+                0 => open_picker(app, Genre),
+                1 => open_picker(app, Artist),
+                2 => open_sort(app),
+                _ => {
                     app.modal = None;
                     focus_search()
                 }
@@ -400,7 +412,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 picker.matches = matches;
                 picker.selected = 0;
             }
-            return snap_picker(0.0);
+            return snap_list(PICKER_SCROLL_ID, 0.0);
         }
         Msg::PickerMove(dir) => return picker_step(app, dir),
         // No snap, unlike PickerMove: the cursor is already on the row it selected.
@@ -413,6 +425,20 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::PickerPick => {
             if let Some(Modal::Picker(picker)) = &app.modal {
                 pick_filter(app, picker.selected);
+            }
+        }
+        Msg::OpenSort => return open_sort(app),
+        Msg::SortMove(dir) => return sort_step(app, dir),
+        // No snap, unlike SortMove: the cursor is already on the row it selected.
+        Msg::SortHover(slot) => {
+            if let Some(Modal::Sort(menu)) = &mut app.modal {
+                menu.selected = slot;
+            }
+        }
+        Msg::SortChoose(slot) => pick_sort(app, slot),
+        Msg::SortPick => {
+            if let Some(Modal::Sort(menu)) = &app.modal {
+                pick_sort(app, menu.selected);
             }
         }
         Msg::OpenActionsMenu => app.modal = Some(Modal::Actions),
@@ -887,14 +913,45 @@ fn picker_step(app: &mut App, dir: MenuDir) -> Task<Msg> {
         MenuDir::Down => (picker.selected + 1).min(last),
     };
     let fraction = if last > 0 { picker.selected as f32 / last as f32 } else { 0.0 };
-    snap_picker(fraction)
+    snap_list(PICKER_SCROLL_ID, fraction)
 }
 
-/// Snaps the picker's list to the given relative position.
-fn snap_picker(fraction: f32) -> Task<Msg> {
+/// Opens the sort-order picker, its selection on the current order. No text field to focus (the
+/// option set is fixed), so unfocus any filter input, so the modal's keys reach it (see
+/// `key_to_msg`).
+fn open_sort(app: &mut App) -> Task<Msg> {
+    let selected = SortOrder::ALL.iter().position(|&order| order == app.sort).unwrap_or(0);
+    app.modal = Some(Modal::Sort(SortMenu { selected }));
+    use iced::advanced::widget;
+    widget::operate(widget::operation::focusable::unfocus())
+}
+
+/// Applies the sort picker's slot `slot`: sets the order, closes the picker, drops the grid
+/// selection (it indexes the filtered list, which is about to reorder), and refreshes the grid.
+fn pick_sort(app: &mut App, slot: usize) {
+    let Some(&order) = SortOrder::ALL.get(slot) else { return };
+    app.sort = order;
+    app.modal = None;
+    app.selected = None;
+    refresh_filter(app);
+}
+
+/// Moves the sort picker's keyboard selection one option, clamped, and snaps the list to it.
+fn sort_step(app: &mut App, dir: MenuDir) -> Task<Msg> {
+    let Some(Modal::Sort(menu)) = &mut app.modal else { return Task::none() };
+    let last = SortOrder::ALL.len() - 1;
+    menu.selected = match dir {
+        MenuDir::Up => menu.selected.saturating_sub(1),
+        MenuDir::Down => (menu.selected + 1).min(last),
+    };
+    snap_list(SORT_SCROLL_ID, menu.selected as f32 / last as f32)
+}
+
+/// Snaps the scrollable with the given id to the relative vertical position `fraction`.
+fn snap_list(id: &'static str, fraction: f32) -> Task<Msg> {
     use iced::advanced::widget;
     let to = widget::operation::scrollable::RelativeOffset { x: None, y: Some(fraction) };
-    widget::operate(widget::operation::scrollable::snap_to(widget::Id::new(PICKER_SCROLL_ID), to))
+    widget::operate(widget::operation::scrollable::snap_to(widget::Id::new(id), to))
 }
 
 /// The queue item for one track of the album at `album`, or `None` if either index is out of
@@ -1193,6 +1250,23 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
                     one_shot(Msg::ClearFilters)
                 }
                 // Tab moves along the filter inputs, not between the views, while one is open.
+                Key::Named(Named::Tab) if !modifiers.control() && !modifiers.alt() => {
+                    one_shot(Msg::CycleFilterInput { backwards: modifiers.shift() })
+                }
+                _ => None,
+            };
+        }
+        // The sort picker: a fixed list, so no search field -- arrows move, Enter picks, and Tab
+        // walks the filter inputs like the other pickers. Escape and Ctrl+W dismiss.
+        Some(ModalKind::Sort) => {
+            return match key {
+                Key::Named(Named::Escape) if !modifiers.control() => one_shot(Msg::CloseModal),
+                Key::Named(Named::ArrowUp) if modifiers.is_empty() => Some(Msg::SortMove(MenuDir::Up)),
+                Key::Named(Named::ArrowDown) if modifiers.is_empty() => Some(Msg::SortMove(MenuDir::Down)),
+                Key::Named(Named::Enter) if modifiers.is_empty() => one_shot(Msg::SortPick),
+                Key::Character(c) if modifiers.control() && !modifiers.alt() && c.as_str() == "w" => {
+                    one_shot(Msg::ClearFilters)
+                }
                 Key::Named(Named::Tab) if !modifiers.control() && !modifiers.alt() => {
                     one_shot(Msg::CycleFilterInput { backwards: modifiers.shift() })
                 }

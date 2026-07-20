@@ -1,8 +1,8 @@
 //! Rendering the model: the library browser and the player (Cover Flow) views.
 
 use crate::model::{
-    App, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, SEARCH_INPUT_ID, ScanState, TRACK_MENU_SCROLL_ID,
-    View, album_runs, glow_now, run_of,
+    App, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, SEARCH_INPUT_ID, SORT_SCROLL_ID, ScanState, SortMenu,
+    SortOrder, TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of,
 };
 use crate::update::{Grouping, Msg, Promotion, Scope};
 use iced::widget::{
@@ -65,6 +65,7 @@ pub fn view(app: &App) -> Element<'_, Msg> {
         Some(Modal::Tracks(_)) if app.view == View::Library => track_menu_modal(app),
         Some(Modal::Actions) => Some(actions_modal(app)),
         Some(Modal::Picker(picker)) if app.view == View::Library => Some(picker_modal(picker)),
+        Some(Modal::Sort(menu)) if app.view == View::Library => Some(sort_modal(menu, app)),
         _ => None,
     };
     if let Some(modal) = modal {
@@ -152,8 +153,9 @@ fn top_bar_fits(app: &App, width: f32) -> bool {
     let tabs = chars("Library", 21.0) + chars("Player", 21.0) + 2.0 * 8.0 + 20.0;
     let chips = chars(app.filter.genre.as_deref().unwrap_or("All genres"), 13.0)
         + chars(app.filter.artist.as_deref().unwrap_or("All artists"), 13.0)
-        + 2.0 * 24.0;
-    let filter = chips + 210.0 /* the search field */ + 3.0 * 30.0 /* clear, play, queue */ + 5.0 * 8.0;
+        + chars(&app.sort.label(), 13.0)
+        + 3.0 * 24.0;
+    let filter = chips + 210.0 /* the search field */ + 3.0 * 30.0 /* clear, play, queue */ + 6.0 * 8.0;
     tabs + filter + 24.0 /* window padding */ + 24.0 /* breathing room between the groups */ <= width
 }
 
@@ -321,28 +323,12 @@ fn library_view(app: &App) -> Element<'_, Msg> {
 }
 
 /// The library's filter tools, living in the top bar: genre and artist chips (each opening its
-/// searchable picker), the fuzzy album-title search, and play/queue-all buttons acting on every
-/// album currently matching, in displayed order.
+/// searchable picker), a sort-order chip, the fuzzy album-title search, and play/queue-all buttons
+/// acting on every album currently matching, in displayed order.
 fn filter_tools(app: &App) -> Element<'_, Msg> {
-    let chip = |label: &str, subject: PickerSubject| {
-        button(text(label.to_owned()).size(13))
-            .style(|_theme, status| {
-                let alpha = match status {
-                    button::Status::Hovered | button::Status::Pressed => 0.9,
-                    button::Status::Active | button::Status::Disabled => 0.6,
-                };
-                button::Style {
-                    background: Some(iced::Background::Color(Color { a: alpha, ..Color::BLACK })),
-                    text_color: Color::WHITE,
-                    border: iced::border::rounded(13.0),
-                    ..button::Style::default()
-                }
-            })
-            .padding([5, 12])
-            .on_press(Msg::OpenPicker(subject))
-    };
-    let genre = chip(app.filter.genre.as_deref().unwrap_or("All genres"), PickerSubject::Genre);
-    let artist = chip(app.filter.artist.as_deref().unwrap_or("All artists"), PickerSubject::Artist);
+    let genre = chip(app.filter.genre.as_deref().unwrap_or("All genres"), Msg::OpenPicker(PickerSubject::Genre));
+    let artist = chip(app.filter.artist.as_deref().unwrap_or("All artists"), Msg::OpenPicker(PickerSubject::Artist));
+    let sort = chip(&app.sort.label(), Msg::OpenSort);
     let search =
         text_input("Search albums…", &app.filter.search).id(SEARCH_INPUT_ID).on_input(Msg::SearchChanged).size(13).width(210);
     let enabled = !app.filtered.is_empty();
@@ -356,6 +342,7 @@ fn filter_tools(app: &App) -> Element<'_, Msg> {
         clear,
         genre,
         artist,
+        sort,
         search,
         button(play).style(button::text).on_press_maybe(enabled.then_some(Msg::PlayAll)),
         button(enqueue).style(button::text).on_press_maybe(enabled.then_some(Msg::QueueAll)),
@@ -363,6 +350,27 @@ fn filter_tools(app: &App) -> Element<'_, Msg> {
     .spacing(8)
     .align_y(Center)
     .into()
+}
+
+/// A rounded filter-bar chip: a dark pill that lightens on hover, opening `msg` when clicked.
+/// Owns its label (cloned in), so the caller may pass a borrowed or temporary string.
+fn chip(label: &str, msg: Msg) -> Element<'static, Msg> {
+    button(text(label.to_owned()).size(13))
+        .style(|_theme, status| {
+            let alpha = match status {
+                button::Status::Hovered | button::Status::Pressed => 0.9,
+                button::Status::Active | button::Status::Disabled => 0.6,
+            };
+            button::Style {
+                background: Some(iced::Background::Color(Color { a: alpha, ..Color::BLACK })),
+                text_color: Color::WHITE,
+                border: iced::border::rounded(13.0),
+                ..button::Style::default()
+            }
+        })
+        .padding([5, 12])
+        .on_press(msg)
+        .into()
 }
 
 /// The searchable filter picker (see [`Picker`]): its query field is focused on open, so typing
@@ -398,6 +406,38 @@ fn picker_modal(picker: &Picker) -> Element<'_, Msg> {
     let list = scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar)).id(PICKER_SCROLL_ID);
 
     let panel = container(column![input, list].spacing(10)).padding(14).width(340).max_height(480).style(|theme: &Theme| {
+        container::Style {
+            background: Some(iced::Background::Color(Color { a: 0.97, ..theme.extended_palette().primary.weak.color })),
+            border: iced::Border { color: color!(0xffffff, 0.1), width: 1.0, radius: 10.0.into() },
+            ..container::Style::default()
+        }
+    });
+    opaque(mouse_area(center(opaque(panel))).on_press(Msg::CloseModal))
+}
+
+/// The sort-order picker (see [`SortMenu`]): the fixed list of every [`SortOrder`], the current
+/// one marked and the keyboard selection highlighted. Hovering a row moves the selection; a click
+/// or Enter picks. No search field -- the list is short and fixed. Dismissal like the other modals.
+fn sort_modal(menu: &SortMenu, app: &App) -> Element<'static, Msg> {
+    let mut list = column![].spacing(2);
+    for (slot, order) in SortOrder::ALL.iter().enumerate() {
+        let current = *order == app.sort;
+        // A leading dot marks the order in force, so it reads even when the row isn't highlighted.
+        let mark = if current { "•  " } else { "    " };
+        let label = text(format!("{mark}{}", order.label())).size(14);
+        let selected = slot == menu.selected;
+        let entry = container(label).width(Fill).padding([4, 8]).style(move |_theme| container::Style {
+            background: selected.then(|| iced::Background::Color(color!(0xffffff, 0.1))),
+            border: iced::border::rounded(6.0),
+            ..container::Style::default()
+        });
+        list = list.push(mouse_area(entry).on_enter(Msg::SortHover(slot)).on_press(Msg::SortChoose(slot)));
+    }
+    let invisible_scrollbar = scrollable::Scrollbar::new().width(0).margin(0).scroller_width(0);
+    let list = scrollable(list).direction(scrollable::Direction::Vertical(invisible_scrollbar)).id(SORT_SCROLL_ID);
+
+    let heading = text("Sort by").size(14).style(text::secondary);
+    let panel = container(column![heading, list].spacing(10)).padding(14).width(260).max_height(480).style(|theme: &Theme| {
         container::Style {
             background: Some(iced::Background::Color(Color { a: 0.97, ..theme.extended_palette().primary.weak.color })),
             border: iced::Border { color: color!(0xffffff, 0.1), width: 1.0, radius: 10.0.into() },
