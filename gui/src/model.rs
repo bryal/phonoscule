@@ -505,23 +505,24 @@ impl Default for SortOrder {
 
 impl SortOrder {
     /// Every offered order, in the sort picker's display order: the ungrouped fields first, then
-    /// the artist-grouped ones, each descending before ascending.
+    /// the artist-grouped ones; ascending above descending throughout (the artist grouping's
+    /// direction leads, then the field's), so the default "Name ↑" heads the list.
     pub const ALL: [SortOrder; 12] = {
         use Dir::{Asc, Desc};
         use SortField::{Name, Year};
         [
-            SortOrder { group_by_artist: None, field: Name, field_dir: Desc },
             SortOrder { group_by_artist: None, field: Name, field_dir: Asc },
-            SortOrder { group_by_artist: None, field: Year, field_dir: Desc },
+            SortOrder { group_by_artist: None, field: Name, field_dir: Desc },
             SortOrder { group_by_artist: None, field: Year, field_dir: Asc },
-            SortOrder { group_by_artist: Some(Desc), field: Name, field_dir: Desc },
-            SortOrder { group_by_artist: Some(Desc), field: Name, field_dir: Asc },
-            SortOrder { group_by_artist: Some(Asc), field: Name, field_dir: Desc },
+            SortOrder { group_by_artist: None, field: Year, field_dir: Desc },
             SortOrder { group_by_artist: Some(Asc), field: Name, field_dir: Asc },
-            SortOrder { group_by_artist: Some(Desc), field: Year, field_dir: Desc },
-            SortOrder { group_by_artist: Some(Desc), field: Year, field_dir: Asc },
-            SortOrder { group_by_artist: Some(Asc), field: Year, field_dir: Desc },
+            SortOrder { group_by_artist: Some(Asc), field: Name, field_dir: Desc },
+            SortOrder { group_by_artist: Some(Desc), field: Name, field_dir: Asc },
+            SortOrder { group_by_artist: Some(Desc), field: Name, field_dir: Desc },
             SortOrder { group_by_artist: Some(Asc), field: Year, field_dir: Asc },
+            SortOrder { group_by_artist: Some(Asc), field: Year, field_dir: Desc },
+            SortOrder { group_by_artist: Some(Desc), field: Year, field_dir: Asc },
+            SortOrder { group_by_artist: Some(Desc), field: Year, field_dir: Desc },
         ]
     };
 
@@ -914,7 +915,7 @@ mod test {
         let labels: Vec<String> = SortOrder::ALL.iter().map(|s| s.label()).collect();
         let unique: std::collections::HashSet<&String> = labels.iter().collect();
         assert_eq!(unique.len(), 12, "every option is distinct");
-        assert_eq!(SortOrder::ALL[0].label(), "Name ↓");
+        assert_eq!(SortOrder::ALL[0].label(), "Name ↑", "the default heads the list");
         assert!(labels.contains(&"Artist ↓, Name ↓".to_string()));
         assert!(labels.contains(&"Artist ↑, Year ↑".to_string()));
     }
