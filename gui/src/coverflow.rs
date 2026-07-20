@@ -95,8 +95,8 @@ pub struct CoverFlow<Message> {
 }
 
 impl<Message> CoverFlow<Message> {
-    /// The projection for this frame: the scene is scaled to fit the clear strip between the two floating bars when a full-size
-    /// cover would be taller than it, then centered in that strip and held clear of both bars.
+    /// The projection for this frame: the scene is scaled so the cover fills the clear strip between the two bars, less a
+    /// height-dependent margin, then placed a little above the strip's midpoint and held clear of both bars.
     fn view_proj(&self, bounds: Rectangle) -> Mat4 {
         let height = bounds.height.max(1.0);
         let aspect = bounds.width / height;
@@ -109,23 +109,27 @@ impl<Message> CoverFlow<Message> {
         let tab_edge = 1.0 - 2.0 * self.obscured_top / height;
         let player_edge = -1.0 + 2.0 * self.obscured_bottom / height;
         let strip = (tab_edge - player_edge).max(0.0);
-        // Size the cover to fill the strip up to `MAX_GROW` of its natural size, leaving a little air above and below, and
-        // shrink it below natural only when even that won't fit. Growing it a little keeps a fixed-height cover from reading as
-        // too small on a short, wide window; reflections and side covers scale with it.
-        const MARGIN: f32 = 0.05; // fraction of the strip kept clear above and below the cover
-        const MAX_GROW: f32 = 1.1; // largest the cover may grow past its natural (roomy-window) size
+        // The cover fills the strip less a margin of air above and below. The margin opens up toward `MARGIN_MAX` on a tall
+        // window and closes toward nothing as the window shortens, so a short window's cover claims the strip and stays large
+        // rather than staying a fixed fraction of a small window -- and the widening margin, not a separate size cap, is what
+        // keeps a tall window's cover from ballooning. That margin is also the slack the upward bias below moves within. Where
+        // the strip is shorter than the cover's natural size the cover simply scales down; reflections and side covers follow.
+        const MARGIN_MAX: f32 = 0.2; // widest air (each side, as a fraction of the strip), reached at MARGIN_MAX_THRESHOLD
+        const MARGIN_MIN_THRESHOLD: f32 = 380.0; // window height in px at or below which the margin reaches 0
+        const MARGIN_MAX_THRESHOLD: f32 = 1200.0; // window height in px at or above which the margin reaches MARGIN_MAX
+        let margin =
+            MARGIN_MAX * ((height - MARGIN_MIN_THRESHOLD).max(0.0) / (MARGIN_MAX_THRESHOLD - MARGIN_MIN_THRESHOLD)).min(1.0);
         let natural = (cover_top - cover_bottom).max(f32::EPSILON);
-        let scale = (strip * (1.0 - 2.0 * MARGIN) / natural).min(MAX_GROW);
+        let scale = strip * (1.0 - 2.0 * margin) / natural;
         let (scaled_top, scaled_bottom) = (scale * cover_top, scale * cover_bottom);
         let scaled_mid = (scaled_top + scaled_bottom) / 2.0;
-        // Center the scaled cover a little above the strip's midpoint -- the empty margin above it is worth less than the
-        // reflection below -- then clamp so it stays clear of both bars regardless of the cover's own asymmetry. The shift is a
-        // uniform NDC offset at every depth (the clip-space translation adds `shift * w` before the perspective divide, see the
-        // free `view_proj`); the reflections, scaled and shifted with it, run on behind the bar.
-        const CENTER: f32 = 0.45; // the cover's center sits this fraction of the strip below the tab bar (0.5 is the midpoint)
-        let margin = MARGIN * strip;
+        // Sit the cover a little above the strip's midpoint -- the margin above it is worth less than the reflection below --
+        // but never let it cross a bar (on a very short window the bias yields to that). The shift is a uniform NDC offset at
+        // every depth (the clip-space translation adds `shift * w` before the perspective divide, see the free `view_proj`);
+        // the reflections, scaled and shifted with it, run on behind the bar.
+        const CENTER: f32 = 0.46; // the cover's center sits this fraction of the strip below the tab bar (0.5 is the midpoint)
         let want = tab_edge - CENTER * strip - scaled_mid;
-        let (lo, hi) = ((player_edge + margin) - scaled_bottom, (tab_edge - margin) - scaled_top);
+        let (lo, hi) = (player_edge - scaled_bottom, tab_edge - scaled_top);
         let shift = if lo <= hi { want.clamp(lo, hi) } else { (lo + hi) / 2.0 };
         Mat4::from_translation(Vec3::new(0.0, shift, 0.0)) * Mat4::from_scale(Vec3::new(scale, scale, 1.0)) * base
     }
