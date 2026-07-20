@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Phonoscule
+GenericName=Music Player
+Comment=Album-focused music player
+Exec=phonoscule-gui
+Terminal=false
+Categories=AudioVideo;Audio;Player;Music;
+Keywords=music;player;album;library;opus;
+# No bundled icon yet; a themed stand-in keeps launchers from showing a blank tile.
+Icon=multimedia-player
+# winit derives the window class from the binary name; this ties the launcher entry to the window.
+StartupWMClass=phonoscule-gui
+StartupNotify=false
