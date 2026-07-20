@@ -498,8 +498,8 @@ pub struct SortOrder {
 
 impl Default for SortOrder {
     fn default() -> Self {
-        // "Name ↓": the whole library by album name, descending.
-        SortOrder { group_by_artist: None, field: SortField::Name, field_dir: Dir::Desc }
+        // "Name ↑": the whole library by album name, ascending (A–Z).
+        SortOrder { group_by_artist: None, field: SortField::Name, field_dir: Dir::Asc }
     }
 }
 
@@ -890,11 +890,11 @@ mod test {
         ];
 
         let name_desc = SortOrder { group_by_artist: None, field: Name, field_dir: Desc };
-        assert_eq!(sorted(name_desc, &albums), ["Gamma", "Delta", "Beta", "Alpha"], "Name ↓ is the default");
-        assert_eq!(name_desc, SortOrder::default());
+        assert_eq!(sorted(name_desc, &albums), ["Gamma", "Delta", "Beta", "Alpha"]);
 
         let name_asc = SortOrder { group_by_artist: None, field: Name, field_dir: Asc };
         assert_eq!(sorted(name_asc, &albums), ["Alpha", "Beta", "Delta", "Gamma"]);
+        assert_eq!(name_asc, SortOrder::default(), "Name ↑ (ascending) is the default");
 
         let year_desc = SortOrder { group_by_artist: None, field: Year, field_dir: Desc };
         assert_eq!(sorted(year_desc, &albums), ["Alpha", "Gamma", "Beta", "Delta"], "the undated album sorts last");
