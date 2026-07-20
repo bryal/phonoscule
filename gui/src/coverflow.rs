@@ -70,10 +70,11 @@ pub fn cover_flow<Message>(
     position: f32,
     glow: iced::Color,
     glow_center: (f32, f32),
+    obscured_top: f32,
     obscured_bottom: f32,
     on_click: fn(usize) -> Message,
 ) -> iced::widget::Shader<Message, CoverFlow<Message>> {
-    iced::widget::shader(CoverFlow { covers, position, glow, glow_center, obscured_bottom, on_click })
+    iced::widget::shader(CoverFlow { covers, position, glow, glow_center, obscured_top, obscured_bottom, on_click })
         .width(iced::Fill)
         .height(iced::Fill)
 }
@@ -85,26 +86,44 @@ pub struct CoverFlow<Message> {
     /// evaluate the same glow (see the shader).
     glow: iced::Color,
     glow_center: (f32, f32),
-    /// Pixels of the widget's bottom hidden behind the player bar. The covers center in the
-    /// region above it (only the reflections run down behind the bar).
+    /// Pixels of the widget's top and bottom hidden behind the floating tab bar and player bar. The covers center in the clear
+    /// region between the two (only the reflections run down behind the bottom bar); on a window too short to hold a cover at
+    /// full size the whole scene shrinks to fit it, rather than a cover sliding out of sight behind a bar.
+    obscured_top: f32,
     obscured_bottom: f32,
     on_click: fn(usize) -> Message,
 }
 
 impl<Message> CoverFlow<Message> {
-    /// The projection for this frame, lifted so covers center above the obscured bottom strip.
+    /// The projection for this frame: the scene is scaled to fit the clear strip between the two floating bars when a full-size
+    /// cover would be taller than it, then centered in that strip and held clear of both bars.
     fn view_proj(&self, bounds: Rectangle) -> Mat4 {
-        let aspect = bounds.width / bounds.height.max(1.0);
-        // The visible region's center sits this far up in NDC (y up, [-1, 1]); shift the whole
-        // scene up to match, which the reflections follow down behind the bar.
-        let want = (self.obscured_bottom / bounds.height.max(1.0)).clamp(0.0, 1.0);
-        // But never so far that the front cover's top clips the widget's top edge (the shader's
-        // scissor rect): on a short window there is simply no room to fully lift it, so cap the
-        // shift and let the cover extend down behind the bar instead of vanishing upward.
-        let cover_top = view_proj(aspect, 0.0).project_point3(Vec3::new(0.0, 0.5, 0.0)).y;
-        const TOP_MARGIN: f32 = 0.05;
-        let max_shift = (1.0 - TOP_MARGIN - cover_top).max(0.0);
-        view_proj(aspect, want.min(max_shift))
+        let height = bounds.height.max(1.0);
+        let aspect = bounds.width / height;
+        let base = view_proj(aspect, 0.0);
+        // The front cover's vertical extent and the clear strip between the bars, both in NDC (y up, [-1, 1], so a pixel is
+        // 2/height). The cover's on-screen size is a fixed fraction of the window height, but the strip shrinks faster as the
+        // window shortens, so past some height the cover no longer fits and must be scaled down.
+        let cover_top = base.project_point3(Vec3::new(0.0, 0.5, 0.0)).y;
+        let cover_bottom = base.project_point3(Vec3::new(0.0, -0.5, 0.0)).y;
+        let tab_edge = 1.0 - 2.0 * self.obscured_top / height;
+        let player_edge = -1.0 + 2.0 * self.obscured_bottom / height;
+        let strip = (tab_edge - player_edge).max(0.0);
+        // Shrink the whole scene about the window center so the cover fits with a little air above and below; a window tall
+        // enough to hold it keeps the natural size (scale == 1). Reflections and side covers scale with it.
+        const MARGIN: f32 = 0.05; // fraction of the strip kept clear above and below the cover
+        let natural = (cover_top - cover_bottom).max(f32::EPSILON);
+        let scale = (strip * (1.0 - 2.0 * MARGIN) / natural).min(1.0);
+        let (scaled_top, scaled_bottom) = (scale * cover_top, scale * cover_bottom);
+        let scaled_mid = (scaled_top + scaled_bottom) / 2.0;
+        // Center the scaled cover in the strip, then clamp so it stays clear of both bars regardless of the cover's own
+        // asymmetry. The shift is a uniform NDC offset at every depth (the clip-space translation adds `shift * w` before the
+        // perspective divide, see the free `view_proj`); the reflections, scaled and shifted with it, run on behind the bar.
+        let margin = MARGIN * strip;
+        let want = (tab_edge + player_edge) / 2.0 - scaled_mid;
+        let (lo, hi) = ((player_edge + margin) - scaled_bottom, (tab_edge - margin) - scaled_top);
+        let shift = if lo <= hi { want.clamp(lo, hi) } else { (lo + hi) / 2.0 };
+        Mat4::from_translation(Vec3::new(0.0, shift, 0.0)) * Mat4::from_scale(Vec3::new(scale, scale, 1.0)) * base
     }
 }
 

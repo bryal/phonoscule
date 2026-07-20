@@ -53,8 +53,9 @@ pub fn view(app: &App) -> Element<'_, Msg> {
         View::Player => player_view(app),
     };
     // The top bar (nav tabs, and the library's filter tools) floats over the top as a glass
-    // panel, so the body can use the full window height (the covers may touch the top on a short
-    // window); the player floats over the bottom. Both sit above the body, over the backdrop glow.
+    // panel, so the body can use the full window height (the cover flow reserves the bar heights
+    // itself so its covers stay clear); the player floats over the bottom. Both sit above the body,
+    // over the backdrop glow.
     let glow = glow_now(app);
     let mut layers: Vec<Element<'_, Msg>> = vec![background::background(glow.color, glow.center).into(), body, top_bar(app)];
     if let Some(bar) = player_bar(app) {
@@ -635,10 +636,11 @@ fn player_view(app: &App) -> Element<'_, Msg> {
             }
         })
         .collect();
-    // The reflections' floor fade must match the rendered backdrop; the covers are lifted clear
-    // of the player bar, and the track list with them.
+    // The reflections' floor fade must match the rendered backdrop; the covers center in the clear
+    // strip between the tab bar and the player bar, and the track list windows to the same strip.
+    // The player's tab bar is always a single row (tabs and volume never wrap), so `TAB_BAR_HEIGHT`.
     let glow = glow_now(app);
-    let flow = cover_flow(covers, app.anim_pos, glow.color, glow.center, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
+    let flow = cover_flow(covers, app.anim_pos, glow.color, glow.center, TAB_BAR_HEIGHT, PLAYER_BAR_HEIGHT, Msg::CoverClicked);
 
     // The track list floats over the flow, windowed to the space between the bars. Clicks pass
     // through it (bare text, no buttons) so the covers behind stay clickable; the wheel is handled
