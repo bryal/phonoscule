@@ -3,6 +3,7 @@ name = "phonoscule"
 authors.workspace = true
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 # rev is latest as of its commit date 2026-07-05
