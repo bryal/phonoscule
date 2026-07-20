@@ -2,3 +2,4 @@ target
 .embuild
 TestLibrary
 .dir-locals.el
+doc/resampler-en.pdf

@@ -118,4 +118,5 @@ The application should then show up in your desktop environment's application la
 
 ## License
 
-Part of the [Phonoscule](../README.md) project, under the MPL 2.0.
+Released under the **Mozilla Public License 2.0** (see [`LICENSE`](../LICENSE)).
+Copyright (c) 2026 Jojo <jo@jo.zone>.

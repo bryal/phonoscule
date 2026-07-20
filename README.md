@@ -65,7 +65,3 @@ cargo run --release -p phonoscule-cli -- my-song.opus
 
 Released under the **Mozilla Public License 2.0** (see [`LICENSE`](LICENSE)).
 Copyright (c) 2026 Jojo <jo@jo.zone>.
-
-Opus decoding is provided by the sibling [opuscule](https://codeberg.org/jojo-laplace/opuscule)
-crate (also MPL 2.0), itself a derivative of the libopus reference decoder; its upstream
-BSD notices and Opus patent grants travel with that crate.
