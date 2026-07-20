@@ -4,7 +4,7 @@ use crate::model::{
     App, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, SEARCH_INPUT_ID, SORT_SCROLL_ID, ScanState, SortMenu,
     TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of,
 };
-use crate::update::{Grouping, Msg, Promotion, Scope};
+use crate::update::{Grouping, Msg, Scope};
 use iced::widget::{
     button, center, column, container, hover, image, mouse_area, opaque, responsive, row, scrollable, slider, stack, text,
     text_input,
@@ -515,26 +515,10 @@ fn actions_modal(app: &App) -> Element<'_, Msg> {
             .on_press(msg)
     };
     let list = column![
-        entry("Shuffle other albums", "alt+s", Msg::Shuffle {
-            grouping: Grouping::Albums,
-            scope: Scope::Others,
-            promotion: Promotion::Literal
-        }),
-        entry("Shuffle all albums", "ctrl+s", Msg::Shuffle {
-            grouping: Grouping::Albums,
-            scope: Scope::All,
-            promotion: Promotion::Literal
-        }),
-        entry("Shuffle other tracks", "alt+z", Msg::Shuffle {
-            grouping: Grouping::Tracks,
-            scope: Scope::Others,
-            promotion: Promotion::Literal
-        }),
-        entry("Shuffle all tracks", "ctrl+z", Msg::Shuffle {
-            grouping: Grouping::Tracks,
-            scope: Scope::All,
-            promotion: Promotion::Literal
-        }),
+        entry("Shuffle other albums", "alt+s", Msg::Shuffle { grouping: Grouping::Albums, scope: Scope::Others }),
+        entry("Shuffle all albums", "ctrl+s", Msg::Shuffle { grouping: Grouping::Albums, scope: Scope::All }),
+        entry("Shuffle other tracks", "alt+z", Msg::Shuffle { grouping: Grouping::Tracks, scope: Scope::Others }),
+        entry("Shuffle all tracks", "ctrl+z", Msg::Shuffle { grouping: Grouping::Tracks, scope: Scope::All }),
         entry("Clear playlist", "ctrl+k", Msg::ClearQueue),
     ]
     .spacing(2);

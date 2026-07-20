@@ -103,7 +103,6 @@ pub enum Msg {
     Shuffle {
         grouping: Grouping,
         scope: Scope,
-        promotion: Promotion,
     },
     /// Rest playback at an edge of the queue, paused and ready to play (Ctrl+Home / Ctrl+End).
     RestAt(QueueEdge),
@@ -475,7 +474,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             app.send(player::Cmd::SetRepeat(app.repeat));
             return save_player(app);
         }
-        Msg::Shuffle { grouping, scope, promotion } => return shuffle_queue(app, grouping, scope, promotion),
+        Msg::Shuffle { grouping, scope } => return shuffle_queue(app, grouping, scope),
         Msg::RestAt(edge) => {
             if !app.queue.is_empty() {
                 app.current = match edge {
@@ -756,16 +755,6 @@ pub enum Grouping {
     Albums,
 }
 
-/// Whether a [`Scope::Others`] shuffle may promote to [`Scope::All`] when playback sits paused on
-/// the queue's first track, nothing begun -- a state that reads "shuffle me a fresh playlist",
-/// not "keep my current track first". The Alt+s/Alt+z keys promote; the actions menu's entries
-/// say exactly what they do, so they stay literal.
-#[derive(Debug, Clone, Copy)]
-pub enum Promotion {
-    Auto,
-    Literal,
-}
-
 /// How much of the queue a shuffle reorders.
 #[derive(Debug, Clone, Copy)]
 pub enum Scope {
@@ -781,9 +770,9 @@ pub enum Scope {
 /// Shuffles the queue in place, visibly: the reordering IS the new playlist (persisted like any
 /// other queue change, so a restart resumes the same order), and the cover flow snaps to the
 /// cursor's new position rather than sweeping. See [`Scope`] for what moves and what keeps
-/// playing, and [`Promotion`] for when a shuffle of the others becomes a shuffle of everything
-/// (it's the state Ctrl+Home resets to, making Ctrl+s and Ctrl+Home-then-Alt+s equivalent).
-fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope, promotion: Promotion) -> Task<Msg> {
+/// playing: Alt+s/Alt+z shuffle the others, Ctrl+s/Ctrl+z everything -- always, regardless of
+/// playback state.
+fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope) -> Task<Msg> {
     if app.queue.is_empty() {
         return Task::none();
     }
@@ -791,10 +780,6 @@ fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope, promotion: Pro
     if matches!(app.modal, Some(Modal::Actions)) {
         app.modal = None;
     }
-    let scope = match (scope, promotion, app.current, app.play_state) {
-        (Scope::Others, Promotion::Auto, 0, player::PlayState::Paused) => Scope::All,
-        (scope, ..) => scope,
-    };
 
     // Build the new order as a permutation of indices, so the current track can be followed by
     // identity (queue items need not be unique -- an album can be queued twice). Tracks are
@@ -1226,16 +1211,12 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
                 (Key::Named(Named::Space), false) if modifiers.is_empty() => one_shot(Msg::Toggle),
                 (Key::Character(c), false) if modifiers.alt() && c.as_str() == "r" => one_shot(Msg::CycleRepeat),
                 // Exactly one modifier, like the global bindings: Alt = others, Ctrl = all.
-                (Key::Character(c), ctrl) if modifiers.alt() != ctrl && c.as_str() == "s" => one_shot(Msg::Shuffle {
-                    grouping: Grouping::Albums,
-                    scope: if ctrl { Scope::All } else { Scope::Others },
-                    promotion: Promotion::Auto,
-                }),
-                (Key::Character(c), ctrl) if modifiers.alt() != ctrl && c.as_str() == "z" => one_shot(Msg::Shuffle {
-                    grouping: Grouping::Tracks,
-                    scope: if ctrl { Scope::All } else { Scope::Others },
-                    promotion: Promotion::Auto,
-                }),
+                (Key::Character(c), ctrl) if modifiers.alt() != ctrl && c.as_str() == "s" => {
+                    one_shot(Msg::Shuffle { grouping: Grouping::Albums, scope: if ctrl { Scope::All } else { Scope::Others } })
+                }
+                (Key::Character(c), ctrl) if modifiers.alt() != ctrl && c.as_str() == "z" => {
+                    one_shot(Msg::Shuffle { grouping: Grouping::Tracks, scope: if ctrl { Scope::All } else { Scope::Others } })
+                }
                 (Key::Character(c), true) if c.as_str() == "k" => one_shot(Msg::ClearQueue),
                 _ => None,
             };
@@ -1290,18 +1271,10 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         (Key::Character(c), false, false) if modifiers.alt() && c.as_str() == "r" => return one_shot(Msg::CycleRepeat),
         // Exactly one modifier: Alt shuffles the others, Ctrl shuffles all -- Ctrl+Alt is nothing.
         (Key::Character(c), false, ctrl) if modifiers.alt() != ctrl && c.as_str() == "s" => {
-            return one_shot(Msg::Shuffle {
-                grouping: Grouping::Albums,
-                scope: if ctrl { Scope::All } else { Scope::Others },
-                promotion: Promotion::Auto,
-            });
+            return one_shot(Msg::Shuffle { grouping: Grouping::Albums, scope: if ctrl { Scope::All } else { Scope::Others } });
         }
         (Key::Character(c), false, ctrl) if modifiers.alt() != ctrl && c.as_str() == "z" => {
-            return one_shot(Msg::Shuffle {
-                grouping: Grouping::Tracks,
-                scope: if ctrl { Scope::All } else { Scope::Others },
-                promotion: Promotion::Auto,
-            });
+            return one_shot(Msg::Shuffle { grouping: Grouping::Tracks, scope: if ctrl { Scope::All } else { Scope::Others } });
         }
         (Key::Named(Named::Home), false, true) => return one_shot(Msg::RestAt(QueueEdge::First)),
         (Key::Named(Named::End), false, true) => return one_shot(Msg::RestAt(QueueEdge::Last)),
