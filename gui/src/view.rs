@@ -9,7 +9,7 @@ use iced::widget::{
     button, center, column, container, hover, image, mouse_area, opaque, responsive, row, scrollable, slider, stack, text,
     text_input,
 };
-use iced::{Center, Color, Element, Fill, Theme, color};
+use iced::{Border, Center, Color, Element, Fill, Padding, Theme, color};
 use phonoscule_gui::album_grid::album_grid;
 use phonoscule_gui::background;
 use phonoscule_gui::coverflow::{FlowCover, cover_flow};
@@ -109,15 +109,38 @@ fn top_bar(app: &App) -> Element<'_, Msg> {
 }
 
 /// The volume bar: a slider over the OS mixer's volume for this application (see the volume
-/// module), 0..=125% -- click or drag to set, wheel to nudge (Up/Down do too, see `key_to_msg`).
+/// module), 0..=100% -- click or drag to set, wheel to nudge (Up/Down do too, see `key_to_msg`).
 /// `None` until the mixer reports a volume (or ever, without an audio server).
 fn volume_bar(app: &App) -> Option<Element<'_, Msg>> {
     let volume = app.volume?;
     let icon = text(FA_VOLUME).font(font_awesome_solid()).size(13);
-    let bar = slider(0.0..=phonoscule_gui::volume::MAX_VOLUME, volume, Msg::SetVolume).step(0.01_f32).width(140);
+    let bar = slider(0.0..=1.0, volume, Msg::SetVolume)
+        .style(|theme: &Theme, status: _| {
+            let palette = theme.extended_palette();
+            let color = match status {
+                slider::Status::Active => palette.secondary.base.color,
+                slider::Status::Hovered => palette.secondary.strong.color,
+                slider::Status::Dragged => palette.secondary.weak.color,
+            };
+            slider::Style {
+                rail: slider::Rail {
+                    backgrounds: (color.into(), palette.background.strong.color.into()),
+                    width: 4.0,
+                    border: Border { radius: 2.0.into(), width: 0.0, color: Color::TRANSPARENT },
+                },
+                handle: slider::Handle {
+                    shape: slider::HandleShape::Circle { radius: 7.0 },
+                    background: color.into(),
+                    border_color: Color::TRANSPARENT,
+                    border_width: 0.0,
+                },
+            }
+        })
+        .step(0.01_f32)
+        .width(140);
     // Right-aligned in a fixed box, so the bar doesn't wiggle as the digit count changes.
     let readout = container(text(format!("{:.0}%", volume * 100.0)).size(13)).align_right(38);
-    let bar = row![icon, bar, readout].spacing(8).align_y(Center);
+    let bar = row![icon, container(bar).padding(Padding::ZERO.bottom(1)), readout].spacing(8).align_y(Center);
     Some(mouse_area(bar).on_scroll(Msg::VolumeScrolled).into())
 }
 

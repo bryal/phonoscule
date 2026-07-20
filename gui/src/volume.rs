@@ -16,11 +16,6 @@
 use smol::channel;
 use std::sync::mpsc;
 
-/// The ceiling the GUI exposes, as a factor of the mixer's 100%: PulseAudio allows software
-/// amplification above normal, useful for quiet recordings. (WASAPI session volume ends at 100%,
-/// so a Windows backend would cap this.)
-pub const MAX_VOLUME: f32 = 1.25;
-
 /// Handle for adjusting the volume; readings arrive on [`VolumeControl::events`].
 pub struct VolumeControl {
     cmd: mpsc::Sender<f32>,
@@ -31,12 +26,11 @@ pub struct VolumeControl {
 }
 
 impl VolumeControl {
-    /// Requests the given volume (a factor of 100%, clamped to `0.0..=`[`MAX_VOLUME`]) for all of
-    /// the application's audio streams. Fire-and-forget; the eventual reading echoes back on
-    /// [`events`](VolumeControl::events).
+    /// Requests the given volume for all of the application's audio streams.
+    /// Fire-and-forget; the eventual reading echoes back on [`events`](VolumeControl::events).
     pub fn set(&self, volume: f32) {
         // Sends only fail when there is no backend (or its server is gone): ignored by design.
-        let _ = self.cmd.send(volume.clamp(0.0, MAX_VOLUME));
+        let _ = self.cmd.send(volume);
     }
 }
 

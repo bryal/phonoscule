@@ -948,7 +948,7 @@ fn scroll_notches(delta: ScrollDelta) -> (f32, f32) {
 /// Requests `volume` (clamped) from the OS mixer and mirrors it optimistically, so the bar
 /// tracks a drag or a wheel burst instantly while the mixer's echo trails behind.
 fn set_volume(app: &mut App, volume: f32) {
-    let volume = volume.clamp(0.0, phonoscule_gui::volume::MAX_VOLUME);
+    let volume = volume.clamp(0.0, 1.0);
     app.volume = Some(volume);
     app.pending_volume = Some(volume);
     app.mixer.set(volume);
