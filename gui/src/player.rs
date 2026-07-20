@@ -156,8 +156,9 @@ pub fn start() -> Engine {
 }
 
 async fn player_loop(cmd_rx: channel::Receiver<Cmd>, events: channel::Sender<Event>) {
-    // Opened once and reused across tracks; its blocking writes below pace playback to real time.
-    let mut sink = PulseSink::new();
+    // Reused across tracks (its blocking writes pace playback to real time), reopened only when a
+    // track's sample rate differs from the stream's -- see `ensure_rate` before each track.
+    let mut sink = PulseSink::new(PLAYBACK_SAMPLE_RATE);
     let mut buf = [OutSample::default(); CHUNK];
 
     let mut queue: Vec<Entry> = vec![];
@@ -281,6 +282,9 @@ async fn player_loop(cmd_rx: channel::Receiver<Cmd>, events: channel::Sender<Eve
             continue 'next_track;
         };
         let sample_rate = track.sample_rate;
+        // Match the output stream to this track's rate (a no-op unless it changed): the samples
+        // are played at the rate they were decoded at, so nothing plays fast or slow.
+        sink.ensure_rate(sample_rate);
         let t_of = |samples: u64| Duration::from_secs_f64(samples as f64 / sample_rate as f64);
         let t_end = track.len_samples.map(t_of);
         if events.send(Event::TrackStarted { ix, len: t_end }).await.is_err() {
@@ -497,16 +501,30 @@ impl Track {
     }
 }
 
-struct PulseSink(pulse_simple::Playback<[i16; 2]>);
+struct PulseSink {
+    out: pulse_simple::Playback<[i16; 2]>,
+    /// The rate the stream was opened at, so the loop can tell when a track needs a new one.
+    rate: u32,
+}
 
 impl PulseSink {
-    fn new() -> Self {
-        Self(pulse_simple::Playback::<[i16; 2]>::new(
+    fn new(rate: u32) -> Self {
+        let out = pulse_simple::Playback::<[i16; 2]>::new(
             "phonoscule-gui",
             "GUI application based on the Phonoscule music player library",
             None,
-            PLAYBACK_SAMPLE_RATE,
-        ))
+            rate,
+        );
+        Self { out, rate }
+    }
+
+    /// Reopens the stream at `rate` if it differs from the current one. The samples we output are
+    /// always 16-bit stereo, so only the rate can change between tracks; the audio server handles
+    /// converting it to the device's rate, so we never resample ourselves.
+    fn ensure_rate(&mut self, rate: u32) {
+        if self.rate != rate {
+            *self = Self::new(rate);
+        }
     }
 
     /// Writes one chunk, blocking until PulseAudio accepts it (its buffer paces us to real time).
@@ -516,7 +534,7 @@ impl PulseSink {
         }
         let pulse_samples = unsafe { core::mem::transmute::<&[OutSample], &[[i16; 2]]>(samples) };
         assert_eq!(core::mem::size_of_val(samples), core::mem::size_of_val(pulse_samples));
-        self.0.write(pulse_samples);
+        self.out.write(pulse_samples);
     }
 }
 
