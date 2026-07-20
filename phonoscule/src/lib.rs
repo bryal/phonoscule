@@ -61,7 +61,7 @@ mod test {
             assert_eq!(tags.album, "Listless/Second Skin 2019 Single");
             assert_eq!(tags.artist, "Siamese Twins");
             let mut samples = match wav.samples {
-                sample::MultiReader::StereoPcmS16(s) => s,
+                sample::MultiReader::StereoS16(s) => s,
                 _ => panic!("unexpected format, {:?}", wav.format),
             };
             let mut nleft = wav.format.len_samples();

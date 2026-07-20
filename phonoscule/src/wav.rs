@@ -6,9 +6,9 @@
 //! very common in .wav files in the wild. Assumptions / limitations include:
 //! - All headers / metadata / information must come before the `data` chunk.
 //! - Cue point and playlist chunks are ignored.
-//! - Audio data must be uncompressed PCM.
+//! - Audio data must be uncompressed: integer PCM (8/16/24/32-bit) or 32-bit IEEE float.
 //! - PCM data must be little-endian.
-//! - Audio must be stereo (2 channels) or mono (1 channel)
+//! - Audio must be stereo (2 channels) or mono (1 channel).
 //! - "Valid bits per sample" is equal to "bits per sample"
 
 use crate::{
@@ -124,26 +124,24 @@ where
         };
         let mut format = format?;
         format.size = data_size as u64;
-        let samples = match (format.float, format.bits_per_sample, format.block_size, format.n_channels) {
-            (false, 16, 4, 2) => {
-                log::debug!("Format matches Stereo PCM S16");
-                Some(MultiReader::StereoPcmS16(FormatReader::new(inp)))
+        // Mono or stereo, integer 8/16/24/32-bit or 32-bit float; anything else (more channels,
+        // exotic widths) is unsupported. All read out as interleaved 16-bit stereo.
+        let samples = match (format.float, format.bits_per_sample, format.n_channels) {
+            (false, 8, 1) => MultiReader::MonoU8(FormatReader::new(inp)),
+            (false, 8, 2) => MultiReader::StereoU8(FormatReader::new(inp)),
+            (false, 16, 1) => MultiReader::MonoS16(FormatReader::new(inp)),
+            (false, 16, 2) => MultiReader::StereoS16(FormatReader::new(inp)),
+            (false, 24, 1) => MultiReader::MonoS24(FormatReader::new(inp)),
+            (false, 24, 2) => MultiReader::StereoS24(FormatReader::new(inp)),
+            (false, 32, 1) => MultiReader::MonoS32(FormatReader::new(inp)),
+            (false, 32, 2) => MultiReader::StereoS32(FormatReader::new(inp)),
+            (true, 32, 1) => MultiReader::MonoF32(FormatReader::new(inp)),
+            (true, 32, 2) => MultiReader::StereoF32(FormatReader::new(inp)),
+            (float, bits, channels) => {
+                log::error!("Unsupported format: {bits} bit {channels}-channel {}", if float { "float" } else { "integer" });
+                return None;
             }
-            (false, 24, 6, 2) => {
-                log::debug!("Format matches Stereo PCM S24");
-                Some(MultiReader::StereoPcmS24(FormatReader::new(inp)))
-            }
-            (_, _, _, _) => {
-                log::error!(
-                    "Unsupported format: {} bit {}-channel {} (block size = {})",
-                    format.bits_per_sample,
-                    format.n_channels,
-                    if format.float { "float" } else { "signed/unsigned" },
-                    format.block_size
-                );
-                None
-            }
-        }?;
+        };
         Some(Wav { format, samples })
     }
 }
