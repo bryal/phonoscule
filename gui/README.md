@@ -83,6 +83,39 @@ The application should then show up in your desktop environment's application la
 - The mouse wheel over the Player scrolls tracks (vertically) or albums (horizontally);
   over the volume bar it sets the volume
 
+## Screenshots
+
+> ![Library grid of album covers](../screenshots/browse-albums.jpg)
+>
+> Album-focused browsing in the *Library* view.
+> Filter down to a manageable subset or just scroll around.
+>
+> Play/enqueue all matching albums, or individual albums,
+> or **Enter** an individual album to independently play/enqueue one of its tracks.*
+
+> ![Genre filter picker open over the library](../screenshots/filter-genres.jpg)
+>
+> Keyboard-friendly modals for filtering by genre and artist.
+> Then you can sort the results by year or name, optionally grouped by artist.
+
+> ![Library narrowed to two albums by genre, artist, and search](../screenshots/precise-search.jpg)
+> 
+> There's of course also a free text input field so can search for albums by name,
+> so you can get those really precise results.
+
+> ![Cover Flow player view with a warm backdrop glow](../screenshots/cover-flow_glow_1.jpg)
+> ![Cover Flow player view with a violet backdrop glow](../screenshots/cover-flow_glow_2.jpg)
+>
+> The *Player* view lays the queue out as a Cover Flow.
+> You can click or scroll or use the keyboard to navigate the queue and playing track.
+> Currently album's tracks are listed in an overlay to the right.
+> Control this application's volume in the OS volume mixer using the slider in the top right.
+
+> ![A single album in the player with a magenta glow](../screenshots/glow.jpg)
+>
+> We derive an accent color from the album art and use it to draw a nice backdrop glow
+> and tint some user interface elements.
+
 ## License
 
 Part of the [Phonoscule](../README.md) project, under the MPL 2.0.
