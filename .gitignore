@@ -2,4 +2,5 @@ target
 .embuild
 TestLibrary
 .dir-locals.el
-doc/resampler-en.pdf
+/doc/resampler-en.pdf
+/NOTES.org

@@ -1,13 +1,15 @@
 [package]
 name = "phonoscule"
+version = "0.2.0-dev"
+description = "A framework for building music players."
 authors.workspace = true
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 # rev is latest as of its commit date 2026-07-05
-opuscule = { git = "https://codeberg.org/jojo-laplace/opuscule", rev = "baeb2b21eae752c898ba9638a6c91b1b3f71ee31" }
+opuscule = "0.2.0"
 ogg = "0.9.2"
 utf8-decode = "2.0"
 embedded-io       = { workspace = true }

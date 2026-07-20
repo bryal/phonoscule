@@ -1,12 +1,14 @@
 [package]
 name = "phonoscule-gui"
+version = "1.0.0-dev"
+description = "An album-centric graphical music player built on phonoscule and iced."
 authors.workspace = true
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
-phonoscule = { path = "../phonoscule" }
+phonoscule = { version = "0.2.0-dev", path = "../phonoscule" }
 pulse-simple = "1.0.1"
 iced = { version = "0.14.0", features = ["image", "smol", "advanced", "lazy"] }
 image = "0.25.10"
@@ -16,10 +18,6 @@ anyhow = "1.0"
 toml_edit = "0.25"
 shellexpand = "3.1"
 futures = "0.3.32"
-# iced's image `Handle` stores its pixels as a `bytes::Bytes` (a shared, ref-counted buffer, which
-# iced already pulls in transitively); we name the type only to hand a cheap clone of the thumbnail
-# to the cover-flow GPU upload without copying. Our own high-res buffers use `Arc<[u8]>` instead, so
-# this stays confined to the one buffer iced hands us in this type.
 bytes = "1.12"
 smol                 = { workspace = true }
 embedded-io-adapters = { workspace = true }
@@ -27,8 +25,6 @@ embedded-io-async    = { workspace = true }
 log                  = { workspace = true, features = ["std"] }
 simple_logger        = { workspace = true }
 url = "2.5.8"
-# A small bespoke MPRIS server built on zbus directly (see media.rs). zbus is already in the tree
-# (iced pulls it), and the default async-io runtime matches iced's smol executor.
 zbus = "5.17"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

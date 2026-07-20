@@ -4,9 +4,9 @@ resolver = "3"
 
 [workspace.package]
 authors = ["JoJo <jo@jo.zone>"]
-version = "0.2.0"
 edition = "2024"
 license = "MPL-2.0"
+repository = "https://codeberg.org/jojo-laplace/phonoscule"
 
 [workspace.dependencies]
 log = { version = "0.4.33", features = ["max_level_trace", "release_max_level_debug"] }

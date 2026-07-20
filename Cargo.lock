@@ -3210,8 +3210,9 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "opuscule"
-version = "0.2.0-dev"
-source = "git+https://codeberg.org/jojo-laplace/opuscule?rev=baeb2b21eae752c898ba9638a6c91b1b3f71ee31#baeb2b21eae752c898ba9638a6c91b1b3f71ee31"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95ba00316be72d70cdedb4f764a0dc7f0070751e5fa1a779af3674ede77cebd0"
 
 [[package]]
 name = "orbclient"
@@ -3334,7 +3335,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phonoscule"
-version = "0.2.0"
+version = "0.2.0-dev"
 dependencies = [
  "criterion",
  "embedded-io",
@@ -3350,7 +3351,7 @@ dependencies = [
 
 [[package]]
 name = "phonoscule-cli"
-version = "0.2.0"
+version = "0.1.0-dev"
 dependencies = [
  "clap",
  "crossterm",
@@ -3365,7 +3366,7 @@ dependencies = [
 
 [[package]]
 name = "phonoscule-gui"
-version = "0.2.0"
+version = "1.0.0-dev"
 dependencies = [
  "anyhow",
  "bytemuck",

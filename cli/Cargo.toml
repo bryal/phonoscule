@@ -1,18 +1,20 @@
 [package]
 name = "phonoscule-cli"
 description = "A simple CLI music player based on Phonoscule"
+version = "0.1.0-dev"
+publish = false
 authors.workspace = true
-version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
+phonoscule = { path = "../phonoscule" }
 clap = { version = "4.6", features = ["derive"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures = "0.3.32"
 pulse-simple = "1.0.1"
 time = { version = "0.3.53", features = ["formatting", "macros"] }
-phonoscule = { path = "../phonoscule" }
 embedded-io-adapters = { workspace = true }
 smol                 = { workspace = true }
 log                  = { workspace = true, features = ["std"] }
