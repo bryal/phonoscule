@@ -20,7 +20,6 @@ mod test {
         wav::*,
     };
     use embedded_io_adapters::futures_03::FromFutures;
-    use smol::{fs::File, io::BufReader};
     use std::sync::Once;
 
     static INIT: Once = Once::new();
@@ -50,39 +49,74 @@ mod test {
         }
     }
 
+    /// A minimal valid WAV: 48 kHz stereo 16-bit PCM silence with LIST-INFO tags and `n_frames`
+    /// of audio. Built in-memory so the tests own no audio files.
+    fn wav_bytes(title: &str, artist: &str, album: &str, n_frames: u32) -> Vec<u8> {
+        fn chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut out = Vec::with_capacity(8 + body.len() + 1);
+            out.extend(id);
+            out.extend((body.len() as u32).to_le_bytes());
+            out.extend(body);
+            if body.len() % 2 == 1 {
+                out.push(0); // chunks are padded to even sizes
+            }
+            out
+        }
+        fn info(id: &[u8; 4], value: &str) -> Vec<u8> {
+            chunk(id, &[value.as_bytes(), b"\0"].concat())
+        }
+        let mut fmt = Vec::new();
+        fmt.extend(1u16.to_le_bytes()); // WAVE_FORMAT_PCM
+        fmt.extend(2u16.to_le_bytes()); // channels
+        fmt.extend(48000u32.to_le_bytes()); // blocks per second
+        fmt.extend((48000u32 * 4).to_le_bytes()); // avg bytes per second
+        fmt.extend(4u16.to_le_bytes()); // block size
+        fmt.extend(16u16.to_le_bytes()); // bits per sample
+        let list = [&b"INFO"[..], &info(b"INAM", title), &info(b"IART", artist), &info(b"IPRD", album)].concat();
+        let data = vec![0u8; n_frames as usize * 4];
+        let riff = [&b"WAVE"[..], &chunk(b"fmt ", &fmt), &chunk(b"LIST", &list), &chunk(b"data", &data)].concat();
+        let mut out = Vec::new();
+        out.extend(b"RIFF");
+        out.extend((riff.len() as u32).to_le_bytes());
+        out.extend(riff);
+        out
+    }
+
     #[test]
     fn parse_a_wav_file() {
         init();
         smol::block_on(async {
-            let f = Skippable(FromFutures::new(BufReader::new(File::open("../assets/Listless-s16.wav").await.unwrap())));
+            let data = wav_bytes("Silent Night", "Nobody", "Quiet Sessions", 4800);
+            let f = Skippable(FromFutures::new(smol::io::Cursor::new(&data[..])));
             let mut tags = Tags::default();
             let wav = Wav::parse(f, |tag| tags.set(tag)).await.unwrap();
-            assert_eq!(tags.title, "Listless");
-            assert_eq!(tags.album, "Listless/Second Skin 2019 Single");
-            assert_eq!(tags.artist, "Siamese Twins");
+            assert_eq!(tags.title, "Silent Night");
+            assert_eq!(tags.artist, "Nobody");
+            assert_eq!(tags.album, "Quiet Sessions");
             let mut samples = match wav.samples {
                 sample::MultiReader::StereoS16(s) => s,
                 _ => panic!("unexpected format, {:?}", wav.format),
             };
+            assert_eq!(wav.format.len_samples(), 4800);
             let mut nleft = wav.format.len_samples();
             loop {
                 let mut buf = [Default::default(); 32];
                 let nread = samples.read_samples(&mut buf).await.unwrap();
                 if nleft == 0 {
-                    assert!(nread == 0, "wav format says no left, but we read another {nread}");
+                    assert!(nread == 0, "wav format says none left, but we read another {nread}");
                     break;
                 } else {
-                    assert!(nread > 0 && nread as u64 <= nleft, "wav format says there are {nleft} left, but we read {nread}");
+                    assert!(nread > 0 && nread as u64 <= nleft, "wav format says {nleft} left, but we read {nread}");
                     nleft -= nread as u64;
                 }
             }
         })
     }
 
-    /// Builds a valid, decodable Ogg Opus stream of stereo silence: `n_packets` zero-length
-    /// (DTX) CELT frames of 20 ms each. Granule positions count raw decoded samples, of which
-    /// the first `PRE_SKIP` are dropped (RFC 7845 §4).
-    fn silence_opus(n_packets: usize) -> Vec<u8> {
+    /// Builds a valid, decodable Ogg Opus stream of stereo silence with the given Vorbis
+    /// `comments` (key, value): `n_packets` zero-length (DTX) CELT frames of 20 ms each. Granule
+    /// positions count raw decoded samples, of which the first `PRE_SKIP` are dropped (RFC 7845 §4).
+    fn silence_opus(n_packets: usize, comments: &[(&str, &str)]) -> Vec<u8> {
         const PRE_SKIP: u64 = 312;
         let mut head = Vec::new();
         head.extend(b"OpusHead");
@@ -98,7 +132,12 @@ mod test {
         let vendor = b"phonoscule-test";
         tags.extend((vendor.len() as u32).to_le_bytes());
         tags.extend(vendor);
-        tags.extend(0u32.to_le_bytes()); // no comments
+        tags.extend((comments.len() as u32).to_le_bytes());
+        for (key, value) in comments {
+            let comment = format!("{key}={value}");
+            tags.extend((comment.len() as u32).to_le_bytes());
+            tags.extend(comment.as_bytes());
+        }
 
         let serial = 0x5eed;
         let mut out = Vec::new();
@@ -129,7 +168,7 @@ mod test {
         init();
         smol::block_on(async {
             let minute = 60 * 48000u64;
-            let data = silence_opus(9000); // 3 minutes of silence
+            let data = silence_opus(9000, &[]); // 3 minutes of silence
             let f = FromFutures::new(smol::io::Cursor::new(&data[..]));
             let opus = OggOpus::parse_seekable(f, |_| {}).await.unwrap();
             let len = opus.format.len_samples.unwrap();
@@ -170,14 +209,17 @@ mod test {
     fn parse_an_opus_file() {
         init();
         smol::block_on(async {
-            let f = Skippable(FromFutures::new(BufReader::new(File::open("../assets/Listless.opus").await.unwrap())));
+            let comments = [("TITLE", "Silent Night"), ("ARTIST", "Nobody"), ("ALBUM", "Quiet Sessions")];
+            let data = silence_opus(500, &comments); // 10 s
+            let f = FromFutures::new(smol::io::Cursor::new(&data[..]));
             let mut tags = Tags::default();
             let opus = OggOpus::parse_seekable(f, |tag| tags.set(tag)).await.unwrap();
-            assert_eq!(tags.title, "Listless");
-            assert_eq!(tags.album, "Listless/Second Skin 2019 Single");
-            assert_eq!(tags.artist, "Siamese Twins");
+            assert_eq!(tags.title, "Silent Night");
+            assert_eq!(tags.artist, "Nobody");
+            assert_eq!(tags.album, "Quiet Sessions");
             assert_eq!(opus.format.n_channels, 2);
             let len = opus.format.len_samples.expect("tail scan should find the last page granule");
+            assert_eq!(len, 500 * 960 - 312); // total decoded minus the pre-skip
             let mut samples = opus.samples;
             let mut total: u64 = 0;
             loop {
@@ -188,9 +230,6 @@ mod test {
                 }
                 total += nread as u64;
             }
-            // The track is 2:46 at 48 kHz.
-            let rate = opus.format.sample_rate() as u64;
-            assert!(total > 160 * rate && total < 170 * rate, "unexpected total sample count {total}");
             // We decode every frame in full while the granule-derived length excludes the final
             // frame's end padding, so the decoded total may exceed it by less than one frame.
             assert!(len <= total && total - len < 5760, "len_samples {len} vs decoded total {total}");
