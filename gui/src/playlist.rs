@@ -1,8 +1,8 @@
 //! Persistence of the player's session across runs, split over two files in the XDG state
 //! directory: `playlist.json` is the queue itself -- essentially just the list of tracks -- while
-//! `player.json` holds the session state around it (current index, repeat mode). The split keeps
-//! the playlist a plain track list, one step away from a future M3U export/import, while the
-//! volatile session state churns in its own small file.
+//! `player.json` holds the session state around it (current index, repeat mode, and the library's
+//! sort order). The split keeps the playlist a plain track list, one step away from a future M3U
+//! export/import, while the volatile session state churns in its own small file.
 //!
 //! Only paths are stored: tags and album grouping rehydrate from the library scan at boot (see the
 //! `ScanEvent::Album` handling in `update`). Both files are saved best-effort on every change and
@@ -12,13 +12,15 @@
 //! must survive a cache wipe.
 
 use crate::player::Repeat;
+use crate::sort::SortOrder;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Bumped when [`SavedPlaylist`] changes shape; old or unreadable files restore an empty queue.
 /// (v1 was the pre-split format carrying per-track tags.)
 const PLAYLIST_VERSION: u32 = 2;
-const PLAYER_VERSION: u32 = 1;
+/// Bumped when [`SavedPlayer`] changes shape. (v2 added the library sort order.)
+const PLAYER_VERSION: u32 = 2;
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct SavedPlaylist {
@@ -37,11 +39,12 @@ pub struct SavedPlayer {
     version: u32,
     pub current: usize,
     pub repeat: Repeat,
+    pub sort: SortOrder,
 }
 
 impl SavedPlayer {
-    pub fn new(current: usize, repeat: Repeat) -> Self {
-        SavedPlayer { version: PLAYER_VERSION, current, repeat }
+    pub fn new(current: usize, repeat: Repeat, sort: SortOrder) -> Self {
+        SavedPlayer { version: PLAYER_VERSION, current, repeat, sort }
     }
 }
 
@@ -51,6 +54,7 @@ pub struct Restored {
     pub tracks: Vec<PathBuf>,
     pub current: usize,
     pub repeat: Repeat,
+    pub sort: SortOrder,
 }
 
 /// Where the queue is saved: `$XDG_STATE_HOME/phonoscule/playlist.json`, falling back to
@@ -94,7 +98,7 @@ pub async fn load(playlist: Option<PathBuf>, player: Option<PathBuf>) -> Restore
         }
     }
     let current = current.min(tracks.len().saturating_sub(1));
-    Restored { tracks, current, repeat: state.repeat }
+    Restored { tracks, current, repeat: state.repeat, sort: state.sort }
 }
 
 pub async fn save_playlist(path: Option<PathBuf>, playlist: SavedPlaylist) {
@@ -160,13 +164,15 @@ mod test {
             smol::fs::write(&a, b"x").await.unwrap();
             smol::fs::write(&b, b"x").await.unwrap();
 
+            let sort = crate::sort::SortOrder { field: crate::sort::SortField::Year, ..Default::default() };
             save_playlist(playlist.clone(), SavedPlaylist::new(vec![a.clone(), root.join("gone.opus"), b.clone()])).await;
-            save_player(player.clone(), SavedPlayer::new(2, Repeat::Album)).await;
+            save_player(player.clone(), SavedPlayer::new(2, Repeat::Album, sort)).await;
             let restored = load(playlist.clone(), player.clone()).await;
 
             assert_eq!(restored.tracks, [a, b], "the vanished track is dropped");
             assert_eq!(restored.current, 1, "current follows its item past the dropped one");
             assert_eq!(restored.repeat, Repeat::Album, "the repeat mode round-trips");
+            assert_eq!(restored.sort, sort, "the sort order round-trips");
         });
 
         std::fs::remove_dir_all(&root).unwrap();

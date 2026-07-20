@@ -2,13 +2,14 @@
 
 use crate::model::{
     App, Filter, Modal, ModalKind, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, SEARCH_INPUT_ID,
-    SORT_SCROLL_ID, ScanState, SortMenu, SortOrder, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id,
-    current_glow, entries, flow_target, glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
+    SORT_SCROLL_ID, ScanState, SortMenu, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow,
+    entries, flow_target, glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::mouse::ScrollDelta;
 use phonoscule_gui::library::{self, Album};
+use phonoscule_gui::sort::SortOrder;
 use phonoscule_gui::{media, player, playlist};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -387,17 +388,17 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // the open modal (or the focused search field, when none is up -- stop 3).
             use PickerSubject::{Artist, Genre};
             let current = match &app.modal {
-                Some(Modal::Picker(picker)) if picker.subject == Genre => 0,
-                Some(Modal::Picker(picker)) if picker.subject == Artist => 1,
-                Some(Modal::Sort(_)) => 2,
+                Some(Modal::Sort(_)) => 0,
+                Some(Modal::Picker(picker)) if picker.subject == Genre => 1,
+                Some(Modal::Picker(picker)) if picker.subject == Artist => 2,
                 _ => 3, // the album search field
             };
             let stops = 4;
             let next = if backwards { (current + stops - 1) % stops } else { (current + 1) % stops };
             return match next {
-                0 => open_picker(app, Genre),
-                1 => open_picker(app, Artist),
-                2 => open_sort(app),
+                0 => open_sort(app),
+                1 => open_picker(app, Genre),
+                2 => open_picker(app, Artist),
                 _ => {
                     app.modal = None;
                     focus_search()
@@ -435,10 +436,10 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 menu.selected = slot;
             }
         }
-        Msg::SortChoose(slot) => pick_sort(app, slot),
+        Msg::SortChoose(slot) => return pick_sort(app, slot),
         Msg::SortPick => {
             if let Some(Modal::Sort(menu)) = &app.modal {
-                pick_sort(app, menu.selected);
+                return pick_sort(app, menu.selected);
             }
         }
         Msg::OpenActionsMenu => app.modal = Some(Modal::Actions),
@@ -739,11 +740,12 @@ fn save_playlist(app: &App) -> Task<Msg> {
     Task::future(playlist::save_playlist(playlist::playlist_file(), playlist::SavedPlaylist::new(tracks))).discard()
 }
 
-/// Snapshots the session state around the queue (current track, repeat mode) to disk; returned by
-/// everything that changes either. Split from [`save_playlist`]: track changes are frequent and
-/// needn't rewrite the whole track list.
+/// Snapshots the session state around the queue (current track, repeat mode, sort order) to disk;
+/// returned by everything that changes any of them. Split from [`save_playlist`]: these changes
+/// are frequent and needn't rewrite the whole track list.
 fn save_player(app: &App) -> Task<Msg> {
-    Task::future(playlist::save_player(playlist::player_file(), playlist::SavedPlayer::new(app.current, app.repeat))).discard()
+    let saved = playlist::SavedPlayer::new(app.current, app.repeat, app.sort);
+    Task::future(playlist::save_player(playlist::player_file(), saved)).discard()
 }
 
 /// What a shuffle permutes: single tracks, or whole albums (each album's tracks stay together, in
@@ -927,13 +929,15 @@ fn open_sort(app: &mut App) -> Task<Msg> {
 }
 
 /// Applies the sort picker's slot `slot`: sets the order, closes the picker, drops the grid
-/// selection (it indexes the filtered list, which is about to reorder), and refreshes the grid.
-fn pick_sort(app: &mut App, slot: usize) {
-    let Some(&order) = SortOrder::ALL.get(slot) else { return };
+/// selection (it indexes the filtered list, which is about to reorder), refreshes the grid, and
+/// persists the new order (it survives restarts).
+fn pick_sort(app: &mut App, slot: usize) -> Task<Msg> {
+    let Some(&order) = SortOrder::ALL.get(slot) else { return Task::none() };
     app.sort = order;
     app.modal = None;
     app.selected = None;
     refresh_filter(app);
+    save_player(app)
 }
 
 /// Moves the sort picker's keyboard selection one option, clamped, and snaps the list to it.

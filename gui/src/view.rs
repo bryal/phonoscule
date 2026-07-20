@@ -2,7 +2,7 @@
 
 use crate::model::{
     App, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, SEARCH_INPUT_ID, SORT_SCROLL_ID, ScanState, SortMenu,
-    SortOrder, TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of,
+    TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of,
 };
 use crate::update::{Grouping, Msg, Promotion, Scope};
 use iced::widget::{
@@ -15,6 +15,7 @@ use phonoscule_gui::background;
 use phonoscule_gui::coverflow::{FlowCover, cover_flow};
 use phonoscule_gui::library::Album;
 use phonoscule_gui::player;
+use phonoscule_gui::sort::SortOrder;
 use std::cmp::min;
 use std::time::Duration;
 
@@ -326,9 +327,9 @@ fn library_view(app: &App) -> Element<'_, Msg> {
 /// searchable picker), a sort-order chip, the fuzzy album-title search, and play/queue-all buttons
 /// acting on every album currently matching, in displayed order.
 fn filter_tools(app: &App) -> Element<'_, Msg> {
+    let sort = chip(&app.sort.label(), Msg::OpenSort);
     let genre = chip(app.filter.genre.as_deref().unwrap_or("All genres"), Msg::OpenPicker(PickerSubject::Genre));
     let artist = chip(app.filter.artist.as_deref().unwrap_or("All artists"), Msg::OpenPicker(PickerSubject::Artist));
-    let sort = chip(&app.sort.label(), Msg::OpenSort);
     let search =
         text_input("Search albums…", &app.filter.search).id(SEARCH_INPUT_ID).on_input(Msg::SearchChanged).size(13).width(210);
     let enabled = !app.filtered.is_empty();
@@ -340,9 +341,9 @@ fn filter_tools(app: &App) -> Element<'_, Msg> {
     let clear = button(clear).style(button::text).on_press_maybe((!app.filter.is_empty()).then_some(Msg::ClearFilters));
     row![
         clear,
+        sort,
         genre,
         artist,
-        sort,
         search,
         button(play).style(button::text).on_press_maybe(enabled.then_some(Msg::PlayAll)),
         button(enqueue).style(button::text).on_press_maybe(enabled.then_some(Msg::QueueAll)),
