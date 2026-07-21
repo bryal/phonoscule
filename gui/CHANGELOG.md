@@ -1,6 +1,19 @@
 # Changelog
 
 
+v1.1.0 (2026-07-21)
+------------------------------------------------------------
+
+- **UI scaling.** A `scaling` factor in the config sizes the whole interface for
+  high-DPI displays (1.0 is unscaled, larger is bigger). Ctrl+plus and Ctrl+minus
+  zoom it live and Ctrl+= resets to the configured value; the live changes last
+  only for the session and are not written back to the config.
+- **Cover Flow fits short windows.** On a short window the now-playing cover no
+  longer slides up behind the top bar or down behind the playback bar. It scales
+  to fit the clear space between the two, sized from the window height and seated
+  a little above centre so its reflection keeps room below.
+
+
 v1.0.0 (2026-07-20)
 ------------------------------------------------------------
 

@@ -3335,6 +3335,20 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phonoscule"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f15ec803ac067ff2a27953a8eb75d7e345eaf573f6ddfc7724dffaab301996c6"
+dependencies = [
+ "embedded-io",
+ "embedded-io-async",
+ "log",
+ "ogg",
+ "opuscule",
+ "utf8-decode",
+]
+
+[[package]]
+name = "phonoscule"
 version = "0.3.0-dev"
 dependencies = [
  "criterion",
@@ -3358,7 +3372,7 @@ dependencies = [
  "embedded-io-adapters",
  "futures",
  "log",
- "phonoscule",
+ "phonoscule 0.3.0-dev",
  "pulse-simple",
  "smol",
  "time",
@@ -3366,7 +3380,7 @@ dependencies = [
 
 [[package]]
 name = "phonoscule-gui"
-version = "1.1.0-dev"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3382,7 +3396,7 @@ dependencies = [
  "log",
  "notify",
  "ogg",
- "phonoscule",
+ "phonoscule 0.2.0",
  "pulse-simple",
  "serde",
  "serde_json",
