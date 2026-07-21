@@ -35,12 +35,46 @@ static FONTS_DATA: &[&[u8]] = &[
     include_bytes!("../assets/font-awesome/Font Awesome 7 Free-Solid-900.otf"),
 ];
 
+/// `--help` text: what the program is and how to run it. The configuration section is printed after
+/// it from [`conf::CONFIG_HELP`], which lives next to the parser it documents.
+const HELP: &str = "\
+Phonoscule: an album-art-focused music player with an iPod-style Cover Flow.
+Browse your library by cover art, then play whole albums into a reflective
+now-playing view.
+
+Usage: phonoscule-gui [CONFIG]
+
+Arguments:
+  CONFIG         Path to a config file (optional; see below).
+
+Options:
+  -h, --help     Print this help and exit.
+  -V, --version  Print version information and exit.
+
+";
+
 fn main() -> anyhow::Result<()> {
+    // Deliberately tiny hand-rolled argument handling (no dependency): the two flags, and at most
+    // one positional -- a config path. We do not intend to grow a real flag set.
+    let mut arg_conf_path = None;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{HELP}{}", conf::CONFIG_HELP);
+                return Ok(());
+            }
+            "-V" | "--version" => {
+                println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            _ if arg.starts_with('-') => anyhow::bail!("unknown option `{arg}`; try `--help`"),
+            _ if arg_conf_path.is_none() => arg_conf_path = Some(PathBuf::from(arg)),
+            _ => anyhow::bail!("expected at most one argument: a path to a config file"),
+        }
+    }
+
     simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).env().init().unwrap();
 
-    let mut args = std::env::args().skip(1);
-    let arg_conf_path = args.next().map(PathBuf::from);
-    anyhow::ensure!(args.next().is_none(), "expected at most one argument: a path to a config file");
     let conf = smol::block_on(Conf::load(conf::locate(arg_conf_path)))?;
     let restored = smol::block_on(playlist::load(playlist::playlist_file(), playlist::player_file()));
     let index = smol::block_on(library::load_index(library::default_index_file()));

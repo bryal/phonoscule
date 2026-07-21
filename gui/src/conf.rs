@@ -96,6 +96,24 @@ fn is_not_found(e: &anyhow::Error) -> bool {
     e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
 }
 
+/// Help describing the config file: where it is looked for, and every setting [`Settings::parse`]
+/// understands. Kept next to the parser so the two are updated together; the GUI's `--help` prints
+/// it (see `main`). Keep the `scaling` range in step with [`SCALE_MIN`] / [`SCALE_MAX`] below.
+pub const CONFIG_HELP: &str = "\
+Configuration file:
+  A TOML file, looked for in this order: the CONFIG path above, then
+  $PHONOSCULE_CONFIG, then $XDG_CONFIG_HOME/phonoscule.toml, then
+  ~/.config/phonoscule.toml. Absent at the default location just uses defaults.
+
+  Settings:
+    music-dir  Path to the music library. Required once a config file exists
+               (without one it defaults to ~/Music). `~` and environment
+               variables are expanded; a relative path resolves against the
+               config file's own directory.
+    scaling    UI scale factor for high-DPI displays: 1.0 is unscaled, larger is
+               bigger. Optional, default 1.0, clamped to 0.5 to 3.0.
+";
+
 impl Settings {
     fn parse(src: &str) -> anyhow::Result<Self> {
         let toml: toml_edit::DocumentMut = src.parse()?;
