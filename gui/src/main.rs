@@ -39,13 +39,11 @@ static FONTS_DATA: &[&[u8]] = &[
 /// it from [`conf::CONFIG_HELP`], which lives next to the parser it documents.
 const HELP: &str = "\
 Phonoscule: an album-art-focused music player with an iPod-style Cover Flow.
-Browse your library by cover art, then play whole albums into a reflective
-now-playing view.
 
 Usage: phonoscule-gui [CONFIG]
 
 Arguments:
-  CONFIG         Path to a config file (optional; see below).
+  CONFIG         (optional) Path to a config file.
 
 Options:
   -h, --help     Print this help and exit.

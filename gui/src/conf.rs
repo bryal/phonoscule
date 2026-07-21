@@ -103,7 +103,7 @@ pub const CONFIG_HELP: &str = "\
 Configuration file:
   A TOML file, looked for in this order: the CONFIG path above, then
   $PHONOSCULE_CONFIG, then $XDG_CONFIG_HOME/phonoscule.toml, then
-  ~/.config/phonoscule.toml. Absent at the default location just uses defaults.
+  ~/.config/phonoscule.toml. If no file is found, default values are used.
 
   Settings:
     music-dir  Path to the music library. Required once a config file exists
