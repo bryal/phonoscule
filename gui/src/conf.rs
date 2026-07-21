@@ -9,6 +9,11 @@ use anyhow::Context as _;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
+/// Range the UI scale factor is clamped to -- both the configured `scaling` and the live Ctrl +/-
+/// zoom (see [`Zoom`](crate::update::Zoom)). Wide enough to be useful, narrow enough to stay usable.
+pub const SCALE_MIN: f32 = 0.5;
+pub const SCALE_MAX: f32 = 3.0;
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Conf {
     /// Where the settings were read from (kept for future format-preserving saving).
@@ -26,11 +31,15 @@ impl Deref for Conf {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
     pub music_dir: PathBuf,
+    /// The UI scale factor (`scaling` in the config): 1.0 is unscaled, larger is bigger -- for
+    /// high-DPI displays. Optional; clamped to [`SCALE_MIN`, `SCALE_MAX`]. Ctrl +/- nudge it live
+    /// for the session (see [`Zoom`](crate::update::Zoom)) without rewriting the file.
+    pub scaling: f32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { music_dir: std::env::home_dir().unwrap_or_default().join("Music") }
+        Self { music_dir: std::env::home_dir().unwrap_or_default().join("Music"), scaling: 1.0 }
     }
 }
 
@@ -95,7 +104,17 @@ impl Settings {
         let music_dir_str = music_dir_item.as_str().context("config key `music-dir` should be a string")?;
         let music_dir = PathBuf::from(shellexpand::full(music_dir_str)?.as_ref());
 
-        Ok(Self { music_dir })
+        // `scaling` is optional (default 1.0) and accepts an integer or a float, e.g. `scaling = 2`
+        // or `scaling = 1.25`; out-of-range values are clamped rather than rejected.
+        let scaling = match toml.get("scaling") {
+            None => Settings::default().scaling,
+            Some(item) => {
+                let n = item.as_float().or_else(|| item.as_integer().map(|i| i as f64));
+                (n.context("config key `scaling` should be a number")? as f32).clamp(SCALE_MIN, SCALE_MAX)
+            }
+        };
+
+        Ok(Self { music_dir, scaling })
     }
 }
 
@@ -132,5 +151,24 @@ mod test {
     fn parse_errors_are_descriptive() {
         assert!(Settings::parse("").unwrap_err().to_string().contains("missing key `music-dir`"));
         assert!(Settings::parse("music-dir = 7").unwrap_err().to_string().contains("should be a string"));
+    }
+
+    #[test]
+    fn scaling_defaults_to_one_when_absent() {
+        assert_eq!(Settings::parse("music-dir = \"/m\"").unwrap().scaling, 1.0);
+    }
+
+    #[test]
+    fn scaling_parses_float_and_integer() {
+        assert_eq!(Settings::parse("music-dir = \"/m\"\nscaling = 1.25").unwrap().scaling, 1.25);
+        assert_eq!(Settings::parse("music-dir = \"/m\"\nscaling = 2").unwrap().scaling, 2.0);
+    }
+
+    #[test]
+    fn scaling_is_clamped_and_type_checked() {
+        assert_eq!(Settings::parse("music-dir = \"/m\"\nscaling = 99").unwrap().scaling, SCALE_MAX);
+        assert_eq!(Settings::parse("music-dir = \"/m\"\nscaling = 0.01").unwrap().scaling, SCALE_MIN);
+        let err = Settings::parse("music-dir = \"/m\"\nscaling = \"big\"").unwrap_err().to_string();
+        assert!(err.contains("should be a number"));
     }
 }

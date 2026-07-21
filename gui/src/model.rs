@@ -147,6 +147,9 @@ pub struct App {
     pub mixer: volume::VolumeControl,
     pub watcher: watcher::Watcher,
     pub conf: Conf,
+    /// The live UI scale factor handed to iced (see `main`), seeded from `conf.scaling` and nudged
+    /// by Ctrl +/- (see [`Zoom`](crate::update::Zoom)). Transient: never written back to the config.
+    pub scale: f32,
     pub scan: ScanState,
     pub albums: Vec<Album>,
     /// Whether `albums` has drifted from the persisted album index since it was last written:
@@ -330,6 +333,7 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
             media,
             mixer: volume::start(),
             watcher: watcher::start(&conf.music_dir),
+            scale: conf.scaling,
             conf: conf.clone(),
             scan: ScanState::Scanning,
             albums: index.clone(),

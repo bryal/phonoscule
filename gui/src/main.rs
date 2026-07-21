@@ -48,6 +48,7 @@ fn main() -> anyhow::Result<()> {
     let app = iced::application(boot(conf, restored, index), update, view)
         .title("Phonoscule")
         .subscription(subscription)
+        .scale_factor(|app| app.scale)
         .theme(theme)
         .style(style)
         .default_font(iced::Font { family: iced::font::Family::Name("Iosevka Fixed SS05"), ..iced::Font::DEFAULT });

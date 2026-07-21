@@ -20,6 +20,8 @@ pub enum Msg {
     /// Time to poll the music directory for changes.
     Rescan,
     Show(View),
+    /// Adjust the live UI scale: Ctrl +/- step it, Ctrl+= resets to the configured value.
+    Zoom(Zoom),
     PlayAlbum(usize),
     QueueAlbum(usize),
     /// Warm the global cache with an album's high-res cover ahead of a likely play: the library
@@ -207,6 +209,29 @@ pub enum QueueEdge {
     Last,
 }
 
+/// A live change to the UI scale factor (see [`App::scale`](crate::model::App)): Ctrl +/- step it,
+/// Ctrl+= resets to the configured value.
+#[derive(Debug, Clone, Copy)]
+pub enum Zoom {
+    In,
+    Out,
+    Reset,
+}
+
+impl Zoom {
+    /// This step applied to `scale`, clamped to the configured range; `Reset` returns to `baseline`
+    /// (the config's `scaling`, itself already in range).
+    fn apply(self, scale: f32, baseline: f32) -> f32 {
+        /// Multiplicative factor per zoom step -- a perceptually even ~10% either way.
+        const STEP: f32 = 1.1;
+        match self {
+            Zoom::In => (scale * STEP).min(crate::conf::SCALE_MAX),
+            Zoom::Out => (scale / STEP).max(crate::conf::SCALE_MIN),
+            Zoom::Reset => baseline,
+        }
+    }
+}
+
 pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
     match msg {
         Msg::Library(library::ScanEvent::Album(mut album)) => {
@@ -298,6 +323,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         },
         Msg::Show(v) => app.view = v,
+        Msg::Zoom(zoom) => app.scale = zoom.apply(app.scale, app.conf.scaling),
         // Grid messages carry indices into the filtered list: resolve them to real album indices
         // here, at the boundary, so everything downstream (the track menu included) speaks real
         // indices.
@@ -1281,6 +1307,12 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         (Key::Character(c), false, true) if c.as_str() == "k" => return one_shot(Msg::ClearQueue),
         (Key::Character(c), false, true) if c.as_str() == "f" => return one_shot(Msg::FocusSearch),
         (Key::Character(c), false, true) if c.as_str() == "w" => return one_shot(Msg::ClearFilters),
+        // Live UI zoom (see `App::scale`): Ctrl+plus in, Ctrl+minus out, Ctrl+= resets. Bound here,
+        // not per-view, so it works in the player too (which drops its own Ctrl chords). Shift is
+        // unconstrained -- `+` is Shift+`=` on most layouts, so it arrives with shift held.
+        (Key::Character(c), _, true) if c.as_str() == "+" => return one_shot(Msg::Zoom(Zoom::In)),
+        (Key::Character(c), _, true) if c.as_str() == "-" => return one_shot(Msg::Zoom(Zoom::Out)),
+        (Key::Character(c), _, true) if c.as_str() == "=" => return one_shot(Msg::Zoom(Zoom::Reset)),
         _ => {}
     }
 
