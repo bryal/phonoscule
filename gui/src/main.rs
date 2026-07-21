@@ -53,7 +53,18 @@ Options:
 
 ";
 
-fn main() -> anyhow::Result<()> {
+fn main() {
+    // Any startup failure -- a bad argument, an unreadable config, a failed window init -- prints
+    // the help after it, so a misuse points the user at how to run the program and where its
+    // config lives.
+    if let Err(e) = run() {
+        eprintln!("Error: {e:?}\n");
+        eprint!("{HELP}{}", conf::CONFIG_HELP);
+        std::process::exit(1);
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     // Deliberately tiny hand-rolled argument handling (no dependency): the two flags, and at most
     // one positional -- a config path. We do not intend to grow a real flag set.
     let mut arg_conf_path = None;
@@ -67,7 +78,7 @@ fn main() -> anyhow::Result<()> {
                 println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
-            _ if arg.starts_with('-') => anyhow::bail!("unknown option `{arg}`; try `--help`"),
+            _ if arg.starts_with('-') => anyhow::bail!("unknown option `{arg}`"),
             _ if arg_conf_path.is_none() => arg_conf_path = Some(PathBuf::from(arg)),
             _ => anyhow::bail!("expected at most one argument: a path to a config file"),
         }
