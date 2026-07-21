@@ -105,7 +105,9 @@ fn subscription(app: &App) -> Subscription<Msg> {
     let keys =
         keyboard::listen().with((app.view, app.modal.as_ref().map(Modal::kind))).filter_map(
             |((view, modal), event)| match event {
-                keyboard::Event::KeyPressed { key, modifiers, repeat, .. } => key_to_msg(view, modal, key, modifiers, repeat),
+                keyboard::Event::KeyPressed { key, modified_key, modifiers, repeat, .. } => {
+                    key_to_msg(view, modal, key, modified_key, modifiers, repeat)
+                }
                 _ => None,
             },
         );

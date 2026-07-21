@@ -1199,7 +1199,14 @@ fn skip_interval(held: Duration) -> Duration {
 /// [`SEEK_STEP`], Up/Down nudge the volume by 5%, Home
 /// restarts the track (or steps back near the start), End steps to the next track, PageUp restarts
 /// the album (or steps to the previous one), PageDown jumps to the next album.
-pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Modifiers, repeat: bool) -> Option<Msg> {
+pub fn key_to_msg(
+    view: View,
+    modal: Option<ModalKind>,
+    key: Key,
+    modified_key: Key,
+    modifiers: Modifiers,
+    repeat: bool,
+) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
     // Alt/Logo chords belong to the window manager -- all but the few we bind: Alt+Space, the
@@ -1290,6 +1297,21 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         None => {}
     }
 
+    // Live UI zoom (see `App::scale`), matched on the resolved character `modified_key` -- so `+`,
+    // `-` and `=` land as actually typed on any layout, unlike the base `key` the bindings below
+    // read. Ctrl+plus zooms in, Ctrl+minus out, Ctrl+= resets. View-independent, so it works in the
+    // player too (which drops its own Ctrl chords); Alt combinations were already filtered above.
+    if modifiers.control()
+        && let Key::Character(c) = &modified_key
+    {
+        match c.as_str() {
+            "+" => return one_shot(Msg::Zoom(Zoom::In)),
+            "-" => return one_shot(Msg::Zoom(Zoom::Out)),
+            "=" => return one_shot(Msg::Zoom(Zoom::Reset)),
+            _ => {}
+        }
+    }
+
     // View-independent navigation takes precedence over the per-view bindings below. Bare Space
     // toggles play/pause in every view (an uncaptured Alt+Space -- no grid selection -- is a
     // missed enqueue, not a toggle request).
@@ -1310,15 +1332,6 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         (Key::Character(c), false, true) if c.as_str() == "k" => return one_shot(Msg::ClearQueue),
         (Key::Character(c), false, true) if c.as_str() == "f" => return one_shot(Msg::FocusSearch),
         (Key::Character(c), false, true) if c.as_str() == "w" => return one_shot(Msg::ClearFilters),
-        // Live UI zoom (see `App::scale`): Ctrl+plus in, Ctrl+minus out, Ctrl+= resets. Bound here,
-        // not per-view, so it works in the player too (which drops its own Ctrl chords). `+` is
-        // Shift+`=`, but iced reports the base char `=` with shift held (not a folded `+`), so tell
-        // zoom-in from reset by the shift modifier -- while still accepting a literal `+` for the
-        // layouts that do produce one.
-        (Key::Character(c), _, true) if c.as_str() == "+" => return one_shot(Msg::Zoom(Zoom::In)),
-        (Key::Character(c), true, true) if c.as_str() == "=" => return one_shot(Msg::Zoom(Zoom::In)),
-        (Key::Character(c), _, true) if c.as_str() == "-" => return one_shot(Msg::Zoom(Zoom::Out)),
-        (Key::Character(c), false, true) if c.as_str() == "=" => return one_shot(Msg::Zoom(Zoom::Reset)),
         _ => {}
     }
 
