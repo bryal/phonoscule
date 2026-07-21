@@ -323,7 +323,10 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         },
         Msg::Show(v) => app.view = v,
-        Msg::Zoom(zoom) => app.scale = zoom.apply(app.scale, app.conf.scaling),
+        Msg::Zoom(zoom) => {
+            app.scale = zoom.apply(app.scale, app.conf.scaling);
+            log::debug!("UI scale -> {:.2}", app.scale);
+        }
         // Grid messages carry indices into the filtered list: resolve them to real album indices
         // here, at the boundary, so everything downstream (the track menu included) speaks real
         // indices.
@@ -1308,11 +1311,14 @@ pub fn key_to_msg(view: View, modal: Option<ModalKind>, key: Key, modifiers: Mod
         (Key::Character(c), false, true) if c.as_str() == "f" => return one_shot(Msg::FocusSearch),
         (Key::Character(c), false, true) if c.as_str() == "w" => return one_shot(Msg::ClearFilters),
         // Live UI zoom (see `App::scale`): Ctrl+plus in, Ctrl+minus out, Ctrl+= resets. Bound here,
-        // not per-view, so it works in the player too (which drops its own Ctrl chords). Shift is
-        // unconstrained -- `+` is Shift+`=` on most layouts, so it arrives with shift held.
+        // not per-view, so it works in the player too (which drops its own Ctrl chords). `+` is
+        // Shift+`=`, but iced reports the base char `=` with shift held (not a folded `+`), so tell
+        // zoom-in from reset by the shift modifier -- while still accepting a literal `+` for the
+        // layouts that do produce one.
         (Key::Character(c), _, true) if c.as_str() == "+" => return one_shot(Msg::Zoom(Zoom::In)),
+        (Key::Character(c), true, true) if c.as_str() == "=" => return one_shot(Msg::Zoom(Zoom::In)),
         (Key::Character(c), _, true) if c.as_str() == "-" => return one_shot(Msg::Zoom(Zoom::Out)),
-        (Key::Character(c), _, true) if c.as_str() == "=" => return one_shot(Msg::Zoom(Zoom::Reset)),
+        (Key::Character(c), false, true) if c.as_str() == "=" => return one_shot(Msg::Zoom(Zoom::Reset)),
         _ => {}
     }
 
