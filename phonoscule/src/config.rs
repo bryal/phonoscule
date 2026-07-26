@@ -13,14 +13,20 @@
 use anyhow::Context as _;
 use std::path::{Path, PathBuf};
 
+/// Settings, and where they came from. Plain data, so a player is free to assemble one itself rather
+/// than [`load`] it -- see [`Conf::new`].
 #[derive(Clone, Debug)]
 pub struct Conf {
-    /// The file the settings were read from, if they came from one at all (kept for future
+    /// The file the settings were read from, or `None` if they came from no file (kept for future
     /// format-preserving saving).
-    path: Option<PathBuf>,
-    /// The application these were loaded for, naming its `[app.<name>]` table.
-    app: String,
-    doc: toml_edit::DocumentMut,
+    pub path: Option<PathBuf>,
+    /// The application these were loaded for, naming the `[app.<name>]` table its own settings come
+    /// from.
+    pub app: String,
+    /// The parsed document, which [`app_float`](Self::app_float) and friends read this application's
+    /// table out of. Read your own `[app.<name>]` table from it and nothing else: the top level is
+    /// the framework's, and the other `app` subtables belong to other players.
+    pub doc: toml_edit::DocumentMut,
     /// Path to the music library, from `music-dir`, defaulting to `~/Music`. `~` and environment
     /// variables are expanded, and a relative path resolves against the config file's own directory
     /// rather than the process's working directory.
@@ -102,13 +108,6 @@ impl Conf {
             music_dir = dir.join(&music_dir);
         }
         Ok(Self { path: Some(path), app: app.to_string(), doc, music_dir })
-    }
-
-    /// The file these settings were read from, or `None` if they came from no file (see [`new`]).
-    ///
-    /// [`new`]: Self::new
-    pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
     }
 
     /// A number from this player's `[app.<name>]` table, accepting an integer or a float so both
@@ -198,7 +197,7 @@ mod test {
     #[test]
     fn relative_music_dir_is_relative_to_config_file() {
         let conf = parse("relative", "music-dir = \"./Library\"").unwrap();
-        let dir = conf.path().expect("read from a file").parent().unwrap();
+        let dir = conf.path.as_deref().expect("read from a file").parent().unwrap();
         assert_eq!(conf.music_dir, dir.join("./Library"));
     }
 
