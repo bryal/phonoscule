@@ -12,6 +12,8 @@ repository.workspace = true
 # default. See each module's docs for what it needs.
 [features]
 default = []
+# The shared TOML config file (see `config`). Wants std and a filesystem.
+config = ["dep:smol", "dep:toml_edit", "dep:shellexpand", "dep:anyhow", "log/std"]
 # Scanning a music directory into albums, with cover thumbnails (see `library`). Wants std and a
 # filesystem.
 library = ["dep:smol", "dep:futures", "dep:serde", "dep:serde_json", "dep:image", "dep:embedded-io-adapters", "log/std"]
@@ -45,6 +47,9 @@ pulse-simple         = { version = "1.0.1", optional = true }
 serde                = { version = "1.0.228", features = ["derive"], optional = true }
 serde_json           = { version = "1.0.150", optional = true }
 image                = { version = "0.25.10", optional = true }
+toml_edit            = { version = "0.25", optional = true }
+shellexpand          = { version = "3.1", optional = true }
+anyhow               = { version = "1.0", optional = true }
 futures              = { version = "0.3.32", optional = true }
 notify               = { version = "8.2", optional = true }
 zbus                 = { version = "5.17", optional = true }

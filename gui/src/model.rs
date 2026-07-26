@@ -3,10 +3,10 @@
 use crate::update::Msg;
 use futures::StreamExt;
 use iced::Task;
+use phonoscule::config::Conf;
 use phonoscule::library::{self, Album};
 use phonoscule::sort::SortOrder;
 use phonoscule::{mpris, player, session, volume, watcher};
-use phonoscule_gui::conf::Conf;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -158,8 +158,11 @@ pub struct App {
     /// scan's ref-counted bitmaps rather than copying them, and are pruned with the albums holding
     /// them (see the `Done` scan event).
     pub covers: HashMap<u64, iced::widget::image::Handle>,
-    /// The live UI scale factor handed to iced (see `main`), seeded from `conf.scaling` and nudged
-    /// by Ctrl +/- (see [`Zoom`](crate::update::Zoom)). Transient: never written back to the config.
+    /// The configured UI scale factor (`[app.gui] scaling`, already clamped -- see `main`): the
+    /// baseline Ctrl+= resets [`scale`](Self::scale) to.
+    pub scaling: f32,
+    /// The live UI scale factor handed to iced, seeded from [`scaling`](Self::scaling) and nudged by
+    /// Ctrl +/- (see [`Zoom`](crate::update::Zoom)). Transient: never written back to the config.
     pub scale: f32,
     pub scan: ScanState,
     pub albums: Vec<Album>,
@@ -336,7 +339,7 @@ impl Default for HiResCache {
     }
 }
 
-pub fn boot(conf: Conf, restored: session::Restored, index: Vec<Album>) -> impl Fn() -> (App, Task<Msg>) {
+pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Album>) -> impl Fn() -> (App, Task<Msg>) {
     move || {
         let (media, media_worker) = mpris::start("Phonoscule", "phonoscule");
         let mut app = App {
@@ -348,7 +351,8 @@ pub fn boot(conf: Conf, restored: session::Restored, index: Vec<Album>) -> impl 
             mixer: volume::start(),
             watcher: watcher::start(&conf.music_dir),
             covers: HashMap::new(),
-            scale: conf.scaling,
+            scaling,
+            scale: scaling,
             conf: conf.clone(),
             scan: ScanState::Scanning,
             albums: index.clone(),

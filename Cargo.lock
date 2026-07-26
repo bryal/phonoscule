@@ -3853,6 +3853,7 @@ dependencies = [
 name = "phonoscule"
 version = "0.3.0-dev"
 dependencies = [
+ "anyhow",
  "criterion",
  "embedded-io",
  "embedded-io-adapters",
@@ -3867,8 +3868,10 @@ dependencies = [
  "pulse-simple",
  "serde",
  "serde_json",
+ "shellexpand",
  "simple_logger",
  "smol",
+ "toml_edit",
  "utf8-decode",
  "zbus",
 ]
@@ -3905,10 +3908,8 @@ dependencies = [
  "phonoscule",
  "serde",
  "serde_json",
- "shellexpand",
  "simple_logger",
  "smol",
- "toml_edit",
  "url",
 ]
 

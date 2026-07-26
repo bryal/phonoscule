@@ -225,8 +225,8 @@ impl Zoom {
         /// Multiplicative factor per zoom step -- a perceptually even ~10% either way.
         const STEP: f32 = 1.1;
         match self {
-            Zoom::In => (scale * STEP).min(crate::conf::SCALE_MAX),
-            Zoom::Out => (scale / STEP).max(crate::conf::SCALE_MIN),
+            Zoom::In => (scale * STEP).min(crate::SCALE_MAX),
+            Zoom::Out => (scale / STEP).max(crate::SCALE_MIN),
             Zoom::Reset => baseline,
         }
     }
@@ -341,7 +341,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         },
         Msg::Show(v) => app.view = v,
         Msg::Zoom(zoom) => {
-            app.scale = zoom.apply(app.scale, app.conf.scaling);
+            app.scale = zoom.apply(app.scale, app.scaling);
             log::debug!("UI scale -> {:.2}", app.scale);
         }
         // Grid messages carry indices into the filtered list: resolve them to real album indices

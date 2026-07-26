@@ -9,6 +9,8 @@ pub mod plumbing;
 pub mod sample;
 pub mod wav;
 
+#[cfg(feature = "config")]
+pub mod config;
 #[cfg(feature = "library")]
 pub mod library;
 #[cfg(feature = "mpris")]
