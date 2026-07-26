@@ -13,6 +13,8 @@ pub mod wav;
 pub mod player;
 #[cfg(feature = "volume")]
 pub mod volume;
+#[cfg(feature = "watcher")]
+pub mod watcher;
 
 #[cfg(test)]
 mod test {

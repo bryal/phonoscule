@@ -16,6 +16,8 @@ default = []
 player = ["dep:smol", "dep:pulse-simple", "dep:embedded-io-adapters", "dep:serde", "log/std"]
 # Per-application volume through the OS mixer (see `volume`). Wants std.
 volume = ["dep:smol", "dep:libpulse-binding", "log/std"]
+# Watching the music directory for changes (see `watcher`). Wants std and a filesystem.
+watcher = ["dep:smol", "dep:futures", "dep:notify", "log/std"]
 
 [dependencies]
 # rev is latest as of its commit date 2026-07-05
@@ -31,6 +33,8 @@ smol                 = { workspace = true, optional = true }
 embedded-io-adapters = { workspace = true, optional = true }
 pulse-simple         = { version = "1.0.1", optional = true }
 serde                = { version = "1.0.228", features = ["derive"], optional = true }
+futures              = { version = "0.3.32", optional = true }
+notify               = { version = "8.2", optional = true }
 
 # The Linux volume-mixer backend; other platforms build the module's mixerless fallback instead.
 # Speaks to PipeWire via pipewire-pulse.
