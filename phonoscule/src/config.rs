@@ -1,13 +1,14 @@
-//! An optional TOML config file, shared by the phonoscule players on a machine.
+//! An optional TOML config file, for players that want one.
 //!
-//! Nothing else in the framework depends on this: it is one convenient way to obtain settings, not
-//! the way. A player that has no filesystem (or keeps its settings in NVS, or a registry) skips this
-//! module and passes the same values in directly.
+//! Nothing else in the framework depends on this, and using it is no part of being a phonoscule
+//! player: it is one way to obtain settings, convenient where there is a filesystem to read. A
+//! player with settings in NVS, a database, or its command line alone skips this module and passes
+//! the same values in directly.
 //!
-//! Settings every player needs -- so far just [`music_dir`](Conf::music_dir) -- sit at the top
-//! level. Each player's own settings live in its `[app.<name>]` table, read with
-//! [`Conf::app_float`] and friends; the framework never looks inside `app`, whose subtables belong
-//! to the applications, this repository's or anyone else's.
+//! Where several players do use it, they can share one file: settings the framework itself reads --
+//! so far just [`music_dir`](Conf::music_dir) -- sit at the top level, while a player's own live in
+//! its `[app.<name>]` table, read with [`Conf::app_float`] and friends. The framework never looks
+//! inside `app`, whose subtables belong to the applications, this repository's or anyone else's.
 
 use anyhow::Context as _;
 use std::path::{Path, PathBuf};
@@ -146,9 +147,8 @@ Configuration file:
                variables are expanded; a relative path resolves against the
                config file's own directory.
 
-  Settings under [app.{app}] are this player's own. Other phonoscule players
-  read their own [app.<name>] tables from the same file, so one file can
-  configure them all.
+  Settings under [app.{app}] are this player's own. Another player that reads
+  this file reads its own [app.<name>] table, so one file can serve several.
 ",
         var = env_var(app),
     )

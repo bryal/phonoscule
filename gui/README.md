@@ -45,8 +45,9 @@ music-dir = "~/Music"
 scaling = 1.0
 ```
 
-Every phonoscule player reads the same file: `music-dir` is shared,
-while each player's own settings live in its `[app.<name>]` table.
+`music-dir` is the shared setting;
+this player's own settings live in its `[app.gui]` table,
+so another player reading the same file can keep its own under `[app.<name>]`.
 Pass a path as the first argument, or set `$PHONOSCULE_GUI_CONF`,
 to read a different file instead.
 

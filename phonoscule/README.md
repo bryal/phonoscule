@@ -31,7 +31,7 @@ so enabling none of them leaves the portable core exactly as it is.
 
 | Feature | Module | What it brings |
 | --- | --- | --- |
-| `config` | `config` | The shared `phonoscule.toml` config file. |
+| `config` | `config` | A `phonoscule.toml` config file, for players that want one. |
 | `library` | `library` | Scanning a music directory into albums, with a tag cache and cover thumbnails. |
 | `sort` | `sort` | Album ordering. |
 | `player` | `player` | The play-queue engine and its audio output. |
@@ -44,12 +44,15 @@ These want `std` and, mostly, a filesystem;
 `player` and `volume` speak PulseAudio, `mpris` speaks D-Bus.
 Each module's documentation says what it needs.
 
-## Reference applications
+## Example applications
 
-The repository this crate lives in contains two music players built on this
-library: a graphical one, see [`gui/README.md`](../gui/README.md),
-and a terminal one, see [`tui/README.md`](../tui/README.md).
-They are the best worked examples of using the pieces above.
+The repository this crate lives in contains three players built on this library,
+using more of the pieces above the further down you go:
+
+- `phonoscule-gui`, the graphical reference application - see [`gui/README.md`](../gui/README.md).
+- `phonoscule-tui`, its terminal counterpart - see [`tui/README.md`](../tui/README.md).
+- `phonoscule-cli`, a minimal example that plays the files named on its command line.
+  It uses the core alone: no library scan, no config file, no session.
 
 ## License
 
