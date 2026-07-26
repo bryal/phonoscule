@@ -16,7 +16,7 @@ and is intended to run anywhere from a desktop GUI down to a headless microcontr
   from WAV `LIST`/`INFO` chunks and Ogg Opus (Vorbis) comments.
 - **Decoding.** WAV (8/16/24/32-bit integer and 32-bit float, mono or stereo)
   and Ogg Opus, the latter via the pure-Rust
-  [opuscule](https://codeberg.org/jojo-laplace/opuscule) decoder.
+  [opuscule](https://github.com/bryal/opuscule) decoder.
 - **Playback plumbing.** Sample-accurate seeking, sample-format conversion,
   and a small `Source`/`Sink` layer for wiring a decoder to whatever plays it.
 

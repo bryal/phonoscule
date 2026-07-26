@@ -41,7 +41,7 @@ Beyond browsing and playing:
 
 It plays **WAV** (8/16/24/32-bit integer and 32-bit float, mono or stereo) and
 **Ogg Opus** - the latter decoded by the pure-Rust
-[opuscule](https://codeberg.org/jojo-laplace/opuscule) decoder through the
+[opuscule](https://github.com/bryal/opuscule) decoder through the
 framework - with cover art taken from folder images
 (`{cover,folder,front,albumart}.{jpg,jpeg,png,webp}`), out through PulseAudio
 (and PipeWire via pipewire-pulse) on Linux. The music directory is set in
