@@ -1,6 +1,7 @@
 # Phonoscule
 
-A framework for building music players, and a beautiful reference GUI application.
+A framework for building music players, a beautiful reference GUI application,
+and a terminal one for the machines that GUI is too much for.
 
 > **Disclaimer: nearly vibe-coded.**
 > Most of this code was produced by an AI agent directed by me, the human author.
@@ -20,6 +21,10 @@ and is intended to be usable anywhere from a desktop GUI down to a headless micr
 The repository includes a reference application called `phonoscule-gui` or eponymously *Phonoscule*.
 It's a graphical music player with *Cover Flow* visuals and a focus on finding and playing albums.
 See [`gui/README.md`](gui/README.md) for more details.
+
+Alongside it is `phonoscule-tui`, the same album-centric player in a terminal -
+cover art included, where the terminal can draw it.
+See [`tui/README.md`](tui/README.md).
 
 ## The framework (`phonoscule`)
 
@@ -52,7 +57,23 @@ cargo run --release -p phonoscule-gui
 It plays through PulseAudio (and PipeWire) on Linux.
 See [`gui/README.md`](gui/README.md) for its features, configuration, and controls.
 
-## A terminal example (`phonoscule-cli`)
+## The terminal player (`phonoscule-tui`)
+
+The same library, the same filtering and the same queue, drawn in text -
+with the album art shown through whatever image protocol the terminal speaks,
+and unicode half blocks where it speaks none.
+
+```sh
+cargo run --release -p phonoscule-tui
+```
+
+For machines without the graphics to run the GUI well, and for playing music over ssh.
+Cover art is loaded as it is shown into caches of fixed size, and decoded off the drawing
+thread, so the artwork costs the same however much music you have and scrolling never waits
+for it.
+See [`tui/README.md`](tui/README.md) for its features, configuration, and controls.
+
+## A minimal example (`phonoscule-cli`)
 
 A small example of driving the framework -
 a terminal player that takes files on the command line, with a few keyboard controls.
