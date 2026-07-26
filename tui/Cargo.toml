@@ -9,7 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-phonoscule = { path = "../phonoscule", features = ["config", "library", "player", "search", "sort"] }
+phonoscule = { path = "../phonoscule", features = ["config", "library", "player", "queue", "search", "sort"] }
 crossterm = "0.29.0"
 ratatui = "0.30.2"
 # `chafa-dyn` is one of its defaults and would need libchafa at build and run time; without it a

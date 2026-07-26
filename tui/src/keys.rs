@@ -7,6 +7,7 @@
 use crate::model::{Focus, Subject, View};
 use crate::update::{Edge, Msg};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use phonoscule::queue::{Grouping, Scope};
 
 /// How far a single seek key press moves, in seconds.
 const SEEK_STEP: i64 = 5;
@@ -32,6 +33,18 @@ pub fn key_to_msg(view: View, focus: &Focus, key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('g') if ctrl => return Some(Msg::OpenPicker(Subject::Genre)),
         KeyCode::Char('t') if ctrl => return Some(Msg::OpenPicker(Subject::Artist)),
         KeyCode::Char('o') if ctrl => return Some(Msg::OpenPicker(Subject::Sort)),
+        // As in the GUI: Ctrl shuffles the whole queue, Alt shuffles everything but what is playing;
+        // `s` moves albums as units, `z` moves single tracks. Raw mode has already taken Ctrl+S and
+        // Ctrl+Z off the terminal's hands (no flow control, no suspend), so both arrive as keys.
+        KeyCode::Char('s') if ctrl || alt => {
+            let scope = if ctrl { Scope::All } else { Scope::Others };
+            return Some(Msg::Shuffle { grouping: Grouping::Albums, scope });
+        }
+        KeyCode::Char('z') if ctrl || alt => {
+            let scope = if ctrl { Scope::All } else { Scope::Others };
+            return Some(Msg::Shuffle { grouping: Grouping::Tracks, scope });
+        }
+        KeyCode::Char('k') if ctrl => return Some(Msg::ClearQueue),
         _ => (),
     }
 

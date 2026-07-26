@@ -339,7 +339,9 @@ mod testing {
                 cover_id: None,
                 cover: None,
                 accent: None,
-                tracks: vec![TrackInfo { path: format!("{i}.opus").into(), title: "Track".into() }],
+                tracks: (0..3)
+                    .map(|t| TrackInfo { path: format!("{i}/{t}.opus").into(), title: format!("Track {t}") })
+                    .collect(),
             })
             .collect();
         let engine = player::start(player::Client { name: "phonoscule-tui-test".into(), description: String::new() });

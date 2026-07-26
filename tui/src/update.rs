@@ -4,6 +4,7 @@ use crate::model::{Focus, Model, QueueItem, ScanState, Subject, View, open_picke
 use crate::{covers, keys, logger, paths};
 use phonoscule::library::{self, Album};
 use phonoscule::player;
+use phonoscule::queue::{self, Grouping, Scope};
 use phonoscule::sort::SortOrder;
 use std::time::Duration;
 
@@ -53,6 +54,14 @@ pub enum Msg {
     /// Play, or queue, every album the filter lets through, in the order shown.
     PlayShown,
     QueueShown,
+    /// Shuffle the queue, in place: see [`Grouping`] for what moves as a unit and [`Scope`] for how
+    /// much of the queue is touched.
+    Shuffle {
+        grouping: Grouping,
+        scope: Scope,
+    },
+    /// Empty the queue: playback stops and the player has nothing to show.
+    ClearQueue,
     Quit,
 }
 
@@ -233,6 +242,17 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 After::Redraw
             }
         },
+        Msg::Shuffle { grouping, scope } => shuffle(model, grouping, scope),
+        Msg::ClearQueue => {
+            model.queue.clear();
+            model.current = 0;
+            model.pos = Duration::ZERO;
+            model.len = None;
+            model.pending_seek = None;
+            model.play_state = player::PlayState::Paused;
+            model.send(player::Cmd::SetQueue { tracks: vec![], start: 0, play: player::PlayState::Paused });
+            After::Redraw
+        }
         Msg::Player(event) => player_event(model, event),
         Msg::Library(library::ScanEvent::Album(album)) => absorb_album(model, *album),
         Msg::Library(library::ScanEvent::Cover { albums, art }) => {
@@ -317,6 +337,35 @@ fn player_event(model: &mut Model, event: player::Event) -> After {
             After::Redraw
         }
     }
+}
+
+/// Shuffles the queue in place: the new order *is* the queue, not a shuffled way of playing it, so
+/// what the player lists is what will play. Which slot leads and whether playback carries on depend
+/// on the scope (see [`Scope`]).
+fn shuffle(model: &mut Model, grouping: Grouping, scope: Scope) -> After {
+    if model.queue.is_empty() {
+        return After::Idle;
+    }
+    let albums: Vec<u64> = model.queue.iter().map(|item| item.album_id).collect();
+    let order = queue::shuffle(&albums, model.current, grouping, scope, queue::seed());
+
+    let mut old: Vec<Option<QueueItem>> = std::mem::take(&mut model.queue).into_iter().map(Some).collect();
+    model.queue = order.iter().map(|&ix| old[ix].take().expect("a permutation visits each slot once")).collect();
+    match scope {
+        // Same tracks in a new order: only the cursor follows the playing one, and it keeps playing.
+        Scope::Others => {
+            model.current = order.iter().position(|&ix| ix == model.current).unwrap_or(0);
+            model.send(player::Cmd::Reorder { tracks: entries(&model.queue), current: model.current });
+        }
+        // A fresh start, resting paused on whatever came out first.
+        Scope::All => {
+            model.current = 0;
+            model.pos = Duration::ZERO;
+            model.pending_seek = None;
+            model.send(player::Cmd::SetQueue { tracks: entries(&model.queue), start: 0, play: player::PlayState::Paused });
+        }
+    }
+    After::Redraw
 }
 
 /// Re-ranks an open picker's matches against its query, putting the selection back at the top.
@@ -686,5 +735,48 @@ mod test {
         let queued: std::collections::HashSet<u64> = model.queue.iter().map(|item| item.album_id).collect();
         assert_eq!(queued.len(), shown.len(), "every shown album is queued and nothing else");
         assert!(queued.iter().all(|id| shown.contains(id)));
+    }
+
+    /// Shuffling the rest keeps the playing track playing and where it is, so the reordering never
+    /// interrupts anything.
+    #[test]
+    fn shuffling_the_others_keeps_the_playing_track() {
+        let mut model = browser(4);
+        send(&mut model, Msg::PlayShown);
+        let queued = model.queue.len();
+        assert!(queued > 4, "several albums' tracks are queued");
+        send(&mut model, Msg::Player(player::Event::TrackStarted { ix: 3, len: None }));
+        let playing = model.queue[3].path.clone();
+
+        send(&mut model, Msg::Shuffle { grouping: Grouping::Tracks, scope: Scope::Others });
+        assert_eq!(model.queue.len(), queued, "no track is lost or duplicated");
+        assert_eq!(model.current, 0, "the playing track leads the queue");
+        assert_eq!(model.queue[0].path, playing, "and it is the same track");
+    }
+
+    /// Shuffling everything rests paused on whatever came out first.
+    #[test]
+    fn shuffling_everything_rests_at_the_front() {
+        let mut model = browser(4);
+        send(&mut model, Msg::PlayShown);
+        send(&mut model, Msg::Player(player::Event::TrackStarted { ix: 5, len: None }));
+        send(&mut model, Msg::Player(player::Event::Progress(Duration::from_secs(20))));
+
+        send(&mut model, Msg::Shuffle { grouping: Grouping::Albums, scope: Scope::All });
+        assert_eq!(model.current, 0);
+        assert_eq!(model.pos, Duration::ZERO, "the bar rests at the start of the new first track");
+    }
+
+    /// Clearing the queue leaves nothing playing and nothing to show.
+    #[test]
+    fn clearing_the_queue_empties_it() {
+        let mut model = browser(3);
+        send(&mut model, Msg::PlaySelected);
+        assert!(!model.queue.is_empty());
+
+        send(&mut model, Msg::ClearQueue);
+        assert!(model.queue.is_empty());
+        assert!(model.playing().is_none());
+        assert_eq!(model.play_state, player::PlayState::Paused);
     }
 }
