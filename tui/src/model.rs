@@ -207,22 +207,11 @@ pub use testing::browser;
 #[cfg(test)]
 mod testing {
     use super::*;
-    use phonoscule::config;
     use phonoscule::library::TrackInfo;
     use ratatui_image::picker::Picker;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     /// A browser over `n` synthetic albums, sorted so their titles read in order.
-    ///
-    /// Its config gets a file of its own: the tests run in parallel, and sharing one path meant a
-    /// test could read it while another was rewriting it.
     pub fn browser(n: usize) -> Model {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!("phonoscule-tui-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("conf-{}.toml", NEXT.fetch_add(1, Ordering::Relaxed)));
-        std::fs::write(&path, format!("music-dir = {:?}", dir)).unwrap();
-        let conf = smol::block_on(config::load("tui", Some(path))).unwrap();
-
+        let conf = Conf::new("tui", "/music".into());
         let albums = (0..n)
             .map(|i| Album {
                 id: i as u64,

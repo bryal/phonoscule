@@ -15,8 +15,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct Conf {
-    /// Where the settings were read from (kept for future format-preserving saving).
-    path: PathBuf,
+    /// The file the settings were read from, if they came from one at all (kept for future
+    /// format-preserving saving).
+    path: Option<PathBuf>,
     /// The application these were loaded for, naming its `[app.<name>]` table.
     app: String,
     doc: toml_edit::DocumentMut,
@@ -38,7 +39,7 @@ pub async fn load(app: &str, path: Option<PathBuf>) -> anyhow::Result<Conf> {
             Ok(conf) => Ok(conf),
             Err(e) if is_not_found(&e) => {
                 log::info!("no config file at {path:?}, using default settings");
-                Ok(Conf { path, app: app.to_string(), doc: toml_edit::DocumentMut::new(), music_dir: default_music_dir() })
+                Ok(Conf::new(app, default_music_dir()))
             }
             Err(e) => Err(e).with_context(|| format!("failed to read config from {path:?}")),
         },
@@ -78,6 +79,14 @@ fn default_music_dir() -> PathBuf {
 }
 
 impl Conf {
+    /// Settings that came from no file: for a player that obtains them some other way -- a database,
+    /// non-volatile storage, its command line -- and needs a [`Conf`] to hand on regardless. Its
+    /// `[app.<name>]` table is empty, so every [`app_float`](Self::app_float) and friend is `None`
+    /// and the caller's own defaults apply.
+    pub fn new(app: &str, music_dir: PathBuf) -> Self {
+        Conf { path: None, app: app.to_string(), doc: toml_edit::DocumentMut::new(), music_dir }
+    }
+
     async fn open(app: &str, path: &Path) -> anyhow::Result<Self> {
         log::debug!("reading conf from: {}", path.display());
         let path = path.canonicalize()?;
@@ -92,12 +101,14 @@ impl Conf {
         {
             music_dir = dir.join(&music_dir);
         }
-        Ok(Self { path, app: app.to_string(), doc, music_dir })
+        Ok(Self { path: Some(path), app: app.to_string(), doc, music_dir })
     }
 
-    /// The file these settings came from -- the default location, when there was no file to read.
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// The file these settings were read from, or `None` if they came from no file (see [`new`]).
+    ///
+    /// [`new`]: Self::new
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     /// A number from this player's `[app.<name>]` table, accepting an integer or a float so both
@@ -187,7 +198,8 @@ mod test {
     #[test]
     fn relative_music_dir_is_relative_to_config_file() {
         let conf = parse("relative", "music-dir = \"./Library\"").unwrap();
-        assert_eq!(conf.music_dir, conf.path().parent().unwrap().join("./Library"));
+        let dir = conf.path().expect("read from a file").parent().unwrap();
+        assert_eq!(conf.music_dir, dir.join("./Library"));
     }
 
     #[test]
