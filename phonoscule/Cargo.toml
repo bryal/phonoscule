@@ -1,6 +1,6 @@
 [package]
 name = "phonoscule"
-version = "0.3.0"
+version = "0.4.0-dev"
 description = "A framework for building music players."
 authors.workspace = true
 edition.workspace = true
