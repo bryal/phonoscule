@@ -22,11 +22,34 @@ and is intended to run anywhere from a desktop GUI down to a headless microcontr
 
 FLAC and Ogg Vorbis are on the roadmap, but not included as of yet.
 
-## Reference application
+## Optional pieces
 
-The repository this crate lives in also contains a graphical music player,
-*Phonoscule*, built on this library as its reference application -
-see [`gui/README.md`](../gui/README.md).
+The core above is always built and stays portable.
+Everything a *hosted* player wants on top of it - and every heavy dependency -
+sits behind a cargo feature, all off by default,
+so enabling none of them leaves the portable core exactly as it is.
+
+| Feature | Module | What it brings |
+| --- | --- | --- |
+| `config` | `config` | The shared `phonoscule.toml` config file. |
+| `library` | `library` | Scanning a music directory into albums, with a tag cache and cover thumbnails. |
+| `sort` | `sort` | Album ordering. |
+| `player` | `player` | The play-queue engine and its audio output. |
+| `volume` | `volume` | Per-application volume through the OS mixer. |
+| `session` | `session` | Persisting the queue and the state around it across runs. |
+| `watcher` | `watcher` | Watching the music directory for changes. |
+| `mpris` | `mpris` | An MPRIS server: media keys and desktop now-playing. |
+
+These want `std` and, mostly, a filesystem;
+`player` and `volume` speak PulseAudio, `mpris` speaks D-Bus.
+Each module's documentation says what it needs.
+
+## Reference applications
+
+The repository this crate lives in contains two music players built on this
+library: a graphical one, see [`gui/README.md`](../gui/README.md),
+and a terminal one, see [`tui/README.md`](../tui/README.md).
+They are the best worked examples of using the pieces above.
 
 ## License
 
