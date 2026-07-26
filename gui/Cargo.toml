@@ -8,8 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-phonoscule = { path = "../phonoscule" }
-pulse-simple = "1.0.1"
+phonoscule = { path = "../phonoscule", features = ["player"] }
 iced = { version = "0.14.0", features = ["image", "smol", "advanced", "lazy"] }
 image = "0.25.10"
 glam = "0.33.2"

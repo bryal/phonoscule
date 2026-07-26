@@ -7,7 +7,6 @@ pub mod conf;
 pub mod coverflow;
 pub mod library;
 pub mod media;
-pub mod player;
 pub mod playlist;
 pub mod sort;
 pub mod volume;

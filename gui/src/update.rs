@@ -8,9 +8,10 @@ use crate::model::{
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::mouse::ScrollDelta;
+use phonoscule::player;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::sort::SortOrder;
-use phonoscule_gui::{media, player, playlist};
+use phonoscule_gui::{media, playlist};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

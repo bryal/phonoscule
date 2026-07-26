@@ -3,10 +3,11 @@
 use crate::update::Msg;
 use futures::StreamExt;
 use iced::Task;
+use phonoscule::player;
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::sort::SortOrder;
-use phonoscule_gui::{media, player, playlist, volume, watcher};
+use phonoscule_gui::{media, playlist, volume, watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -329,7 +330,10 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
     move || {
         let (media, media_worker) = media::start();
         let mut app = App {
-            engine: player::start(),
+            engine: player::start(player::Client {
+                name: "phonoscule-gui".into(),
+                description: "GUI application based on the Phonoscule music player library".into(),
+            }),
             media,
             mixer: volume::start(),
             watcher: watcher::start(&conf.music_dir),

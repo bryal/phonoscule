@@ -9,6 +9,9 @@ pub mod plumbing;
 pub mod sample;
 pub mod wav;
 
+#[cfg(feature = "player")]
+pub mod player;
+
 #[cfg(test)]
 mod test {
     use super::{

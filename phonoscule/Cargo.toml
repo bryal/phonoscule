@@ -7,6 +7,14 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# The parsing and decoding core is always built and stays portable. Everything a hosted player
+# wants on top of it -- and every heavyweight dependency -- sits behind a feature, all off by
+# default. See each module's docs for what it needs.
+[features]
+default = []
+# The play-queue engine (see `player`). Wants std, a filesystem, and PulseAudio.
+player = ["dep:smol", "dep:pulse-simple", "dep:embedded-io-adapters", "dep:serde", "log/std"]
+
 [dependencies]
 # rev is latest as of its commit date 2026-07-05
 opuscule = "0.2.0"
@@ -15,6 +23,12 @@ utf8-decode = "2.0"
 embedded-io       = { workspace = true }
 embedded-io-async = { workspace = true }
 log               = { workspace = true }
+
+# Optional, for the features above.
+smol                 = { workspace = true, optional = true }
+embedded-io-adapters = { workspace = true, optional = true }
+pulse-simple         = { version = "1.0.1", optional = true }
+serde                = { version = "1.0.228", features = ["derive"], optional = true }
 
 [dev-dependencies]
 embedded-io-adapters = { workspace = true }

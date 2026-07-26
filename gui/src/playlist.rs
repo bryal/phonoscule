@@ -11,8 +11,8 @@
 //! State directory, not cache: unlike the tag or cover caches, a queue can't be regenerated, so it
 //! must survive a cache wipe.
 
-use crate::player::Repeat;
 use crate::sort::SortOrder;
+use phonoscule::player::Repeat;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
