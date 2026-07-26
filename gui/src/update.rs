@@ -2,8 +2,8 @@
 
 use crate::model::{
     App, Filter, Modal, ModalKind, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, SEARCH_INPUT_ID,
-    SORT_SCROLL_ID, ScanState, SortMenu, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow,
-    entries, flow_target, glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
+    SORT_SCROLL_ID, ScanState, SortMenu, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, color, current_album_id,
+    current_glow, entries, flow_target, glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
 };
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
@@ -282,6 +282,12 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // not overwrite the winner -- neither on the album nor on its queue items.
             let accepted: Vec<u64> =
                 app.albums.iter().filter(|a| albums.contains(&a.id) && a.cover_id == Some(art.id)).map(|a| a.id).collect();
+            if !accepted.is_empty() {
+                // The handle for these pixels, made exactly once (see `App::covers`). It wraps the
+                // scan's bitmap rather than copying it, so this costs an id and a refcount.
+                let pixels = bytes::Bytes::from_owner(art.pixels.clone());
+                app.covers.insert(art.id, iced::widget::image::Handle::from_rgba(library::THUMB, library::THUMB, pixels));
+            }
             for album in app.albums.iter_mut().filter(|a| accepted.contains(&a.id)) {
                 album.cover = Some(art.clone());
                 // Freshly computed, so an accent the index got wrong (or an algorithm change)
@@ -291,7 +297,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
             for item in app.queue.iter_mut().filter(|i| accepted.contains(&i.album_id)) {
                 item.cover = Some(art.clone());
-                item.accent = Some(art.accent);
+                item.accent = Some(color(art.accent));
             }
             // The playing track's cover art may just have arrived -- notably right after boot,
             // when a restored queue's covers all hydrate through the scan. Re-publish it, and
@@ -306,6 +312,17 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             let before = app.albums.len();
             app.albums.retain(|album| ids.contains(&album.id));
             app.index_dirty |= app.albums.len() != before;
+            // Retire the handles of covers nothing shows any more: an album gone from the library,
+            // or one whose artwork was replaced. The queue counts as a holder -- it outlives the
+            // albums it was filled from.
+            let live: std::collections::HashSet<u64> = app
+                .albums
+                .iter()
+                .filter_map(|a| a.cover.as_ref())
+                .chain(app.queue.iter().filter_map(|i| i.cover.as_ref()))
+                .map(|c| c.id)
+                .collect();
+            app.covers.retain(|id, _| live.contains(id));
             app.scan = ScanState::Complete;
             refresh_filter(app);
             // Persist the settled album list for the next launch's instant grid -- only when this

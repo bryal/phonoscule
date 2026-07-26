@@ -138,6 +138,11 @@ pub struct QueueItem {
     pub accent: Option<iced::Color>,
 }
 
+/// A library accent color as an opaque iced one.
+pub fn color(rgb: library::Rgb) -> iced::Color {
+    iced::Color { r: rgb.r, g: rgb.g, b: rgb.b, a: 1.0 }
+}
+
 pub struct App {
     pub engine: player::Engine,
     /// Handle to the OS media integration. State changes are published to it (see
@@ -148,6 +153,12 @@ pub struct App {
     pub mixer: volume::VolumeControl,
     pub watcher: watcher::Watcher,
     pub conf: Conf,
+    /// An iced image handle per loaded cover, by [`library::CoverArt::id`]. Built once, when the
+    /// cover arrives: a handle gets a fresh id each time it is made, so building them per frame
+    /// would have the renderer re-upload every visible cover's texture every frame. They wrap the
+    /// scan's ref-counted bitmaps rather than copying them, and are pruned with the albums holding
+    /// them (see the `Done` scan event).
+    pub covers: HashMap<u64, iced::widget::image::Handle>,
     /// The live UI scale factor handed to iced (see `main`), seeded from `conf.scaling` and nudged
     /// by Ctrl +/- (see [`Zoom`](crate::update::Zoom)). Transient: never written back to the config.
     pub scale: f32,
@@ -337,6 +348,7 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
             media,
             mixer: volume::start(),
             watcher: watcher::start(&conf.music_dir),
+            covers: HashMap::new(),
             scale: conf.scaling,
             conf: conf.clone(),
             scan: ScanState::Scanning,
@@ -549,7 +561,7 @@ pub fn hydrate_queue(queue: &mut [QueueItem], album: &Album) {
         item.artist = album.artist.clone();
         item.album = album.title.clone();
         item.cover = album.cover.clone();
-        item.accent = album.accent;
+        item.accent = album.accent.map(color);
         if let Some(track) = album.tracks.iter().find(|t| t.path == item.path) {
             item.title = track.title.clone();
         }
@@ -695,7 +707,7 @@ pub fn queue_items(album: &Album) -> Vec<QueueItem> {
             artist: album.artist.clone(),
             album: album.title.clone(),
             cover: album.cover.clone(),
-            accent: album.accent,
+            accent: album.accent.map(color),
         })
         .collect()
 }

@@ -305,7 +305,8 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         // message carries) are indices into `app.filtered`.
         for (cell, &ix) in app.filtered.iter().enumerate() {
             let album = &app.albums[ix];
-            grid = grid.push(album_cover(cell, album), &album.title, &album.artist);
+            let handle = album.cover.as_ref().and_then(|c| app.covers.get(&c.id));
+            grid = grid.push(album_cover(cell, album, handle), &album.title, &album.artist);
         }
         let mut layers: Vec<Element<'_, Msg>> = vec![grid.into()];
         if app.filtered.is_empty() {
@@ -544,15 +545,15 @@ const TWO_ROW_BAR_HEIGHT: f32 = 96.0;
 /// An album's cover element for the grid: the artwork (or a fallback tile) with the floating
 /// action bubbles over it. Size-agnostic -- the grid lays it out to exactly its cover square; it
 /// also draws the card's texts and the selection backdrop itself.
-fn album_cover(ix: usize, album: &Album) -> Element<'_, Msg> {
-    let cover: Element<'_, Msg> = match &album.cover {
-        Some(c) => image(c.handle.clone()).width(Fill).height(Fill).content_fit(iced::ContentFit::Cover).into(),
+fn album_cover<'a>(ix: usize, album: &'a Album, handle: Option<&image::Handle>) -> Element<'a, Msg> {
+    let cover: Element<'a, Msg> = match handle {
+        Some(handle) => image(handle.clone()).width(Fill).height(Fill).content_fit(iced::ContentFit::Cover).into(),
         // No pixels (not loaded yet, or the album has none): a tile tinted by the album's accent
         // color when the index knows it -- a zeroth level of detail below the thumbnail, so a
         // fresh launch shows the library as a color mosaic that sharpens into artwork. Dimmed, so
         // the title stays readable on any accent.
         None => {
-            let accent = album.accent;
+            let accent = album.accent.map(crate::model::color);
             container(text(&album.title).size(16).center())
                 .center(Fill)
                 .style(move |theme| match accent {
@@ -629,7 +630,7 @@ fn player_view(app: &App) -> Element<'_, Msg> {
                 (None, None) => None,
                 (cover, accent) => Some(FlowCover {
                     id: cover.as_ref().map_or(item.album_id, |c| c.id),
-                    thumb: cover.as_ref().map(|c| c.handle.clone()),
+                    thumb: cover.as_ref().and_then(|c| app.covers.get(&c.id)).cloned(),
                     accent,
                     full: cover.as_ref().and_then(|c| app.hires.peek(c.id)),
                 }),
