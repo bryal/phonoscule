@@ -1,6 +1,68 @@
 # Changelog
 
 
+v0.3.0 (2026-07-26)
+------------------------------------------------------------
+
+Everything a *hosted* music player needs above the core, which until now lived
+in the GUI where only the GUI could reach it. It moved here to be shared with
+[phonoscule-tui](../tui/README.md), the terminal player released alongside.
+
+The core is untouched, and stays what it was: enable none of the features below
+and the crate pulls exactly the six dependencies it did at 0.2.0, so a
+microcontroller build is no further away than it was.
+
+Ten new modules, each behind a cargo feature and all off by default:
+
+- **`config`** - the `phonoscule.toml` file, if a player wants one. Settings the
+  framework reads sit at the top level; a player's own live in its
+  `[app.<name>]` table, which the framework never looks inside, so several
+  players can share one file. Each reads its own `$PHONOSCULE_<APP>_CONF`.
+- **`library`** - scanning a music directory into albums. Albums are grouped by
+  the files' tags (album artist + album title) rather than the directory layout,
+  tags are cached between scans and validated by mtime and size, and cover art
+  is found from folder images and cached as raw thumbnails. Results stream out
+  as they are found.
+- **`sort`** - album ordering, as a small serializable value a player can
+  persist.
+- **`search`** - fuzzy text ranking: every word of the query contained,
+  contiguous hits ahead of scattered ones.
+- **`queue`** - shuffling. Takes the album key of each slot and a seed, and
+  returns a permutation, so albums can move as units or tracks singly, and the
+  whole queue or everything but what is playing.
+- **`player`** - the play-queue engine: a thread that owns the queue, decodes
+  through the core and writes to PulseAudio, driven entirely over channels.
+  Album runs, four repeat modes, seeking.
+- **`volume`** - per-application volume through the OS mixer, so the setting is
+  the audio server's to keep and an external mixer's changes are noticed.
+- **`session`** - the queue and the state around it, across runs.
+- **`watcher`** - the music directory noticed changing, debounced to one event
+  per settled burst.
+- **`mpris`** - an MPRIS server on the D-Bus session bus: media keys,
+  `playerctl`, desktop now-playing.
+
+Three of them are not simply the GUI's code relocated:
+
+- **`library` no longer depends on a UI toolkit.** A cover's accent colour is a
+  plain `Rgb`, and its thumbnail plain ref-counted bytes, so a consumer wraps
+  them in whatever its own renderer wants. `decode_cover` takes the size to
+  decode to, rather than always producing a fixed 900 square that anything
+  drawing smaller would resize a second time. `read_thumbnail` reads one back by
+  cover id, for a player that would rather load artwork as it shows it than hold
+  a library's worth.
+- **`queue::shuffle` is a pure function of a seed**, and returns a permutation
+  rather than a reordered queue - which is also the only unambiguous answer when
+  a queue holds the same track twice.
+- **`config::Conf` can be built without a file**, which is what the module
+  claims of itself: a player keeping its settings in a database, in
+  non-volatile storage, or on its command line passes the same values in
+  directly.
+
+Nothing here decides where a player's files live. Paths are the caller's to
+choose, so two players on one machine do not share a state directory by
+accident.
+
+
 v0.2.0 (2026-07-20)
 ------------------------------------------------------------
 
@@ -30,5 +92,4 @@ the same code suits a desktop player and a microcontroller.
 - **Plumbing.** A small `Source`/`Sink` layer for wiring a decoder to whatever
   plays it.
 
-Not yet: FLAC, Ogg Vorbis, and other formats. Released under the Mozilla Public
-License 2.0.
+Not yet: FLAC, Ogg Vorbis, and other formats.

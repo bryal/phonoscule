@@ -47,5 +47,4 @@ framework - with cover art taken from folder images
 (and PipeWire via pipewire-pulse) on Linux. The music directory is set in
 `~/.config/phonoscule.toml` (the `music-dir` key, defaulting to `~/Music`).
 
-Not yet: FLAC, Ogg Vorbis, and other formats, and audio output beyond Linux /
-PulseAudio. Released under the Mozilla Public License 2.0.
+Not yet: FLAC, Ogg Vorbis, and other formats, and audio output beyond Linux / PulseAudio.
