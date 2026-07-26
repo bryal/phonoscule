@@ -509,7 +509,8 @@ fn absorb_album(model: &mut Model, mut album: Album) -> After {
         }
         None => model.index_dirty = true,
     }
-    crate::model::hydrate(&mut model.queue, &album);
+    // The queue is re-matched against the library once the burst has landed, not here.
+    model.queue_stale = true;
     let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
     let ix = model.albums.partition_point(|a| key(a) <= key(&album));
     model.albums.insert(ix, album);
@@ -523,6 +524,11 @@ fn absorb_album(model: &mut Model, mut album: Album) -> After {
 pub fn reconcile(model: &mut Model) {
     if model.shown_dirty {
         refresh(model);
+    }
+    if std::mem::take(&mut model.queue_stale) {
+        // Destructured, so the library and the queue are borrowed as the separate fields they are.
+        let Model { albums, queue, .. } = model;
+        crate::model::hydrate(albums, queue);
     }
     pin_covers(model);
 }
@@ -881,5 +887,32 @@ mod test {
         assert!(model.queue.is_empty());
         assert!(model.playing().is_none());
         assert_eq!(model.play_state, player::PlayState::Paused);
+    }
+
+    /// A queue restored from paths alone gets its titles and album ids from the library, and gets them
+    /// again when the library is rescanned under it.
+    #[test]
+    fn a_restored_queue_takes_its_tags_from_the_library() {
+        use phonoscule::session::Restored;
+
+        let known = browser(4);
+        let paths: Vec<std::path::PathBuf> = known.albums[1].tracks.iter().map(|t| t.path.clone()).collect();
+        let restored = Restored { tracks: paths.clone(), current: 0, ..Default::default() };
+
+        // Restored with no library at all: the paths are all there is to show.
+        let conf = phonoscule::config::Conf::new("tui", "/music".into());
+        let covers = crate::covers::Covers::new(ratatui_image::picker::Picker::halfblocks(), None);
+        let engine = player::start(player::Client { name: "restore-test".into(), description: String::new() });
+        let mut model = Model::restored(conf, covers, engine, vec![], restored);
+        assert_eq!(model.queue.len(), paths.len());
+        assert!(model.queue.iter().all(|item| item.album_id == 0), "no album is known yet");
+
+        // The library arrives, and the queue takes its tags from it.
+        for album in known.albums.iter().cloned() {
+            let _ = update(&mut model, Msg::Library(library::ScanEvent::Album(Box::new(album))));
+        }
+        reconcile(&mut model);
+        assert!(model.queue.iter().all(|item| item.album_id == known.albums[1].id), "every item found its album");
+        assert_eq!(model.queue[0].title, known.albums[1].tracks[0].title, "and its title");
     }
 }

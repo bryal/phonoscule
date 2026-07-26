@@ -9,7 +9,7 @@ use phonoscule::search;
 use phonoscule::session;
 use phonoscule::sort::{Dir, SortField, SortOrder};
 use ratatui::widgets::ListState;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -180,6 +180,10 @@ pub struct Model {
     /// reports still in flight from before the seek are ignored until it arrives -- otherwise they
     /// yank the bar back and it rubberbands.
     pub pending_seek: Option<Duration>,
+    /// Whether the queue's titles and album ids need matching against the library again, because the
+    /// library changed under it. Done once per burst of messages rather than per album reported: a
+    /// scan reports hundreds, and re-matching a whole queue for each is the same quadratic cost.
+    pub queue_stale: bool,
     /// Whether the queue, or the state around it, has changed since it was last written. The event
     /// loop writes them out after a burst of messages rather than on each one, so holding a seek key
     /// does not rewrite the session on every report.
@@ -210,6 +214,7 @@ impl Model {
             pos: Duration::ZERO,
             len: None,
             pending_seek: None,
+            queue_stale: false,
             dirty_playlist: false,
             dirty_player: false,
             conf,
@@ -239,9 +244,7 @@ impl Model {
                 path: path.clone(),
             })
             .collect();
-        for album in &model.albums {
-            hydrate(&mut model.queue, album);
-        }
+        hydrate(&model.albums, &mut model.queue);
         model.current = restored.current.min(model.queue.len().saturating_sub(1));
         // A restored session comes up where it left off, on the player, ready to resume.
         if !model.queue.is_empty() {
@@ -330,13 +333,27 @@ pub fn refresh(model: &mut Model) {
     model.shown = ranked.into_iter().map(|(ix, _)| ix).collect();
 }
 
-/// Fills in the queue items belonging to `album` -- their titles and its id -- which is how a queue
-/// restored from paths alone gets its tags back, at boot and from every scan event after.
-pub fn hydrate(queue: &mut [QueueItem], album: &Album) {
+/// Fills in the queue's titles and album ids from the library, matched by path -- which is how a
+/// queue restored from paths alone gets its tags back, and how it keeps them as the library is
+/// rescanned.
+///
+/// Indexes the library once and then walks the queue once. Asking each album whether it owns each
+/// queue item instead is quadratic, and quadratic on a queue holding a whole library is over two
+/// seconds before the first frame.
+pub fn hydrate(albums: &[Album], queue: &mut [QueueItem]) {
+    if queue.is_empty() {
+        return;
+    }
+    let mut by_path: HashMap<&std::path::Path, (u64, &str)> = HashMap::new();
+    for album in albums {
+        for track in &album.tracks {
+            by_path.insert(track.path.as_path(), (album.id, track.title.as_str()));
+        }
+    }
     for item in queue.iter_mut() {
-        if let Some(track) = album.tracks.iter().find(|track| track.path == item.path) {
-            item.album_id = album.id;
-            item.title = track.title.clone();
+        if let Some(&(album_id, title)) = by_path.get(item.path.as_path()) {
+            item.album_id = album_id;
+            item.title = title.to_string();
         }
     }
 }
