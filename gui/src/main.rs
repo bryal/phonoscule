@@ -8,6 +8,7 @@ mod album_grid;
 mod background;
 mod coverflow;
 mod model;
+mod paths;
 mod update;
 mod view;
 
@@ -111,8 +112,8 @@ fn run() -> anyhow::Result<()> {
     // `scaling` is ours alone -- a terminal player can't scale -- so it lives in our own config
     // table. Out-of-range values are clamped rather than rejected.
     let scaling = conf.app_float("scaling")?.unwrap_or(1.0).clamp(SCALE_MIN, SCALE_MAX);
-    let restored = smol::block_on(session::load(session::playlist_file(), session::player_file()));
-    let index = smol::block_on(library::load_index(library::default_index_file()));
+    let restored = smol::block_on(session::load(paths::playlist_file(), paths::player_file()));
+    let index = smol::block_on(library::load_index(paths::album_index_file()));
 
     let app = iced::application(boot(conf, scaling, restored, index), update, view)
         .title("Phonoscule")

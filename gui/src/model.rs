@@ -1,5 +1,6 @@
 //! The application model: all state, and the queue/album-run bookkeeping around it.
 
+use crate::paths;
 use crate::update::Msg;
 use futures::StreamExt;
 use iced::Task;
@@ -432,8 +433,8 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             // what a session booting into the player is looking at.
             priority: cover_priority(&app.queue, app.current),
             known_covers: Default::default(),
-            cache_file: library::default_cache_file(),
-            covers_dir: library::default_covers_dir(),
+            cache_file: paths::tag_cache_file(),
+            covers_dir: paths::covers_dir(),
         };
         let scan = Task::run(library::scan(options), Msg::Library);
         // Run the media worker for the whole session, on iced's executor; it pushes to the OS and

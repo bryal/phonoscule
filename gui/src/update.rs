@@ -5,6 +5,7 @@ use crate::model::{
     SORT_SCROLL_ID, ScanState, SortMenu, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, color, current_album_id,
     current_glow, entries, flow_target, glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
 };
+use crate::paths;
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::mouse::ScrollDelta;
@@ -328,7 +329,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // scan actually changed something, so the quiet periodic rescans don't churn the disk.
             if app.index_dirty {
                 app.index_dirty = false;
-                return Task::future(library::save_index(library::default_index_file(), &app.albums)).discard();
+                return Task::future(library::save_index(paths::album_index_file(), &app.albums)).discard();
             }
         }
         Msg::Rescan => match app.scan {
@@ -782,7 +783,7 @@ fn queue_album(app: &mut App, ix: usize) -> Task<Msg> {
 /// everything that changes the queue, so a crash or an exit at any point loses nothing.
 fn save_playlist(app: &App) -> Task<Msg> {
     let tracks = app.queue.iter().map(|item| item.path.clone()).collect();
-    Task::future(session::save_playlist(session::playlist_file(), session::SavedPlaylist::new(tracks))).discard()
+    Task::future(session::save_playlist(paths::playlist_file(), session::SavedPlaylist::new(tracks))).discard()
 }
 
 /// Snapshots the session state around the queue (current track, repeat mode, sort order) to disk;
@@ -790,7 +791,7 @@ fn save_playlist(app: &App) -> Task<Msg> {
 /// are frequent and needn't rewrite the whole track list.
 fn save_player(app: &App) -> Task<Msg> {
     let saved = session::SavedPlayer::new(app.current, app.repeat, app.sort);
-    Task::future(session::save_player(session::player_file(), saved)).discard()
+    Task::future(session::save_player(paths::player_file(), saved)).discard()
 }
 
 /// What a shuffle permutes: single tracks, or whole albums (each album's tracks stay together, in
@@ -1089,8 +1090,8 @@ fn rescan_options(app: &App) -> library::ScanOptions {
         root: app.conf.music_dir.clone(),
         priority: vec![],
         known_covers: app.albums.iter().filter_map(|a| a.cover.as_ref().map(|c| c.id)).collect(),
-        cache_file: library::default_cache_file(),
-        covers_dir: library::default_covers_dir(),
+        cache_file: paths::tag_cache_file(),
+        covers_dir: paths::covers_dir(),
     }
 }
 

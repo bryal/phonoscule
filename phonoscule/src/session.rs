@@ -59,26 +59,6 @@ pub struct Restored {
     pub sort: SortOrder,
 }
 
-/// Where the queue is saved: `$XDG_STATE_HOME/phonoscule/playlist.json`, falling back to
-/// `~/.local/state/phonoscule/playlist.json`.
-pub fn playlist_file() -> Option<PathBuf> {
-    Some(state_dir()?.join("playlist.json"))
-}
-
-/// Where the session state around the queue is saved (next to [`playlist_file`]).
-pub fn player_file() -> Option<PathBuf> {
-    Some(state_dir()?.join("player.json"))
-}
-
-fn state_dir() -> Option<PathBuf> {
-    let state = std::env::var("XDG_STATE_HOME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| Some(std::env::home_dir()?.join(".local/state")))?;
-    Some(state.join("phonoscule"))
-}
-
 /// Loads and reconciles both files: tracks whose files have vanished since the last run are
 /// dropped (the music directory may have changed in between) with `current` following its item to
 /// its new index, and `current` is clamped to the queue. Missing, outdated, or unreadable files
