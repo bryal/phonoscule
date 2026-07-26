@@ -90,7 +90,7 @@ pub struct CoverArt {
     /// Stable content-derived id (image file path + mtime).
     pub id: u64,
     /// The (absolute) image file this was decoded from, e.g. for pointing other programs at it
-    /// and decoding a higher-resolution version on demand (see [`full_res`]).
+    /// and decoding a higher-resolution version on demand (see [`decode_cover`]).
     pub file: Arc<PathBuf>,
     /// The thumbnail: [`THUMB`]²  RGBA. Ref-counted, so this stays the only in-memory copy however
     /// many consumers hold it.
@@ -256,20 +256,21 @@ pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output
 /// from disk, and this squares into that bill.
 pub const THUMB: u32 = 320;
 
-/// The higher-resolution edge the now-playing cover flow decodes on demand (see [`full_res`]), for
-/// the focused covers when the window is run full-screen. Short of a true 4K-panel edge on
+/// The edge the GUI's cover flow decodes its focused covers to (see [`decode_cover`]), for when the
+/// window is run full-screen. Short of a true 4K-panel edge on
 /// purpose: it halves the per-cover memory and decode time versus 1024² while staying crisp enough
 /// that the difference isn't visible at the sizes the flow actually draws.
 pub const FULL: u32 = 900;
 
-/// Decodes a cover to [`FULL`]²  RGBA (~3 MiB), for the now-playing view. Decoded on demand around
-/// the current track and handed to the global high-res cache, which retains a bounded, LRU-managed
-/// set of them -- so it needn't scale with the library. Ref-counted like the thumbnails, so passing
-/// it around costs nothing.
-pub async fn full_res(file: PathBuf) -> Option<Arc<[u8]>> {
+/// Decodes a cover from its original artwork to `edge`²  RGBA, center-cropped like the thumbnails.
+///
+/// The size is the caller's to choose, and should be the size it means to draw: resizing to a fixed
+/// intermediate and then again to the target would do the work twice and lose detail the once would
+/// have kept. Ref-counted, so passing the result around costs nothing.
+pub async fn decode_cover(file: PathBuf, edge: u32) -> Option<Arc<[u8]>> {
     smol::unblock(move || match image::open(&file) {
         Ok(img) => {
-            let rgba = img.resize_to_fill(FULL, FULL, image::imageops::FilterType::Triangle).into_rgba8().into_raw();
+            let rgba = img.resize_to_fill(edge, edge, image::imageops::FilterType::Triangle).into_rgba8().into_raw();
             Some(Arc::<[u8]>::from(rgba))
         }
         Err(e) => {

@@ -294,7 +294,7 @@ impl HiResCache {
             return Task::none();
         }
         let file = (*file).clone();
-        Task::perform(library::full_res(file), move |pixels| Msg::HiResLoaded { id, pixels })
+        Task::perform(library::decode_cover(file, library::FULL), move |pixels| Msg::HiResLoaded { id, pixels })
     }
 
     /// Absorbs the result of a [`query`](Self::query)'s decode: clears the in-flight mark and, on
