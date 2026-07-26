@@ -143,6 +143,12 @@ fn draw_cover(
     let size = Size::new(area.width, area.height);
     if let Some(id) = cover_id {
         model.covers.want(id, quality, size);
+        // A large cover has to be decoded from the original artwork, which takes far longer than
+        // reading a thumbnail: ask for the thumbnail at this size as well, so something sharper than
+        // a flat colour is there in the meantime.
+        if quality == covers::Quality::Full {
+            model.covers.want(id, covers::Quality::Thumb, size);
+        }
         for &other in also {
             model.covers.want(other, quality, size);
         }

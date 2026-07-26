@@ -59,7 +59,12 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             Some(msg) => update(model, msg),
             None => After::Idle,
         },
-        Msg::Resize => After::Redraw,
+        Msg::Resize => {
+            // Every cover was encoded for the area it was drawn in, and none of those areas survive
+            // a resize.
+            model.covers.clear();
+            After::Redraw
+        }
         Msg::Log(entry) => {
             model.push_log(entry);
             After::Redraw

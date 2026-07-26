@@ -176,6 +176,14 @@ impl Covers {
         }
     }
 
+    /// Drops every cached cover, for when they were all encoded for an area that no longer exists --
+    /// the terminal having been resized. Without this they would linger, counting against the bound,
+    /// until each was asked for again and found stale one at a time.
+    pub fn clear(&mut self) {
+        self.thumbs.clear();
+        self.full.clear();
+    }
+
     /// Where thumbnails are read from, for the loader.
     pub fn dir(&self) -> Option<PathBuf> {
         self.covers_dir.clone()
@@ -291,4 +299,87 @@ pub fn square(picker: &Picker, space: Size) -> Size {
     let width = u32::from(space.width).min(u32::from(space.height) * fh / fw);
     let height = width * fw / fh;
     Size::new(width.try_into().unwrap_or(u16::MAX), height.try_into().unwrap_or(u16::MAX))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// An encoded cover of a plain colour, at `size`.
+    fn encoded(picker: &Picker, size: Size) -> Protocol {
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(64, 64, image::Rgba([1, 2, 3, 255])));
+        picker.new_protocol(image, size, resize()).expect("a plain image encodes")
+    }
+
+    fn covers() -> Covers {
+        Covers::new(Picker::halfblocks(), Some(PathBuf::from("/covers")))
+    }
+
+    /// A cover encoded for one area is not drawn in another: the terminal having been resized must
+    /// not stretch what was encoded for the old size.
+    #[test]
+    fn a_cover_is_only_used_at_the_size_it_was_encoded_for() {
+        let (small, large) = (Size::new(20, 10), Size::new(40, 20));
+        let mut covers = covers();
+        let protocol = encoded(&covers.picker, small);
+        covers.absorb(Load { cover_id: 7, quality: Quality::Thumb, size: small, protocol: Some(protocol) });
+
+        assert!(covers.best(7, small).is_some(), "held at the size it was encoded for");
+        assert!(covers.best(7, large).is_none(), "not at any other");
+    }
+
+    /// Asking at a new size discards the entry and asks again, rather than leaving it to be found
+    /// stale over and over.
+    #[test]
+    fn asking_at_a_new_size_reloads() {
+        let (small, large) = (Size::new(20, 10), Size::new(40, 20));
+        let mut covers = covers();
+        let protocol = encoded(&covers.picker, small);
+        covers.absorb(Load { cover_id: 7, quality: Quality::Thumb, size: small, protocol: Some(protocol) });
+        assert!(covers.take_wanted().is_empty());
+
+        covers.want(7, Quality::Thumb, small);
+        assert!(covers.take_wanted().is_empty(), "already held at this size");
+
+        covers.want(7, Quality::Thumb, large);
+        let wanted = covers.take_wanted();
+        assert_eq!(wanted.len(), 1, "a new size is a new load");
+        assert_eq!(wanted[0].size, large);
+        assert!(covers.best(7, small).is_none(), "the entry for the old size is gone");
+    }
+
+    /// A resize drops everything, so entries encoded for an area that no longer exists stop counting
+    /// against the bound.
+    #[test]
+    fn clearing_drops_every_cached_cover() {
+        let size = Size::new(20, 10);
+        let mut covers = covers();
+        for id in 0..3 {
+            let protocol = encoded(&covers.picker, size);
+            covers.absorb(Load { cover_id: id, quality: Quality::Thumb, size, protocol: Some(protocol) });
+        }
+        assert!(covers.best(1, size).is_some());
+
+        covers.clear();
+        for id in 0..3 {
+            assert!(covers.best(id, size).is_none(), "cover {id} should be gone");
+        }
+        covers.want(1, Quality::Thumb, size);
+        assert_eq!(covers.take_wanted().len(), 1, "and is loaded afresh when asked for");
+    }
+
+    /// A failed load leaves nothing cached and can be tried again.
+    #[test]
+    fn a_failed_load_is_retried() {
+        let size = Size::new(20, 10);
+        let mut covers = covers();
+        covers.want(7, Quality::Thumb, size);
+        assert_eq!(covers.take_wanted().len(), 1);
+        covers.want(7, Quality::Thumb, size);
+        assert!(covers.take_wanted().is_empty(), "not asked twice while in flight");
+
+        covers.absorb(Load { cover_id: 7, quality: Quality::Thumb, size, protocol: None });
+        covers.want(7, Quality::Thumb, size);
+        assert_eq!(covers.take_wanted().len(), 1, "asked again once the load failed");
+    }
 }

@@ -63,6 +63,11 @@ impl<T> Lru<T> {
         }
     }
 
+    /// Drops everything held. Loads in flight are left to land and be judged on arrival.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     /// Drops an entry that is no longer any use, so it can be loaded afresh.
     pub fn forget(&mut self, id: u64) {
         self.entries.remove(&id);
