@@ -2,15 +2,17 @@
 
 use crate::model::{
     App, Filter, Modal, ModalKind, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, SEARCH_INPUT_ID,
-    SORT_SCROLL_ID, ScanState, SortMenu, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, current_album_id, current_glow,
-    entries, flow_target, glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
+    SORT_SCROLL_ID, ScanState, SortMenu, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, color, current_album_id,
+    current_glow, entries, flow_target, glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
 };
+use crate::paths;
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::mouse::ScrollDelta;
-use phonoscule_gui::library::{self, Album};
-use phonoscule_gui::sort::SortOrder;
-use phonoscule_gui::{media, player, playlist};
+use phonoscule::library::{self, Album};
+use phonoscule::queue::{self, Grouping, Scope};
+use phonoscule::sort::SortOrder;
+use phonoscule::{mpris, player, session};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -132,7 +134,7 @@ pub enum Msg {
         track: usize,
     },
     Player(player::Event),
-    Media(media::Control),
+    Media(mpris::Control),
     Toggle,
     /// Step to the next track (End, and the on-screen button). `repeat` marks a held-key
     /// auto-repeat, which the handler rate-limits; a fresh press or button click passes `false`.
@@ -225,8 +227,8 @@ impl Zoom {
         /// Multiplicative factor per zoom step -- a perceptually even ~10% either way.
         const STEP: f32 = 1.1;
         match self {
-            Zoom::In => (scale * STEP).min(crate::conf::SCALE_MAX),
-            Zoom::Out => (scale / STEP).max(crate::conf::SCALE_MIN),
+            Zoom::In => (scale * STEP).min(crate::SCALE_MAX),
+            Zoom::Out => (scale / STEP).max(crate::SCALE_MIN),
             Zoom::Reset => baseline,
         }
     }
@@ -281,6 +283,12 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // not overwrite the winner -- neither on the album nor on its queue items.
             let accepted: Vec<u64> =
                 app.albums.iter().filter(|a| albums.contains(&a.id) && a.cover_id == Some(art.id)).map(|a| a.id).collect();
+            if !accepted.is_empty() {
+                // The handle for these pixels, made exactly once (see `App::covers`). It wraps the
+                // scan's bitmap rather than copying it, so this costs an id and a refcount.
+                let pixels = bytes::Bytes::from_owner(art.pixels.clone());
+                app.covers.insert(art.id, iced::widget::image::Handle::from_rgba(library::THUMB, library::THUMB, pixels));
+            }
             for album in app.albums.iter_mut().filter(|a| accepted.contains(&a.id)) {
                 album.cover = Some(art.clone());
                 // Freshly computed, so an accent the index got wrong (or an algorithm change)
@@ -290,7 +298,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
             for item in app.queue.iter_mut().filter(|i| accepted.contains(&i.album_id)) {
                 item.cover = Some(art.clone());
-                item.accent = Some(art.accent);
+                item.accent = Some(color(art.accent));
             }
             // The playing track's cover art may just have arrived -- notably right after boot,
             // when a restored queue's covers all hydrate through the scan. Re-publish it, and
@@ -305,13 +313,24 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             let before = app.albums.len();
             app.albums.retain(|album| ids.contains(&album.id));
             app.index_dirty |= app.albums.len() != before;
+            // Retire the handles of covers nothing shows any more: an album gone from the library,
+            // or one whose artwork was replaced. The queue counts as a holder -- it outlives the
+            // albums it was filled from.
+            let live: std::collections::HashSet<u64> = app
+                .albums
+                .iter()
+                .filter_map(|a| a.cover.as_ref())
+                .chain(app.queue.iter().filter_map(|i| i.cover.as_ref()))
+                .map(|c| c.id)
+                .collect();
+            app.covers.retain(|id, _| live.contains(id));
             app.scan = ScanState::Complete;
             refresh_filter(app);
             // Persist the settled album list for the next launch's instant grid -- only when this
             // scan actually changed something, so the quiet periodic rescans don't churn the disk.
             if app.index_dirty {
                 app.index_dirty = false;
-                return Task::future(library::save_index(library::default_index_file(), &app.albums)).discard();
+                return Task::future(library::save_index(paths::album_index_file(), &app.albums)).discard();
             }
         }
         Msg::Rescan => match app.scan {
@@ -324,7 +343,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         },
         Msg::Show(v) => app.view = v,
         Msg::Zoom(zoom) => {
-            app.scale = zoom.apply(app.scale, app.conf.scaling);
+            app.scale = zoom.apply(app.scale, app.scaling);
             log::debug!("UI scale -> {:.2}", app.scale);
         }
         // Grid messages carry indices into the filtered list: resolve them to real album indices
@@ -591,27 +610,27 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.pos = app.len.unwrap_or(Duration::ZERO);
                 app.pending_seek = None;
                 // Report Stopped to the OS (the bar still shows the last track, but nothing plays).
-                app.media.publish(media::Snapshot { meta: None, state: media::Playback::Stopped, position: app.pos });
+                app.media.publish(mpris::Snapshot { meta: None, state: mpris::Playback::Stopped, position: app.pos });
             }
         },
         Msg::Media(control) => match control {
-            media::Control::Play => match app.play_state {
+            mpris::Control::Play => match app.play_state {
                 player::PlayState::Paused => app.send(player::Cmd::TogglePlayPause),
                 player::PlayState::Playing => (),
             },
             // We have no stopped-with-a-track-open state; pausing is the closest thing.
-            media::Control::Pause | media::Control::Stop => match app.play_state {
+            mpris::Control::Pause | mpris::Control::Stop => match app.play_state {
                 player::PlayState::Playing => app.send(player::Cmd::TogglePlayPause),
                 player::PlayState::Paused => (),
             },
-            media::Control::Toggle => app.send(player::Cmd::TogglePlayPause),
-            media::Control::Next => app.send(player::Cmd::Next),
-            media::Control::Prev => app.send(player::Cmd::Prev),
-            media::Control::Seek(offset) => {
+            mpris::Control::Toggle => app.send(player::Cmd::TogglePlayPause),
+            mpris::Control::Next => app.send(player::Cmd::Next),
+            mpris::Control::Prev => app.send(player::Cmd::Prev),
+            mpris::Control::Seek(offset) => {
                 let dir = if offset >= 0 { SeekDir::Forward } else { SeekDir::Backward };
                 do_seek(app, Seek::By(dir, Duration::from_micros(offset.unsigned_abs())));
             }
-            media::Control::SetPosition(t) => app.send(player::Cmd::Seek(t)),
+            mpris::Control::SetPosition(t) => app.send(player::Cmd::Seek(t)),
         },
         Msg::Toggle => app.send(player::Cmd::TogglePlayPause),
         Msg::Next { repeat } => {
@@ -765,35 +784,15 @@ fn queue_album(app: &mut App, ix: usize) -> Task<Msg> {
 /// everything that changes the queue, so a crash or an exit at any point loses nothing.
 fn save_playlist(app: &App) -> Task<Msg> {
     let tracks = app.queue.iter().map(|item| item.path.clone()).collect();
-    Task::future(playlist::save_playlist(playlist::playlist_file(), playlist::SavedPlaylist::new(tracks))).discard()
+    Task::future(session::save_playlist(paths::playlist_file(), session::SavedPlaylist::new(tracks))).discard()
 }
 
 /// Snapshots the session state around the queue (current track, repeat mode, sort order) to disk;
 /// returned by everything that changes any of them. Split from [`save_playlist`]: these changes
 /// are frequent and needn't rewrite the whole track list.
 fn save_player(app: &App) -> Task<Msg> {
-    let saved = playlist::SavedPlayer::new(app.current, app.repeat, app.sort);
-    Task::future(playlist::save_player(playlist::player_file(), saved)).discard()
-}
-
-/// What a shuffle permutes: single tracks, or whole albums (each album's tracks stay together, in
-/// their queue order, while the albums land in random order).
-#[derive(Debug, Clone, Copy)]
-pub enum Grouping {
-    Tracks,
-    Albums,
-}
-
-/// How much of the queue a shuffle reorders.
-#[derive(Debug, Clone, Copy)]
-pub enum Scope {
-    /// The playing track (or its whole album) moves to the front of the queue and everything else
-    /// shuffles in behind it, so nothing lands unreachably behind the cursor; playback continues
-    /// undisturbed.
-    Others,
-    /// Literally everything shuffles: playback is interrupted and the cursor rests, paused, on
-    /// the queue's new first track.
-    All,
+    let saved = session::SavedPlayer::new(app.current, app.repeat, app.sort);
+    Task::future(session::save_player(paths::player_file(), saved)).discard()
 }
 
 /// Shuffles the queue in place, visibly: the reordering IS the new playlist (persisted like any
@@ -810,33 +809,8 @@ fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope) -> Task<Msg> {
         app.modal = None;
     }
 
-    // Build the new order as a permutation of indices, so the current track can be followed by
-    // identity (queue items need not be unique -- an album can be queued twice). Tracks are
-    // singleton groups; albums group all of an album's tracks, wherever they sit, in their queue
-    // order.
-    let mut groups: Vec<Vec<usize>> = match grouping {
-        Grouping::Tracks => (0..app.queue.len()).map(|ix| vec![ix]).collect(),
-        Grouping::Albums => {
-            let mut groups: Vec<(u64, Vec<usize>)> = Vec::new();
-            for (ix, item) in app.queue.iter().enumerate() {
-                match groups.iter_mut().find(|(album, _)| *album == item.album_id) {
-                    Some((_, ixs)) => ixs.push(ix),
-                    None => groups.push((item.album_id, vec![ix])),
-                }
-            }
-            groups.into_iter().map(|(_, ixs)| ixs).collect()
-        }
-    };
-    match scope {
-        Scope::All => shuffle(&mut groups),
-        Scope::Others => {
-            // Pin the playing group to the front; only the rest shuffles.
-            let playing = groups.iter().position(|group| group.contains(&app.current)).unwrap_or(0);
-            groups.swap(0, playing);
-            shuffle(&mut groups[1..]);
-        }
-    }
-    let order: Vec<usize> = groups.into_iter().flatten().collect();
+    let albums: Vec<u64> = app.queue.iter().map(|item| item.album_id).collect();
+    let order = queue::shuffle(&albums, app.current, grouping, scope, queue::seed());
 
     let mut old: Vec<Option<QueueItem>> = std::mem::take(&mut app.queue).into_iter().map(Some).collect();
     app.queue = order.iter().map(|&ix| old[ix].take().expect("a permutation visits each index once")).collect();
@@ -855,24 +829,6 @@ fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope) -> Task<Msg> {
     }
     app.anim_pos = flow_target(app);
     Task::batch([save_playlist(app), save_player(app)])
-}
-
-/// Fisher-Yates over a splitmix64 stream seeded from the clock: not cryptographic, plenty for
-/// shuffling a music queue, and spares a randomness dependency.
-fn shuffle<T>(items: &mut [T]) {
-    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-    let mut state = seed.map_or(0x9E37_79B9_7F4A_7C15, |d| d.as_nanos() as u64);
-    let mut next = move || {
-        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    };
-    for i in (1..items.len()).rev() {
-        // The modulo bias is immaterial at queue sizes.
-        items.swap(i, (next() % (i as u64 + 1)) as usize);
-    }
 }
 
 /// Resolves a grid message's index (into the filtered list) to a real album index, or `None` for
@@ -1072,8 +1028,8 @@ fn rescan_options(app: &App) -> library::ScanOptions {
         root: app.conf.music_dir.clone(),
         priority: vec![],
         known_covers: app.albums.iter().filter_map(|a| a.cover.as_ref().map(|c| c.id)).collect(),
-        cache_file: library::default_cache_file(),
-        covers_dir: library::default_covers_dir(),
+        cache_file: paths::tag_cache_file(),
+        covers_dir: paths::covers_dir(),
     }
 }
 
@@ -1081,7 +1037,7 @@ fn rescan_options(app: &App) -> library::ScanOptions {
 /// media worker coalesces a burst of these down to the latest and rate-limits the actual pushes,
 /// so callers need not throttle.
 fn publish_media(app: &App) {
-    let meta = app.queue.get(app.current).map(|item| media::Meta {
+    let meta = app.queue.get(app.current).map(|item| mpris::Meta {
         title: item.title.clone(),
         album: item.album.clone(),
         artist: item.artist.clone(),
@@ -1090,10 +1046,10 @@ fn publish_media(app: &App) {
         duration: app.len,
     });
     let state = match app.play_state {
-        player::PlayState::Playing => media::Playback::Playing,
-        player::PlayState::Paused => media::Playback::Paused,
+        player::PlayState::Playing => mpris::Playback::Playing,
+        player::PlayState::Paused => mpris::Playback::Paused,
     };
-    app.media.publish(media::Snapshot { meta, state, position: app.pos });
+    app.media.publish(mpris::Snapshot { meta, state, position: app.pos });
 }
 
 /// How many album runs on each side of the playing one the cover flow ensures are held in the

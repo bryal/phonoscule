@@ -1,6 +1,5 @@
-//! Album grid ordering: how the library view arranges albums, chosen from the filter bar's sort
-//! picker. A [`SortOrder`] is a small, serializable value (persisted with the session state) that
-//! yields a total [`SortOrder::cmp`] over [`Album`]s.
+//! Album ordering: a small, serializable [`SortOrder`] yielding a total [`SortOrder::cmp`] over
+//! [`Album`]s, for a browser to arrange them by and to persist as a user's choice.
 
 use crate::library::Album;
 use serde::{Deserialize, Serialize};
@@ -37,9 +36,8 @@ pub enum SortField {
     Year,
 }
 
-/// A sort order for the album grid: an optional artist grouping (the groups ordered by artist
-/// name in the given direction), then the field within each group. The filter bar's sort picker
-/// offers every combination -- see [`SortOrder::ALL`].
+/// An optional artist grouping (the groups ordered by artist name in the given direction), then the
+/// field within each group. [`SortOrder::ALL`] is every combination, for a picker to offer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SortOrder {
     /// `Some(dir)` groups albums by artist and orders the groups by artist name in `dir`; `None`
@@ -57,9 +55,9 @@ impl Default for SortOrder {
 }
 
 impl SortOrder {
-    /// Every offered order, in the sort picker's display order: the ungrouped fields first, then
-    /// the artist-grouped ones; ascending above descending throughout (the artist grouping's
-    /// direction leads, then the field's), so the default "Name ↑" heads the list.
+    /// Every order, in a sensible display order: the ungrouped fields first, then the
+    /// artist-grouped ones; ascending above descending throughout (the artist grouping's direction
+    /// leads, then the field's), so the default "Name ↑" heads the list.
     pub const ALL: [SortOrder; 12] = {
         use Dir::{Asc, Desc};
         use SortField::{Name, Year};

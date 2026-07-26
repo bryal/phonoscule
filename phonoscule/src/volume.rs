@@ -2,9 +2,8 @@
 //!
 //! The interface is platform-neutral: [`start`] spawns whatever backend the platform has and
 //! hands back a [`VolumeControl`], whose readings -- the initial one, and external changes from
-//! any mixer UI -- stream out as plain factors (1.0 = 100%), so the GUI can mirror the mixer
-//! without polling. A platform without a backend simply never reports (the GUI shows no volume
-//! bar) and swallows sets.
+//! any mixer UI -- stream out as plain factors (1.0 = 100%), so an application can mirror the mixer
+//! without polling. A platform without a backend simply never reports and swallows sets.
 //!
 //! The Linux backend speaks PulseAudio (PipeWire included, via pipewire-pulse): a dedicated
 //! thread finds the application's sink inputs (by process id -- the playback stream comes from
@@ -12,6 +11,8 @@
 //! [`VolumeControl::set`] commands. The server remembers the volume across restarts
 //! (stream-restore), so nothing is persisted here. A future Windows port would slot a WASAPI
 //! backend (`ISimpleAudioVolume` on our audio session) in beside it.
+//!
+//! Wants std and an OS mixer.
 
 use smol::channel;
 use std::sync::mpsc;
@@ -43,8 +44,8 @@ pub fn start() -> VolumeControl {
     VolumeControl { cmd: cmd_tx, events: event_rx }
 }
 
-/// The mixerless fallback: readings never arrive, so the GUI never shows a volume bar, and the
-/// dropped command channel makes sets no-ops.
+/// The mixerless fallback: readings never arrive, and the dropped command channel makes sets
+/// no-ops.
 #[cfg(not(target_os = "linux"))]
 mod backend {
     pub fn spawn(_commands: std::sync::mpsc::Receiver<f32>, _events: smol::channel::Sender<f32>) {}
@@ -82,8 +83,8 @@ mod backend {
     struct Mixer {
         /// Our sink inputs: index -> channel count (needed to build a matching volume structure).
         ours: HashMap<u32, u8>,
-        /// The last volume reported to the GUI, to swallow no-op change events (our own sets echo
-        /// back as one).
+        /// The last volume reported, to swallow no-op change events (our own sets echo back as
+        /// one).
         reported: Option<f32>,
         events: channel::Sender<f32>,
     }

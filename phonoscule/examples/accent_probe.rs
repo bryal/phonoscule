@@ -4,7 +4,7 @@
 //!
 //! `cargo run -p phonoscule-gui --example accent_probe -- <image>`
 
-use phonoscule_gui::library::{THUMB, accent_color};
+use phonoscule::library::{THUMB, accent_color};
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: accent_probe <image>");

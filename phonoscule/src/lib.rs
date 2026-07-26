@@ -9,6 +9,27 @@ pub mod plumbing;
 pub mod sample;
 pub mod wav;
 
+#[cfg(feature = "config")]
+pub mod config;
+#[cfg(feature = "library")]
+pub mod library;
+#[cfg(feature = "mpris")]
+pub mod mpris;
+#[cfg(feature = "player")]
+pub mod player;
+#[cfg(feature = "queue")]
+pub mod queue;
+#[cfg(feature = "search")]
+pub mod search;
+#[cfg(feature = "session")]
+pub mod session;
+#[cfg(feature = "sort")]
+pub mod sort;
+#[cfg(feature = "volume")]
+pub mod volume;
+#[cfg(feature = "watcher")]
+pub mod watcher;
+
 #[cfg(test)]
 mod test {
     use super::{

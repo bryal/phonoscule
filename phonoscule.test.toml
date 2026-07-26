@@ -1,5 +1,7 @@
-# Test config: point the GUI at the small in-repo mock library (untracked; see TestLibrary/).
-# Relative paths are resolved against this file's directory. Use with e.g.:
-#   PHONOSCULE_CONFIG=phonoscule.test.toml cargo run -p phonoscule-gui
+# Test config: point a player at the small in-repo mock library (untracked; see TestLibrary/).
+# Relative paths are resolved against this file's directory. Each player reads its own variable, so
+# use whichever one you are running:
+#   PHONOSCULE_GUI_CONF=phonoscule.test.toml cargo run -p phonoscule-gui
+#   PHONOSCULE_TUI_CONF=phonoscule.test.toml cargo run -p phonoscule-tui
 # or let .dir-locals.el set the environment when working from emacs.
 music-dir = "./TestLibrary/"

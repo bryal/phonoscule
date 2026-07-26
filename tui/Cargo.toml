@@ -1,0 +1,22 @@
+[package]
+name = "phonoscule-tui"
+description = "A TUI music player based on Phonoscule"
+version = "0.1.0-dev"
+publish = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+phonoscule = { path = "../phonoscule", features = ["config", "library", "mpris", "player", "queue", "search", "session", "sort", "volume", "watcher"] }
+crossterm = "0.29.0"
+ratatui = "0.30.2"
+# `chafa-dyn` is one of its defaults and would need libchafa at build and run time; without it a
+# terminal that speaks no image protocol falls back to unicode half blocks.
+ratatui-image = { version = "11.0.6", default-features = false, features = ["image-defaults", "crossterm"] }
+image = "0.25.10"
+anyhow = "1.0"
+futures = "0.3.32"
+smol                 = { workspace = true }
+log                  = { workspace = true, features = ["std"] }

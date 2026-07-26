@@ -4,13 +4,17 @@
 //! play queue with a seekable playback bar. Follows the model/update/view architecture; this file
 //! only boots the application and wires up its event sources.
 
+mod album_grid;
+mod background;
+mod coverflow;
 mod model;
+mod paths;
 mod update;
 mod view;
 
 use model::{App, Modal, View, boot, flow_target, glow_animating};
-use phonoscule_gui::conf::{self, Conf};
-use phonoscule_gui::{library, playlist, watcher};
+use phonoscule::library;
+use phonoscule::{config, session, watcher};
 use smol::channel;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -35,8 +39,16 @@ static FONTS_DATA: &[&[u8]] = &[
     include_bytes!("../assets/font-awesome/Font Awesome 7 Free-Solid-900.otf"),
 ];
 
-/// `--help` text: what the program is and how to run it. The configuration section is printed after
-/// it from [`conf::CONFIG_HELP`], which lives next to the parser it documents.
+/// The name this player goes by: its `[app.gui]` config table and its `$PHONOSCULE_GUI_CONF`.
+const APP: &str = "gui";
+
+/// Range the UI scale factor is clamped to -- both the configured `scaling` and the live Ctrl +/-
+/// zoom (see [`Zoom`](update::Zoom)). Wide enough to be useful, narrow enough to stay usable.
+pub const SCALE_MIN: f32 = 0.5;
+pub const SCALE_MAX: f32 = 3.0;
+
+/// `--help` text: what the program is and how to run it. [`help`] follows it with the config
+/// sections.
 const HELP: &str = "\
 Phonoscule: an album-art-focused music player with an iPod-style Cover Flow.
 
@@ -51,13 +63,25 @@ Options:
 
 ";
 
+/// This player's own config settings, listed after the shared ones. Keep the range in step with
+/// [`SCALE_MIN`] / [`SCALE_MAX`].
+const CONFIG_HELP_GUI: &str = "
+  [app.gui]
+    scaling    UI scale factor for high-DPI displays: 1.0 is unscaled, larger is
+               bigger. Optional, default 1.0, clamped to 0.5 to 3.0.
+";
+
+fn help() -> String {
+    format!("{HELP}{}{CONFIG_HELP_GUI}", config::config_help(APP))
+}
+
 fn main() {
     // Any startup failure -- a bad argument, an unreadable config, a failed window init -- prints
     // the help after it, so a misuse points the user at how to run the program and where its
     // config lives.
     if let Err(e) = run() {
         eprintln!("Error: {e:?}\n");
-        eprint!("{HELP}{}", conf::CONFIG_HELP);
+        eprint!("{}", help());
         std::process::exit(1);
     }
 }
@@ -69,7 +93,7 @@ fn run() -> anyhow::Result<()> {
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
-                print!("{HELP}{}", conf::CONFIG_HELP);
+                print!("{}", help());
                 return Ok(());
             }
             "-V" | "--version" => {
@@ -84,11 +108,14 @@ fn run() -> anyhow::Result<()> {
 
     simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).env().init().unwrap();
 
-    let conf = smol::block_on(Conf::load(conf::locate(arg_conf_path)))?;
-    let restored = smol::block_on(playlist::load(playlist::playlist_file(), playlist::player_file()));
-    let index = smol::block_on(library::load_index(library::default_index_file()));
+    let conf = smol::block_on(config::load(APP, arg_conf_path))?;
+    // `scaling` is ours alone -- a terminal player can't scale -- so it lives in our own config
+    // table. Out-of-range values are clamped rather than rejected.
+    let scaling = conf.app_float("scaling")?.unwrap_or(1.0).clamp(SCALE_MIN, SCALE_MAX);
+    let restored = smol::block_on(session::load(paths::playlist_file(), paths::player_file()));
+    let index = smol::block_on(library::load_index(paths::album_index_file()));
 
-    let app = iced::application(boot(conf, restored, index), update, view)
+    let app = iced::application(boot(conf, scaling, restored, index), update, view)
         .title("Phonoscule")
         .subscription(subscription)
         .scale_factor(|app| app.scale)

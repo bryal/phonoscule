@@ -1,12 +1,12 @@
 [workspace]
-members = ["phonoscule", "cli", "gui"]
+members = ["phonoscule", "cli", "tui", "gui"]
 resolver = "3"
 
 [workspace.package]
 authors = ["JoJo <jo@jo.zone>"]
 edition = "2024"
 license = "MPL-2.0"
-repository = "https://codeberg.org/jojo-laplace/phonoscule"
+repository = "https://github.com/bryal/phonoscule"
 
 [workspace.dependencies]
 log = { version = "0.4.33", features = ["max_level_trace", "release_max_level_debug"] }

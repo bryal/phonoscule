@@ -20,10 +20,10 @@
 //! cover id is unchanged (pass it in [`ScanOptions::known_covers`] to skip its decoding
 //! entirely), and finally retain only [`ScanEvent::Done::album_ids`].
 
+use crate::{io::Skippable, metadata::Tag, opus, wav::Wav};
 use embedded_io_adapters::futures_03::FromFutures;
 use embedded_io_async::{Read as _, Seek as _, SeekFrom};
 use futures::{StreamExt, stream};
-use phonoscule::{io::Skippable, metadata::Tag, opus, wav::Wav};
 use serde::{Deserialize, Serialize};
 use smol::{channel, fs::File, io::BufReader, stream::Stream};
 use std::{
@@ -35,6 +35,27 @@ use std::{
     sync::Arc,
     time::SystemTime,
 };
+
+/// An sRGB color, components running 0 to 1: what a cover's accent is expressed in. Plain data, so
+/// a consumer converts it to whatever color type its toolkit wants.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rgb {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+}
+
+impl Rgb {
+    pub const BLACK: Rgb = Rgb { r: 0.0, g: 0.0, b: 0.0 };
+
+    pub fn to_array(self) -> [f32; 3] {
+        [self.r, self.g, self.b]
+    }
+
+    pub fn from_array([r, g, b]: [f32; 3]) -> Self {
+        Rgb { r, g, b }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Album {
@@ -53,7 +74,7 @@ pub struct Album {
     pub cover: Option<CoverArt>,
     /// The cover's accent color, known before (and independently of) the cover pixels: persisted
     /// in the album index, so freshly launched fallback tiles can already carry it.
-    pub accent: Option<iced::Color>,
+    pub accent: Option<Rgb>,
     pub tracks: Vec<TrackInfo>,
 }
 
@@ -63,21 +84,19 @@ pub struct TrackInfo {
     pub title: String,
 }
 
-/// Decoded cover art, shared between the browser view (via the iced image handle) and the Cover
-/// Flow (via the raw pixels, uploaded to a GPU texture cached by `id`).
+/// Decoded cover art: the thumbnail pixels, and what was derived from them.
 #[derive(Clone)]
 pub struct CoverArt {
     /// Stable content-derived id (image file path + mtime).
     pub id: u64,
     /// The (absolute) image file this was decoded from, e.g. for pointing other programs at it
-    /// and (later) decoding a higher-resolution version on demand.
+    /// and decoding a higher-resolution version on demand (see [`decode_cover`]).
     pub file: Arc<PathBuf>,
-    /// The thumbnail: [`THUMB`]²  RGBA, as an `Rgba` handle. The pixels live here (in the handle's
-    /// shared, ref-counted buffer), so this is the only in-memory copy -- the grid renders the
-    /// handle directly, and the cover flow reads the pixels back out of its `Rgba` variant.
-    pub handle: iced::widget::image::Handle,
+    /// The thumbnail: [`THUMB`]²  RGBA. Ref-counted, so this stays the only in-memory copy however
+    /// many consumers hold it.
+    pub pixels: Arc<[u8]>,
     /// The cover's most distinct color, e.g. for theming the surroundings after it.
-    pub accent: iced::Color,
+    pub accent: Rgb,
 }
 
 impl fmt::Debug for CoverArt {
@@ -122,20 +141,10 @@ pub struct ScanOptions {
     pub covers_dir: Option<PathBuf>,
 }
 
-/// The default location of the tag cache: `<cache>/phonoscule/library.json`.
-pub fn default_cache_file() -> Option<PathBuf> {
-    Some(cache_dir()?.join("library.json"))
-}
-
-/// The default thumbnail cache directory: `<cache>/phonoscule/covers.<THUMB>`. The edge size is
-/// in the name, so bumping [`THUMB`] starts a fresh directory rather than reading mismatched files.
-pub fn default_covers_dir() -> Option<PathBuf> {
-    Some(cache_dir()?.join(format!("covers.{THUMB}")))
-}
-
-/// The default location of the album index: `<cache>/phonoscule/albums.json`.
-pub fn default_index_file() -> Option<PathBuf> {
-    Some(cache_dir()?.join("albums.json"))
+/// The thumbnail cache directory to use under `dir`: the edge size is in its name, so bumping
+/// [`THUMB`] starts a fresh directory rather than reading mismatched files.
+pub fn covers_dir(dir: &Path) -> PathBuf {
+    dir.join(format!("covers.{THUMB}"))
 }
 
 /// Bumped when [`SavedAlbum`] changes shape or meaning (like the id derivation); an old or
@@ -162,7 +171,7 @@ struct SavedAlbum {
     genre: String,
     year: Option<u32>,
     cover_id: Option<u64>,
-    /// The cover's accent color as linear RGB components.
+    /// The cover's accent color as its bare components (see [`Rgb`]).
     accent: Option<[f32; 3]>,
     tracks: Vec<TrackInfo>,
 }
@@ -198,7 +207,7 @@ pub async fn load_index(path: Option<PathBuf>) -> Vec<Album> {
             year: a.year,
             cover_id: a.cover_id,
             cover: None,
-            accent: a.accent.map(|[r, g, b]| iced::Color { r, g, b, a: 1.0 }),
+            accent: a.accent.map(Rgb::from_array),
             tracks: a.tracks,
         })
         .collect()
@@ -218,7 +227,7 @@ pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output
                 genre: a.genre.clone(),
                 year: a.year,
                 cover_id: a.cover_id,
-                accent: a.accent.map(|c| [c.r, c.g, c.b]),
+                accent: a.accent.map(Rgb::to_array),
                 tracks: a.tracks.clone(),
             })
             .collect(),
@@ -240,17 +249,6 @@ pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output
     }
 }
 
-/// Our cache directory, gathering every persistent cache under one roof:
-/// `$XDG_CACHE_HOME/phonoscule`, falling back to `~/.cache/phonoscule`.
-fn cache_dir() -> Option<PathBuf> {
-    let home = std::env::var("XDG_CACHE_HOME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| Some(std::env::home_dir()?.join(".cache")))?;
-    Some(home.join("phonoscule"))
-}
-
 /// Cover thumbnails are downscaled to fit this square (center-cropped, like the iPod did). Sized
 /// for the library grid; the now-playing view decodes a higher-resolution version on demand. Also
 /// the LOD placeholder the cover flow shows until full-res arrives. Deliberately trades a bit of
@@ -258,21 +256,21 @@ fn cache_dir() -> Option<PathBuf> {
 /// from disk, and this squares into that bill.
 pub const THUMB: u32 = 320;
 
-/// The higher-resolution edge the now-playing cover flow decodes on demand (see [`full_res`]), for
-/// the focused covers when the window is run full-screen. Short of a true 4K-panel edge on
+/// The edge the GUI's cover flow decodes its focused covers to (see [`decode_cover`]), for when the
+/// window is run full-screen. Short of a true 4K-panel edge on
 /// purpose: it halves the per-cover memory and decode time versus 1024² while staying crisp enough
 /// that the difference isn't visible at the sizes the flow actually draws.
 pub const FULL: u32 = 900;
 
-/// Decodes a cover to [`FULL`]²  RGBA (~3 MiB), for the now-playing view. Decoded on demand around
-/// the current track and handed to the global high-res cache, which retains a bounded, LRU-managed
-/// set of them -- so it needn't scale with the library. Its own bitmap is an `Arc<[u8]>` (never
-/// shared with iced, unlike the thumbnails), so the cache and the cover flow's GPU upload reference
-/// the same allocation rather than copying.
-pub async fn full_res(file: PathBuf) -> Option<Arc<[u8]>> {
+/// Decodes a cover from its original artwork to `edge`²  RGBA, center-cropped like the thumbnails.
+///
+/// The size is the caller's to choose, and should be the size it means to draw: resizing to a fixed
+/// intermediate and then again to the target would do the work twice and lose detail the once would
+/// have kept. Ref-counted, so passing the result around costs nothing.
+pub async fn decode_cover(file: PathBuf, edge: u32) -> Option<Arc<[u8]>> {
     smol::unblock(move || match image::open(&file) {
         Ok(img) => {
-            let rgba = img.resize_to_fill(FULL, FULL, image::imageops::FilterType::Triangle).into_rgba8().into_raw();
+            let rgba = img.resize_to_fill(edge, edge, image::imageops::FilterType::Triangle).into_rgba8().into_raw();
             Some(Arc::<[u8]>::from(rgba))
         }
         Err(e) => {
@@ -289,8 +287,8 @@ pub fn scan(options: ScanOptions) -> impl Stream<Item = ScanEvent> + Send {
     let (tx, rx) = channel::bounded(64);
     // `drive` fans two concurrent phases into `tx`. Rather than spawn it, fold it into the
     // returned stream: a non-yielding "driver" (running `drive` to completion) selected with the
-    // receiver. iced then drives the whole scan on its own executor whenever it polls this stream
-    // (via `Task::run`) -- no task or thread of ours -- and dropping the stream cancels the scan.
+    // receiver. Whoever polls the stream thereby drives the whole scan on their own executor -- no
+    // task or thread of ours -- and dropping the stream cancels the scan.
     let driver = stream::once(drive(options, tx)).filter_map(|()| async { None::<ScanEvent> }).boxed();
     stream::select(driver, rx)
 }
@@ -678,9 +676,8 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
                 .buffer_unordered(concurrency())
         );
         while let Some((ids, id, cover)) = covers.next().await {
-            let Some((file, rgba, accent)) = cover else { continue };
-            let handle = iced::widget::image::Handle::from_rgba(THUMB, THUMB, rgba);
-            let art = CoverArt { id, file: Arc::new(file), handle, accent };
+            let Some((file, pixels, accent)) = cover else { continue };
+            let art = CoverArt { id, file: Arc::new(file), pixels, accent };
             if tx.send(ScanEvent::Cover { albums: ids, art }).await.is_err() {
                 return;
             }
@@ -851,17 +848,27 @@ async fn read_tags(path: &Path) -> Option<FileTags> {
 /// Number of bytes in a cached thumbnail: [`THUMB`]²  RGB.
 const THUMB_RGB_LEN: usize = (THUMB * THUMB * 3) as usize;
 
+/// Reads one cached thumbnail by cover id, as [`THUMB`]²  RGBA: a plain file read and a widening, no
+/// image decoding. `None` when it was never cached, or the file is not the size it should be.
+///
+/// For a consumer that would rather load thumbnails as it needs them than hold the whole library's
+/// worth at once -- [`scan`] hands them over as it goes, but nothing says they must be kept.
+pub async fn read_thumbnail(covers_dir: &Path, id: u64) -> Option<Arc<[u8]>> {
+    let rgb = smol::fs::read(covers_dir.join(format!("{id:016x}"))).await.ok()?;
+    (rgb.len() == THUMB_RGB_LEN).then(|| rgb_to_rgba(&rgb))
+}
+
 /// Loads a cover thumbnail as [`THUMB`]²  RGBA, plus its accent color and absolute path. Reads the
 /// raw cached thumbnail when present -- a plain file read, no image decoding, so this is fast even
 /// in debug builds. Otherwise decodes and downscales the source on the blocking pool (parallel
 /// regardless of executor threads) and caches the result for next time.
-async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64) -> Option<(PathBuf, Vec<u8>, iced::Color)> {
+async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64) -> Option<(PathBuf, Arc<[u8]>, Rgb)> {
     // Absolute, so consumers (e.g. the MPRIS art URL) don't depend on our working directory.
     let file = smol::fs::canonicalize(path).await.ok()?;
     let cache_path = covers_dir.map(|dir| dir.join(format!("{id:016x}")));
 
-    if let Some(cache_path) = &cache_path
-        && let Ok(rgb) = smol::fs::read(cache_path).await
+    if let Some(dir) = covers_dir
+        && let Ok(rgb) = smol::fs::read(dir.join(format!("{id:016x}"))).await
         && rgb.len() == THUMB_RGB_LEN
     {
         let accent = accent_color(&rgb);
@@ -891,19 +898,20 @@ fn decode_thumbnail(file: &Path) -> Option<Vec<u8>> {
     }
 }
 
-/// Expands packed RGB triplets to the RGBA quartets iced and wgpu want (fully opaque).
-fn rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
+/// Expands packed RGB triplets to fully opaque RGBA quartets. The cache stores RGB, a third
+/// smaller on disk.
+fn rgb_to_rgba(rgb: &[u8]) -> Arc<[u8]> {
     let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
     for px in rgb.chunks_exact(3) {
         rgba.extend_from_slice(px);
         rgba.push(u8::MAX);
     }
-    rgba
+    Arc::from(rgba)
 }
 
 /// Picks the image's most distinct color: dominant among saturated, reasonably bright pixels,
 /// falling back towards the most common color for near-grayscale images.
-pub fn accent_color(rgb: &[u8]) -> iced::Color {
+pub fn accent_color(rgb: &[u8]) -> Rgb {
     // Histogram over a coarsely quantized (4 bits per channel) color space, accumulating exact
     // sums per bucket so the winner keeps its true shade.
     let mut buckets = vec![[0u64; 4]; 16 * 16 * 16];
@@ -934,9 +942,10 @@ pub fn accent_color(rgb: &[u8]) -> iced::Color {
     let best = buckets.iter().max_by(|a, b| score(a).total_cmp(&score(b)));
     match best {
         Some(&[n, r, g, b]) if n > 0 => {
-            iced::Color::from_rgb((r / n) as f32 / 255.0, (g / n) as f32 / 255.0, (b / n) as f32 / 255.0)
+            let channel = |sum: u64| (sum / n) as f32 / 255.0;
+            Rgb { r: channel(r), g: channel(g), b: channel(b) }
         }
-        _ => iced::Color::BLACK,
+        _ => Rgb::BLACK,
     }
 }
 
@@ -994,7 +1003,7 @@ mod test {
             year: Some(2019),
             cover_id: Some(9),
             cover: None,
-            accent: Some(iced::Color { r: 0.25, g: 0.5, b: 0.75, a: 1.0 }),
+            accent: Some(Rgb { r: 0.25, g: 0.5, b: 0.75 }),
             tracks: vec![TrackInfo { path: "/x/one/1.opus".into(), title: "First".into() }],
         };
         smol::block_on(async {

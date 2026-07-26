@@ -35,16 +35,29 @@ Not yet: FLAC and Ogg Vorbis and other formats as well as audio output beyond Li
 
 ## Configure
 
-The music directory is read from `~/.config/phonoscule.toml`
+Settings are read from `~/.config/phonoscule.toml`
 (or `$XDG_CONFIG_HOME/phonoscule.toml`):
 
 ```toml
 music-dir = "~/Music"
+
+[app.gui]
+scaling = 1.0
 ```
 
-Without a config file it defaults to `~/Music`.
+`music-dir` is the shared setting;
+this player's own settings live in its `[app.gui]` table,
+so another player reading the same file can keep its own under `[app.<name>]`.
+Pass a path as the first argument, or set `$PHONOSCULE_GUI_CONF`,
+to read a different file instead.
+
+Without a config file the music directory defaults to `~/Music`.
 Relative paths resolve against the config file's location.
 `~` and environment variables are expanded.
+
+- **`music-dir`** - path to the music library.
+- **`[app.gui] scaling`** - UI scale factor for high-DPI displays;
+  1.0 is unscaled, larger is bigger. Optional, clamped to 0.5 - 3.0.
 
 ## Run
 

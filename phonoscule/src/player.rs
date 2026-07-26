@@ -1,17 +1,21 @@
-//! The audio playback engine: a background task that owns the play queue, decodes tracks with
-//! phonoscule, and pushes samples to a PulseAudio sink task.
+//! The play-queue engine: a background thread that owns the queue, decodes tracks, and writes
+//! samples to a PulseAudio sink.
 //!
-//! Largely mirrors the player task of `phonoscule-cli`; if the duplication grows it should move
-//! into a shared crate.
+//! Driven entirely over channels -- [`Cmd`]s in, [`Event`]s out (see [`start`]) -- so it suits any
+//! event loop. It owns the queue because auto-advance happens here, hence [`Repeat`] and the album
+//! grouping key on each [`Entry`].
+//!
+//! Wants std, a filesystem, and PulseAudio. A player without those drives the decoders in
+//! [`plumbing`](crate::plumbing) directly instead.
 
-use embedded_io_adapters::futures_03::FromFutures;
-use phonoscule::{
+use crate::{
     io::{Skippable, Take},
     opus::{OggOpus, OpusReader},
     plumbing::*,
     sample::{MultiReader, PcmS16Le, Stereo},
     wav::Wav,
 };
+use embedded_io_adapters::futures_03::FromFutures;
 use smol::{
     channel,
     fs::File,
@@ -139,26 +143,33 @@ impl Drop for Engine {
     }
 }
 
-pub fn start() -> Engine {
-    // Commands come from the (synchronous) GUI update fn, so the channel is unbounded to make
+/// How the audio server identifies this application, e.g. in a volume mixer.
+#[derive(Debug, Clone)]
+pub struct Client {
+    pub name: String,
+    pub description: String,
+}
+
+pub fn start(client: Client) -> Engine {
+    // Commands come from the (synchronous) application, so the channel is unbounded to make
     // sending non-blocking there.
     let (cmd_tx, cmd_rx) = channel::unbounded::<Cmd>();
     let (event_tx, event_rx) = channel::bounded::<Event>(256);
     // The engine owns a dedicated thread running a thread-local `block_on`. Decoding is async but
-    // the PulseAudio writes block; a dedicated thread keeps that blocking off the GUI's shared
-    // executor (which would also force these futures to be `Send`), and lets the loop park when
-    // idle. Communication stays on the (`Send`) channels.
+    // the PulseAudio writes block; a dedicated thread keeps that blocking off the application's
+    // shared executor (which would also force these futures to be `Send`), and lets the loop park
+    // when idle. Communication stays on the (`Send`) channels.
     let audio = std::thread::Builder::new()
         .name("phonoscule-audio".into())
-        .spawn(move || smol::block_on(player_loop(cmd_rx, event_tx)))
+        .spawn(move || smol::block_on(player_loop(client, cmd_rx, event_tx)))
         .expect("cannot spawn the audio thread");
     Engine { cmd: cmd_tx, events: event_rx, _audio: audio }
 }
 
-async fn player_loop(cmd_rx: channel::Receiver<Cmd>, events: channel::Sender<Event>) {
+async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: channel::Sender<Event>) {
     // Reused across tracks (its blocking writes pace playback to real time), reopened only when a
     // track's sample rate differs from the stream's -- see `ensure_rate` before each track.
-    let mut sink = PulseSink::new(PLAYBACK_SAMPLE_RATE);
+    let mut sink = PulseSink::new(&client, PLAYBACK_SAMPLE_RATE);
     let mut buf = [OutSample::default(); CHUNK];
 
     let mut queue: Vec<Entry> = vec![];
@@ -503,19 +514,15 @@ impl Track {
 
 struct PulseSink {
     out: pulse_simple::Playback<[i16; 2]>,
+    client: Client,
     /// The rate the stream was opened at, so the loop can tell when a track needs a new one.
     rate: u32,
 }
 
 impl PulseSink {
-    fn new(rate: u32) -> Self {
-        let out = pulse_simple::Playback::<[i16; 2]>::new(
-            "phonoscule-gui",
-            "GUI application based on the Phonoscule music player library",
-            None,
-            rate,
-        );
-        Self { out, rate }
+    fn new(client: &Client, rate: u32) -> Self {
+        let out = pulse_simple::Playback::<[i16; 2]>::new(&client.name, &client.description, None, rate);
+        Self { out, client: client.clone(), rate }
     }
 
     /// Reopens the stream at `rate` if it differs from the current one. The samples we output are
@@ -523,7 +530,7 @@ impl PulseSink {
     /// converting it to the device's rate, so we never resample ourselves.
     fn ensure_rate(&mut self, rate: u32) {
         if self.rate != rate {
-            *self = Self::new(rate);
+            *self = Self::new(&self.client.clone(), rate);
         }
     }
 

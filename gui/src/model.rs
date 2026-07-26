@@ -1,12 +1,14 @@
 //! The application model: all state, and the queue/album-run bookkeeping around it.
 
+use crate::paths;
 use crate::update::Msg;
 use futures::StreamExt;
 use iced::Task;
-use phonoscule_gui::conf::Conf;
-use phonoscule_gui::library::{self, Album};
-use phonoscule_gui::sort::SortOrder;
-use phonoscule_gui::{media, player, playlist, volume, watcher};
+use phonoscule::config::Conf;
+use phonoscule::library::{self, Album};
+use phonoscule::search;
+use phonoscule::sort::SortOrder;
+use phonoscule::{mpris, player, session, volume, watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -137,18 +139,32 @@ pub struct QueueItem {
     pub accent: Option<iced::Color>,
 }
 
+/// A library accent color as an opaque iced one.
+pub fn color(rgb: library::Rgb) -> iced::Color {
+    iced::Color { r: rgb.r, g: rgb.g, b: rgb.b, a: 1.0 }
+}
+
 pub struct App {
     pub engine: player::Engine,
     /// Handle to the OS media integration. State changes are published to it (see
     /// [`publish_media`](crate::update)); a worker coalesces and pushes them, so the update loop
     /// holds no rate-limiting state of its own.
-    pub media: media::Media,
+    pub media: mpris::Media,
     /// Handle to the OS mixer (see the volume module): [`App::volume`] mirrors its readings.
     pub mixer: volume::VolumeControl,
     pub watcher: watcher::Watcher,
     pub conf: Conf,
-    /// The live UI scale factor handed to iced (see `main`), seeded from `conf.scaling` and nudged
-    /// by Ctrl +/- (see [`Zoom`](crate::update::Zoom)). Transient: never written back to the config.
+    /// An iced image handle per loaded cover, by [`library::CoverArt::id`]. Built once, when the
+    /// cover arrives: a handle gets a fresh id each time it is made, so building them per frame
+    /// would have the renderer re-upload every visible cover's texture every frame. They wrap the
+    /// scan's ref-counted bitmaps rather than copying them, and are pruned with the albums holding
+    /// them (see the `Done` scan event).
+    pub covers: HashMap<u64, iced::widget::image::Handle>,
+    /// The configured UI scale factor (`[app.gui] scaling`, already clamped -- see `main`): the
+    /// baseline Ctrl+= resets [`scale`](Self::scale) to.
+    pub scaling: f32,
+    /// The live UI scale factor handed to iced, seeded from [`scaling`](Self::scaling) and nudged by
+    /// Ctrl +/- (see [`Zoom`](crate::update::Zoom)). Transient: never written back to the config.
     pub scale: f32,
     pub scan: ScanState,
     pub albums: Vec<Album>,
@@ -279,7 +295,7 @@ impl HiResCache {
             return Task::none();
         }
         let file = (*file).clone();
-        Task::perform(library::full_res(file), move |pixels| Msg::HiResLoaded { id, pixels })
+        Task::perform(library::decode_cover(file, library::FULL), move |pixels| Msg::HiResLoaded { id, pixels })
     }
 
     /// Absorbs the result of a [`query`](Self::query)'s decode: clears the in-flight mark and, on
@@ -325,21 +341,26 @@ impl Default for HiResCache {
     }
 }
 
-pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl Fn() -> (App, Task<Msg>) {
+pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Album>) -> impl Fn() -> (App, Task<Msg>) {
     move || {
-        let (media, media_worker) = media::start();
+        let (media, media_worker) = mpris::start("Phonoscule", "phonoscule");
         let mut app = App {
-            engine: player::start(),
+            engine: player::start(player::Client {
+                name: "phonoscule-gui".into(),
+                description: "GUI application based on the Phonoscule music player library".into(),
+            }),
             media,
             mixer: volume::start(),
             watcher: watcher::start(&conf.music_dir),
-            scale: conf.scaling,
+            covers: HashMap::new(),
+            scaling,
+            scale: scaling,
             conf: conf.clone(),
             scan: ScanState::Scanning,
             albums: index.clone(),
             index_dirty: false,
             filter: Filter::default(),
-            sort: restored.sort,
+            sort: restored.sort.unwrap_or_default(),
             filtered: vec![],
             view: View::Library,
             selected: None,
@@ -413,8 +434,8 @@ pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl
             // what a session booting into the player is looking at.
             priority: cover_priority(&app.queue, app.current),
             known_covers: Default::default(),
-            cache_file: library::default_cache_file(),
-            covers_dir: library::default_covers_dir(),
+            cache_file: paths::tag_cache_file(),
+            covers_dir: paths::covers_dir(),
         };
         let scan = Task::run(library::scan(options), Msg::Library);
         // Run the media worker for the whole session, on iced's executor; it pushes to the OS and
@@ -470,39 +491,10 @@ pub fn refresh_filter(app: &mut App) {
         .enumerate()
         .filter(|(_, album)| app.filter.genre.as_ref().is_none_or(|genre| album.genre == *genre))
         .filter(|(_, album)| app.filter.artist.as_ref().is_none_or(|artist| album.artist == *artist))
-        .filter_map(|(ix, album)| Some((ix, search_rank(&album.title, &app.filter.search)?)))
+        .filter_map(|(ix, album)| Some((ix, search::rank(&album.title, &app.filter.search)?)))
         .collect();
     scored.sort_by(|&(ia, ra), &(ib, rb)| rb.cmp(&ra).then_with(|| sort.cmp(&app.albums[ia], &app.albums[ib])));
     app.filtered = scored.into_iter().map(|(ix, _)| ix).collect();
-}
-
-/// Ranks `candidate` against a fuzzy search: `None` unless it contains every whitespace-split
-/// word of `query` (case-insensitively); otherwise the length of the longest common substring
-/// with the full query, so contiguous hits ("dark side" as a phrase) outrank scattered ones. An
-/// empty query matches everything at rank 0.
-pub fn search_rank(candidate: &str, query: &str) -> Option<usize> {
-    let query = query.to_lowercase();
-    if query.split_whitespace().next().is_none() {
-        return Some(0);
-    }
-    let candidate = candidate.to_lowercase();
-    query.split_whitespace().all(|word| candidate.contains(word)).then(|| lcs_len(&candidate, &query))
-}
-
-/// The length in bytes of the longest common substring of `a` and `b`: the classic quadratic
-/// table, one rolling row. Both inputs are short (titles and queries), so this is microseconds.
-fn lcs_len(a: &str, b: &str) -> usize {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    let mut row = vec![0usize; b.len() + 1];
-    let mut best = 0;
-    for &ca in a {
-        // Walk right-to-left so `row[j - 1]` still holds the previous row's value.
-        for j in (1..=b.len()).rev() {
-            row[j] = if ca == b[j - 1] { row[j - 1] + 1 } else { 0 };
-            best = best.max(row[j]);
-        }
-    }
-    best
 }
 
 /// The values the picker for `subject` searches over: every distinct value in the library,
@@ -521,7 +513,7 @@ pub fn picker_matches(app: &App, subject: PickerSubject, query: &str) -> Vec<Str
     let mut scored: Vec<(String, usize)> = picker_options(app, subject)
         .into_iter()
         .filter_map(|value| {
-            let rank = search_rank(&value, query)?;
+            let rank = search::rank(&value, query)?;
             Some((value, rank))
         })
         .collect();
@@ -545,7 +537,7 @@ pub fn hydrate_queue(queue: &mut [QueueItem], album: &Album) {
         item.artist = album.artist.clone();
         item.album = album.title.clone();
         item.cover = album.cover.clone();
-        item.accent = album.accent;
+        item.accent = album.accent.map(color);
         if let Some(track) = album.tracks.iter().find(|t| t.path == item.path) {
             item.title = track.title.clone();
         }
@@ -691,7 +683,7 @@ pub fn queue_items(album: &Album) -> Vec<QueueItem> {
             artist: album.artist.clone(),
             album: album.title.clone(),
             cover: album.cover.clone(),
-            accent: album.accent,
+            accent: album.accent.map(color),
         })
         .collect()
 }
@@ -746,14 +738,5 @@ mod test {
         cache.complete(9, None);
         assert!(cache.peek(9).is_none());
         assert!(!cache.pending.contains(&9), "a failed decode must clear the pending mark");
-    }
-
-    #[test]
-    fn search_ranks_contiguous_matches_higher() {
-        assert_eq!(search_rank("The Dark Side of the Moon", ""), Some(0), "an empty query matches everything");
-        assert_eq!(search_rank("The Dark Side of the Moon", "dark side"), Some(9), "a phrase hit scores its full length");
-        assert_eq!(search_rank("Darkness on the Far Side", "dark side"), Some(5), "scattered words score the longest run");
-        assert_eq!(search_rank("The Wall", "dark side"), None, "every word must be contained");
-        assert_eq!(search_rank("MONO no aware", "mono"), Some(4), "matching is case-insensitive");
     }
 }

@@ -4,6 +4,8 @@
 //! Consumers get one `()` per *settled burst* of changes: filesystem events arrive in storms
 //! (copying an album in produces hundreds), so nothing is reported until the directory has been
 //! quiet for a while. What changed is irrelevant here -- the rescan is incremental anyway.
+//!
+//! Wants std and a filesystem.
 
 use futures::{Stream, stream};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -56,16 +58,16 @@ fn start_with(root: &Path, quiet: Duration) -> Watcher {
 }
 
 impl Watcher {
-    /// The raw change-event receiver and the quiet period, for building a debounced subscription
-    /// (see [`debounce`]). The pieces are exposed rather than the stream itself because iced's
-    /// `run_with` takes a builder it can call to (re)create the stream, not a one-shot value.
+    /// The raw change-event receiver and the quiet period, for building a debounced stream (see
+    /// [`debounce`]). The pieces rather than the stream itself, so a consumer that needs a builder
+    /// it can call to (re)create the stream has what it takes to do so.
     pub fn change_source(&self) -> (channel::Receiver<()>, Duration) {
         (self.raw.clone(), self.quiet)
     }
 }
 
-/// One `()` per settled burst of changes, as a stream for a subscription to drive -- so the
-/// debounce runs on iced's own executor rather than a thread of ours. After the first raw event,
+/// One `()` per settled burst of changes, as a stream for the consumer's event loop to drive -- so
+/// the debounce costs no thread of ours. After the first raw event,
 /// absorb the rest until the directory has been quiet for `quiet`, then yield once, and repeat.
 /// Ends when the watcher is dropped (`raw` disconnects). Backpressure is natural -- the next burst
 /// is only picked up once the consumer asks for it.

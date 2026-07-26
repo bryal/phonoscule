@@ -8,7 +8,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use futures::StreamExt;
-use phonoscule_gui::library::{self, Album, ScanEvent};
+use phonoscule::library::{self, Album, ScanEvent};
 use std::path::PathBuf;
 
 const N_ALBUMS: usize = 10;

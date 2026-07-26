@@ -5,12 +5,12 @@
 //! and receives a message with the clicked item's queue index. Rendering uses no depth buffer;
 //! quads are drawn back-to-front (iced's custom-primitive render pass has no depth attachment).
 
-use crate::library::FULL;
 use glam::{Mat4, Vec3};
 use iced::mouse;
 use iced::wgpu;
 use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle};
+use phonoscule::library::FULL;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;

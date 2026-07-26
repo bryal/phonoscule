@@ -8,37 +8,19 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-phonoscule = { path = "../phonoscule" }
-pulse-simple = "1.0.1"
+phonoscule = { path = "../phonoscule", features = ["config", "library", "mpris", "player", "queue", "search", "session", "sort", "volume", "watcher"] }
 iced = { version = "0.14.0", features = ["image", "smol", "advanced", "lazy"] }
 image = "0.25.10"
 glam = "0.33.2"
 bytemuck = { version = "1.24", features = ["derive"] }
 anyhow = "1.0"
-toml_edit = "0.25"
-shellexpand = "3.1"
 futures = "0.3.32"
 bytes = "1.12"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
 smol                 = { workspace = true }
 embedded-io-adapters = { workspace = true }
 embedded-io-async    = { workspace = true }
 log                  = { workspace = true, features = ["std"] }
 simple_logger        = { workspace = true }
 url = "2.5.8"
-zbus = "5.17"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-notify = "8.2"
-
-# The Linux volume-mixer backend (see volume.rs); other platforms build without it and get the
-# module's mixerless fallback. Speaks to PipeWire via pipewire-pulse.
-[target.'cfg(target_os = "linux")'.dependencies]
-libpulse-binding = "2.30.1"
-
-[dev-dependencies]
-criterion = "0.8"
-ogg = "0.9.2"
-
-[[bench]]
-name = "scan"
-harness = false

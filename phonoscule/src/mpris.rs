@@ -1,13 +1,15 @@
-//! OS media integration: a small bespoke MPRIS server on the D-Bus session bus, giving us media
-//! keys, `playerctl -p phonoscule`, and desktop media widgets. Built directly on zbus rather than
-//! via a wrapper crate, so updates reach the bus the instant we push them (no polling loop) and
-//! we implement only the subset of MPRIS we actually use. Linux / D-Bus only.
+//! OS media integration: a small bespoke MPRIS server on the D-Bus session bus, giving a player
+//! media keys, `playerctl -p <name>`, and desktop media widgets. Built directly on zbus rather than
+//! via a wrapper crate, so updates reach the bus the instant they are pushed (no polling loop) and
+//! only the subset of MPRIS actually used is implemented.
 //!
-//! The update loop [`publish`](Media::publish)es a [`Snapshot`] of the now-playing state on every
+//! The application [`publish`](Media::publish)es a [`Snapshot`] of the now-playing state on every
 //! change; the [`MediaWorker`] coalesces bursts of them down to the latest before applying them to
 //! the served interface, so scrubbing the queue with a held key emits a handful of `properties
 //! changed` signals rather than one per track. Control requests from the bus (play/pause/next/...)
 //! arrive back as [`Control`] events on [`Media::events`].
+//!
+//! Wants std and a D-Bus session bus, so Linux in practice.
 
 use smol::channel;
 use std::collections::HashMap;
@@ -41,7 +43,7 @@ pub enum Playback {
 }
 
 /// A control request from the bus (a media key, `playerctl`, or a widget button).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
     Play,
     Pause,
@@ -55,7 +57,7 @@ pub enum Control {
     SetPosition(Duration),
 }
 
-/// Handle the update loop keeps: publishes state changes and receives control events.
+/// Handle the application keeps: publishes state changes and receives control events.
 pub struct Media {
     updates: channel::Sender<Snapshot>,
     pub events: channel::Receiver<Control>,
@@ -137,11 +139,13 @@ impl MediaWorker {
 /// The single object every MPRIS player exposes its two interfaces at.
 const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
-pub fn start() -> (Media, MediaWorker) {
-    start_named("Phonoscule", "phonoscule")
-}
-
-fn start_named(identity: &str, bus_name: &str) -> (Media, MediaWorker) {
+/// Brings the server up. `identity` is the name desktops display; `bus_name` is the last element of
+/// `org.mpris.MediaPlayer2.<bus_name>` it registers as, so it must be a valid D-Bus *bus* name
+/// element -- letters, digits, underscores and hyphens, not starting with a digit -- and unique among
+/// running players. Hyphens are allowed here, unlike in interface and member names.
+/// An unreachable session bus is not an error: [`Media::active`] then reports false and the player
+/// simply runs without media integration.
+pub fn start(identity: &str, bus_name: &str) -> (Media, MediaWorker) {
     let (update_tx, update_rx) = channel::unbounded();
     let (event_tx, event_rx) = channel::unbounded();
     // Build the connection now (a session-bus socket is cheap to open) so `active` is known and
@@ -339,11 +343,12 @@ mod test {
         const PATH: &str = "/org/mpris/MediaPlayer2";
         const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
         // A unique bus name: colliding with a really running phonoscule would silently address
-        // all the busctl calls below at it (and toggle the user's playback!).
-        let dbus_name = format!("phonoscule_test_{}", std::process::id());
+        // all the busctl calls below at it (and toggle the user's playback!). Hyphenated, so that
+        // bus names with hyphens stay exercised -- the players use them.
+        let dbus_name = format!("phonoscule-test-{}", std::process::id());
         let mpris = format!("org.mpris.MediaPlayer2.{dbus_name}");
 
-        let (media, worker) = start_named("Phonoscule roundtrip test", &dbus_name);
+        let (media, worker) = start("Phonoscule roundtrip test", &dbus_name);
         if !media.active() {
             eprintln!("skipping: no media integration in this environment");
             return;
