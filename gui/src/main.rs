@@ -9,9 +9,10 @@ mod update;
 mod view;
 
 use model::{App, Modal, View, boot, flow_target, glow_animating};
+use phonoscule::library;
 use phonoscule::watcher;
 use phonoscule_gui::conf::{self, Conf};
-use phonoscule_gui::{library, playlist};
+use phonoscule_gui::playlist;
 use smol::channel;
 use std::path::PathBuf;
 use std::time::Duration;

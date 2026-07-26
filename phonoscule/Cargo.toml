@@ -12,6 +12,9 @@ repository.workspace = true
 # default. See each module's docs for what it needs.
 [features]
 default = []
+# Scanning a music directory into albums, with cover thumbnails (see `library`). Wants std and a
+# filesystem.
+library = ["dep:smol", "dep:futures", "dep:serde", "dep:serde_json", "dep:image", "dep:embedded-io-adapters", "log/std"]
 # The play-queue engine (see `player`). Wants std, a filesystem, and PulseAudio.
 player = ["dep:smol", "dep:pulse-simple", "dep:embedded-io-adapters", "dep:serde", "log/std"]
 # Per-application volume through the OS mixer (see `volume`). Wants std.
@@ -35,6 +38,8 @@ smol                 = { workspace = true, optional = true }
 embedded-io-adapters = { workspace = true, optional = true }
 pulse-simple         = { version = "1.0.1", optional = true }
 serde                = { version = "1.0.228", features = ["derive"], optional = true }
+serde_json           = { version = "1.0.150", optional = true }
+image                = { version = "0.25.10", optional = true }
 futures              = { version = "0.3.32", optional = true }
 notify               = { version = "8.2", optional = true }
 zbus                 = { version = "5.17", optional = true }
@@ -49,7 +54,14 @@ embedded-io-adapters = { workspace = true }
 smol                 = { workspace = true }
 simple_logger        = { workspace = true }
 criterion            = "0.8"
+futures              = "0.3.32"
+ogg                  = "0.9.2"
 
 [[bench]]
 name = "parse"
 harness = false
+
+[[bench]]
+name = "scan"
+harness = false
+required-features = ["library"]

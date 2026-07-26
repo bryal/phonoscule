@@ -10,11 +10,11 @@ use iced::widget::{
     text_input,
 };
 use iced::{Border, Center, Color, Element, Fill, Padding, Theme, color};
+use phonoscule::library::Album;
 use phonoscule::player;
 use phonoscule_gui::album_grid::album_grid;
 use phonoscule_gui::background;
 use phonoscule_gui::coverflow::{FlowCover, cover_flow};
-use phonoscule_gui::library::Album;
 use phonoscule_gui::sort::SortOrder;
 use std::cmp::min;
 use std::time::Duration;

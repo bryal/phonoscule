@@ -2,7 +2,7 @@
 //! picker. A [`SortOrder`] is a small, serializable value (persisted with the session state) that
 //! yields a total [`SortOrder::cmp`] over [`Album`]s.
 
-use crate::library::Album;
+use phonoscule::library::Album;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 

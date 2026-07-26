@@ -20,10 +20,10 @@
 //! cover id is unchanged (pass it in [`ScanOptions::known_covers`] to skip its decoding
 //! entirely), and finally retain only [`ScanEvent::Done::album_ids`].
 
+use crate::{io::Skippable, metadata::Tag, opus, wav::Wav};
 use embedded_io_adapters::futures_03::FromFutures;
 use embedded_io_async::{Read as _, Seek as _, SeekFrom};
 use futures::{StreamExt, stream};
-use phonoscule::{io::Skippable, metadata::Tag, opus, wav::Wav};
 use serde::{Deserialize, Serialize};
 use smol::{channel, fs::File, io::BufReader, stream::Stream};
 use std::{
