@@ -1,6 +1,6 @@
 //! The messages, and how each of them changes the model.
 
-use crate::model::{Focus, Model, QueueItem, ScanState, Subject, View, open_picker, refresh};
+use crate::model::{Focus, Model, QueueItem, ScanState, Subject, TrackMenu, View, open_picker, refresh};
 use crate::{covers, keys, logger, paths};
 use phonoscule::library::{self, Album};
 use phonoscule::mpris;
@@ -57,6 +57,14 @@ pub enum Msg {
     OpenPicker(Subject),
     /// Move a picker's selection by this many rows, clamped.
     PickerMove(isize),
+    /// Open the selected album's tracks, to play or queue them one at a time.
+    OpenTracks,
+    /// Move the track menu's selection by this many rows, clamped.
+    TrackMove(isize),
+    /// Play the track the menu's selection sits on, replacing the queue.
+    PlayTrack,
+    /// Append it to the queue, stepping onto the next so successive presses queue a run.
+    QueueTrack,
     /// Take what the picker's selection sits on: a filter value, or an order.
     Pick,
     /// Leave whatever has focus, keeping what it has narrowed to.
@@ -139,6 +147,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 model.queue = items;
                 model.current = 0;
                 model.view = View::Player;
+                model.focus = Focus::Albums;
                 model.dirty_playlist = true;
                 model.dirty_player = true;
                 After::Redraw
@@ -199,7 +208,8 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 requery(model);
                 After::Redraw
             }
-            Focus::Albums => After::Idle,
+            // Typing is for searching, and the track menu has nothing to search.
+            Focus::Albums | Focus::Tracks(_) => After::Idle,
         },
         Msg::Rubout => match &mut model.focus {
             Focus::Search => {
@@ -212,6 +222,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 requery(model);
                 After::Redraw
             }
+            Focus::Tracks(_) => After::Idle,
             // Rubbing out is editing the search, so it takes the keys there as typing does -- for
             // correcting a search after the keys have gone back to the list.
             Focus::Albums => {
@@ -231,6 +242,48 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             picker.selected = picker.selected.saturating_add_signed(delta).min(last);
             After::Redraw
         }
+        Msg::OpenTracks => match model.selected_album() {
+            Some(album) => {
+                model.focus = Focus::Tracks(TrackMenu { album: album.id, selected: 0 });
+                model.menu_list = Default::default();
+                After::Redraw
+            }
+            None => After::Idle,
+        },
+        Msg::TrackMove(delta) => {
+            let Some(menu) = model.track_menu() else { return After::Idle };
+            let last = model.acting_album().map_or(0, |album| album.tracks.len().saturating_sub(1));
+            let selected = menu.selected.saturating_add_signed(delta).min(last);
+            model.focus = Focus::Tracks(TrackMenu { selected, ..menu });
+            After::Redraw
+        }
+        Msg::PlayTrack => match menu_track(model) {
+            Some(item) => {
+                model.send(player::Cmd::SetQueue {
+                    tracks: entries(std::slice::from_ref(&item)),
+                    start: 0,
+                    play: player::PlayState::Playing,
+                });
+                model.queue = vec![item];
+                model.current = 0;
+                model.focus = Focus::Albums;
+                model.view = View::Player;
+                model.dirty_playlist = true;
+                model.dirty_player = true;
+                After::Redraw
+            }
+            None => After::Idle,
+        },
+        Msg::QueueTrack => match menu_track(model) {
+            Some(item) => {
+                model.send(player::Cmd::Append { tracks: entries(std::slice::from_ref(&item)) });
+                model.queue.push(item);
+                model.dirty_playlist = true;
+                // Onto the next, so holding it down queues an album a track at a time.
+                update(model, Msg::TrackMove(1))
+            }
+            None => After::Idle,
+        },
         Msg::Pick => pick(model),
         Msg::Done => {
             model.focus = Focus::Albums;
@@ -480,6 +533,14 @@ fn pick(model: &mut Model) -> After {
     After::Redraw
 }
 
+/// The queue item for the track the menu's selection sits on.
+fn menu_track(model: &Model) -> Option<QueueItem> {
+    let menu = model.track_menu()?;
+    let album = model.acting_album()?;
+    let track = album.tracks.get(menu.selected)?;
+    Some(QueueItem { path: track.path.clone(), album_id: album.id, title: track.title.clone() })
+}
+
 /// Every shown album's tracks as queue items, in the order shown.
 fn shown_items(model: &Model) -> Vec<QueueItem> {
     model
@@ -498,7 +559,7 @@ fn shown_items(model: &Model) -> Vec<QueueItem> {
 
 /// The selected album's tracks as queue items, or `None` if nothing is selected.
 fn album_items(model: &Model) -> Option<Vec<QueueItem>> {
-    let album = model.selected_album()?;
+    let album = model.acting_album()?;
     let items = album
         .tracks
         .iter()
@@ -1010,5 +1071,69 @@ mod test {
             send(&mut model, Msg::BumpVolume(-0.05));
         }
         assert_volume(&model, 0.0);
+    }
+
+    /// Enter opens the album's tracks rather than playing it, and Enter on a track plays that track
+    /// alone -- which is the whole point of the menu.
+    #[test]
+    fn the_track_menu_plays_one_track() {
+        let mut model = browser(4);
+        send(&mut model, Msg::Select(1));
+        let album = model.selected_album().expect("an album").clone();
+        assert!(album.tracks.len() > 1);
+
+        send(&mut model, Msg::OpenTracks);
+        assert!(model.queue.is_empty(), "opening the menu plays nothing");
+        assert_eq!(model.track_menu().map(|m| m.album), Some(album.id));
+
+        send(&mut model, Msg::TrackMove(1));
+        send(&mut model, Msg::PlayTrack);
+        assert_eq!(model.queue.len(), 1, "one track, not the album");
+        assert_eq!(model.queue[0].title, album.tracks[1].title);
+        assert!(matches!(model.focus, Focus::Albums), "the menu closes behind it");
+    }
+
+    /// Queueing a track steps onto the next, so holding it down queues a run rather than the same
+    /// track over and over.
+    #[test]
+    fn queueing_tracks_walks_down_the_album() {
+        let mut model = browser(4);
+        send(&mut model, Msg::OpenTracks);
+        let album = model.acting_album().expect("an album").clone();
+
+        for _ in 0..album.tracks.len() {
+            send(&mut model, Msg::QueueTrack);
+        }
+        assert_eq!(model.queue.len(), album.tracks.len(), "each press queued the next track");
+        let titles: Vec<&str> = model.queue.iter().map(|item| item.title.as_str()).collect();
+        let expected: Vec<&str> = album.tracks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, expected, "in album order");
+    }
+
+    /// With the menu open, playing and queueing "everything in the list" means the album, not every
+    /// album the filter lets through.
+    #[test]
+    fn the_menu_scopes_play_all_to_its_album() {
+        let mut model = browser(4);
+        send(&mut model, Msg::Select(2));
+        let album = model.selected_album().expect("an album").clone();
+        send(&mut model, Msg::OpenTracks);
+
+        send(&mut model, Msg::PlaySelected);
+        assert_eq!(model.queue.len(), album.tracks.len(), "the album, not the library");
+        assert!(model.queue.iter().all(|item| item.album_id == album.id));
+    }
+
+    /// The menu selection cannot walk off either end of the album.
+    #[test]
+    fn the_track_selection_stays_within_the_album() {
+        let mut model = browser(2);
+        send(&mut model, Msg::OpenTracks);
+        let tracks = model.acting_album().expect("an album").tracks.len();
+
+        send(&mut model, Msg::TrackMove(isize::MAX));
+        assert_eq!(model.track_menu().map(|m| m.selected), Some(tracks - 1));
+        send(&mut model, Msg::TrackMove(isize::MIN));
+        assert_eq!(model.track_menu().map(|m| m.selected), Some(0));
     }
 }

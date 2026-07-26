@@ -36,6 +36,10 @@ pub fn key_to_msg(view: View, focus: &Focus, key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('g') if ctrl => return Some(Msg::OpenPicker(Subject::Genre)),
         KeyCode::Char('t') if ctrl => return Some(Msg::OpenPicker(Subject::Artist)),
         KeyCode::Char('o') if ctrl => return Some(Msg::OpenPicker(Subject::Sort)),
+        // In a track menu these act on the album whose tracks are listed; elsewhere on every album
+        // the filter lets through.
+        KeyCode::Char('a') if ctrl && matches!(focus, Focus::Tracks(_)) => return Some(Msg::PlaySelected),
+        KeyCode::Char('a') if alt && matches!(focus, Focus::Tracks(_)) => return Some(Msg::QueueSelected),
         // As in the GUI: Ctrl shuffles the whole queue, Alt shuffles everything but what is playing;
         // `s` moves albums as units, `z` moves single tracks. Raw mode has already taken Ctrl+S and
         // Ctrl+Z off the terminal's hands (no flow control, no suspend), so both arrive as keys.
@@ -55,6 +59,7 @@ pub fn key_to_msg(view: View, focus: &Focus, key: KeyEvent) -> Option<Msg> {
     match focus {
         Focus::Search => return searching(key),
         Focus::Picker(_) => return picking(key),
+        Focus::Tracks(_) => return in_track_menu(key, alt),
         Focus::Albums => (),
     }
 
@@ -74,15 +79,15 @@ pub fn key_to_msg(view: View, focus: &Focus, key: KeyEvent) -> Option<Msg> {
             KeyCode::PageDown => Some(Msg::Select(10)),
             KeyCode::Home => Some(Msg::SelectEdge(Edge::First)),
             KeyCode::End => Some(Msg::SelectEdge(Edge::Last)),
-            // Enter plays the selection, as the GUI's Ctrl+Space does -- which a terminal cannot be
-            // relied on to deliver at all. Alt+Enter queues it, matching the GUI's Alt+Space.
+            // Enter opens the album's tracks, where one can be played or queued on its own; the whole
+            // album is a keypress further in, or Alt+Enter from here.
             KeyCode::Enter if alt => Some(Msg::QueueSelected),
             // Everything the filter lets through: Ctrl+A plays it, Alt+A appends it. The GUI's pair
             // is Ctrl+Enter and Alt+Enter, but Alt+Enter queues the selection here, and terminals
             // take Ctrl+Enter for themselves -- Ghostty toggles full screen with it.
             KeyCode::Char('a') if ctrl => Some(Msg::PlayShown),
             KeyCode::Char('a') if alt => Some(Msg::QueueShown),
-            KeyCode::Enter => Some(Msg::PlaySelected),
+            KeyCode::Enter => Some(Msg::OpenTracks),
             // Typing searches, which is why no letter carries a binding of its own.
             KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => Some(Msg::Search(Some(c))),
             // As does rubbing out, for correcting a search after the keys have gone back to the list.
@@ -98,6 +103,23 @@ pub fn key_to_msg(view: View, focus: &Focus, key: KeyEvent) -> Option<Msg> {
             KeyCode::End => Some(Msg::Next),
             _ => None,
         },
+    }
+}
+
+/// In an album's track menu: the arrows walk its tracks, Enter plays the one they land on and
+/// Alt+Enter appends it. Ctrl+A and Alt+A, handled above, take the album whole.
+fn in_track_menu(key: KeyEvent, alt: bool) -> Option<Msg> {
+    match key.code {
+        KeyCode::Up => Some(Msg::TrackMove(-1)),
+        KeyCode::Down => Some(Msg::TrackMove(1)),
+        KeyCode::PageUp => Some(Msg::TrackMove(-10)),
+        KeyCode::PageDown => Some(Msg::TrackMove(10)),
+        KeyCode::Home => Some(Msg::TrackMove(isize::MIN)),
+        KeyCode::End => Some(Msg::TrackMove(isize::MAX)),
+        KeyCode::Enter if alt => Some(Msg::QueueTrack),
+        KeyCode::Enter => Some(Msg::PlayTrack),
+        KeyCode::Esc => Some(Msg::Done),
+        _ => None,
     }
 }
 

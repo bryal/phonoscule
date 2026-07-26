@@ -34,9 +34,42 @@ pub fn view(frame: &mut Frame, model: &mut Model) {
     }
     status_line(frame, model, status);
     // Over everything, since it is what the keyboard is talking to.
-    if let Focus::Picker(picker) = &model.focus {
-        picker_overlay(frame, picker, body);
+    match &model.focus {
+        Focus::Picker(picker) => picker_overlay(frame, picker, body),
+        Focus::Tracks(_) => track_overlay(frame, model, body),
+        Focus::Albums | Focus::Search => (),
     }
+}
+
+/// An album's tracks, over the body: numbered, the selection highlighted, and a line naming what the
+/// keys do -- this is where someone arrives wanting one track rather than a record.
+fn track_overlay(frame: &mut Frame, model: &mut Model, body: Rect) {
+    let Some(album) = model.acting_album() else { return };
+    let Some(menu) = model.track_menu() else { return };
+    let title = format!(" {} - {} ", album.artist, album.title);
+    let rows: Vec<Line> = album
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(n, track)| {
+            Line::from(vec![Span::raw(format!("{:02} ", n + 1)).fg(Color::DarkGray), Span::raw(track.title.clone())])
+        })
+        .collect();
+
+    let width = body.width.clamp(24, 64);
+    let height = (rows.len() as u16 + 4).min(body.height.max(5));
+    let area = Rect { x: body.x + 2, y: body.y, width, height };
+    frame.render_widget(Clear, area);
+    let block = Block::bordered().title(title).border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [rows_area, keys_area] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+    let list = List::new(rows).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    model.menu_list.select(Some(menu.selected));
+    frame.render_stateful_widget(list, rows_area, &mut model.menu_list);
+    let keys = "↵ play  ⌥↵ queue  ^a album  ⌥a queue album";
+    frame.render_widget(Paragraph::new(Line::from(keys).fg(Color::DarkGray)), keys_area);
 }
 
 /// The filter row: the order in use, the genre and artist picked, and the album search. Each is dim

@@ -77,6 +77,16 @@ pub enum Focus {
     Search,
     /// A picker over the current view (see [`Picker`]).
     Picker(Picker),
+    /// An album's tracks, to play or queue one at a time (see [`TrackMenu`]).
+    Tracks(TrackMenu),
+}
+
+/// An open track menu: which album, by id so the browser re-sorting under it changes nothing, and
+/// which of its tracks the selection sits on.
+#[derive(Debug, Clone, Copy)]
+pub struct TrackMenu {
+    pub album: u64,
+    pub selected: usize,
 }
 
 /// What a picker is picking.
@@ -161,6 +171,9 @@ pub struct Model {
     /// reorders the list under it -- and so nothing needs fixing up when the order changes. `None`
     /// until the selection is moved, which means the first row.
     pub selected: Option<u64>,
+    /// The track menu's list state, kept for the same reason as the browser's: the widget writes back
+    /// the offset it settled on, and a fresh one each frame would pin the selection to the last row.
+    pub menu_list: ListState,
     /// The browser list's own state, which is to say where it is scrolled to. Kept across frames:
     /// the widget writes the offset it settled on back into it, and a fresh one each frame would
     /// throw that away and re-derive an offset that only just brings the selection into view --
@@ -243,6 +256,7 @@ impl Model {
             sort: restored.sort.unwrap_or(INITIAL_SORT),
             selected: None,
             list: ListState::default(),
+            menu_list: ListState::default(),
             view: View::Library,
             log: VecDeque::new(),
             quit: false,
@@ -276,6 +290,23 @@ impl Model {
     /// The album the browser's selection sits on.
     pub fn selected_album(&self) -> Option<&Album> {
         self.albums.get(*self.shown.get(self.selected_row())?)
+    }
+
+    /// The open track menu, if that is what has focus.
+    pub fn track_menu(&self) -> Option<TrackMenu> {
+        match self.focus {
+            Focus::Tracks(menu) => Some(menu),
+            _ => None,
+        }
+    }
+
+    /// The album an action applies to: the one whose tracks are open, or the browser's selection.
+    /// They are the same album until the browser is re-sorted under an open menu.
+    pub fn acting_album(&self) -> Option<&Album> {
+        match self.track_menu() {
+            Some(menu) => self.albums.iter().find(|album| album.id == menu.album),
+            None => self.selected_album(),
+        }
     }
 
     /// The album shown at `row`, if there is one.
