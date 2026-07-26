@@ -11,8 +11,8 @@
 //! State directory, not cache: unlike the tag or cover caches, a queue can't be regenerated, so it
 //! must survive a cache wipe.
 
-use crate::sort::SortOrder;
 use phonoscule::player::Repeat;
+use phonoscule::sort::SortOrder;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -164,7 +164,7 @@ mod test {
             smol::fs::write(&a, b"x").await.unwrap();
             smol::fs::write(&b, b"x").await.unwrap();
 
-            let sort = crate::sort::SortOrder { field: crate::sort::SortField::Year, ..Default::default() };
+            let sort = phonoscule::sort::SortOrder { field: phonoscule::sort::SortField::Year, ..Default::default() };
             save_playlist(playlist.clone(), SavedPlaylist::new(vec![a.clone(), root.join("gone.opus"), b.clone()])).await;
             save_player(player.clone(), SavedPlayer::new(2, Repeat::Album, sort)).await;
             let restored = load(playlist.clone(), player.clone()).await;

@@ -9,9 +9,9 @@ use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::mouse::ScrollDelta;
 use phonoscule::library::{self, Album};
+use phonoscule::sort::SortOrder;
 use phonoscule::{mpris, player};
 use phonoscule_gui::playlist;
-use phonoscule_gui::sort::SortOrder;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

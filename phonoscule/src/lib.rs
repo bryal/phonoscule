@@ -15,6 +15,8 @@ pub mod library;
 pub mod mpris;
 #[cfg(feature = "player")]
 pub mod player;
+#[cfg(feature = "sort")]
+pub mod sort;
 #[cfg(feature = "volume")]
 pub mod volume;
 #[cfg(feature = "watcher")]

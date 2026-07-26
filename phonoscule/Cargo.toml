@@ -15,6 +15,8 @@ default = []
 # Scanning a music directory into albums, with cover thumbnails (see `library`). Wants std and a
 # filesystem.
 library = ["dep:smol", "dep:futures", "dep:serde", "dep:serde_json", "dep:image", "dep:embedded-io-adapters", "log/std"]
+# Album ordering (see `sort`).
+sort = ["library", "dep:serde"]
 # The play-queue engine (see `player`). Wants std, a filesystem, and PulseAudio.
 player = ["dep:smol", "dep:pulse-simple", "dep:embedded-io-adapters", "dep:serde", "log/std"]
 # Per-application volume through the OS mixer (see `volume`). Wants std.
