@@ -3,11 +3,11 @@
 use crate::update::Msg;
 use futures::StreamExt;
 use iced::Task;
-use phonoscule::player;
+use phonoscule::{player, volume};
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
 use phonoscule_gui::sort::SortOrder;
-use phonoscule_gui::{media, playlist, volume, watcher};
+use phonoscule_gui::{media, playlist, watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;

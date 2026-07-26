@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-phonoscule = { path = "../phonoscule", features = ["player"] }
+phonoscule = { path = "../phonoscule", features = ["player", "volume"] }
 iced = { version = "0.14.0", features = ["image", "smol", "advanced", "lazy"] }
 image = "0.25.10"
 glam = "0.33.2"
@@ -28,11 +28,6 @@ zbus = "5.17"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 notify = "8.2"
-
-# The Linux volume-mixer backend (see volume.rs); other platforms build without it and get the
-# module's mixerless fallback. Speaks to PipeWire via pipewire-pulse.
-[target.'cfg(target_os = "linux")'.dependencies]
-libpulse-binding = "2.30.1"
 
 [dev-dependencies]
 criterion = "0.8"

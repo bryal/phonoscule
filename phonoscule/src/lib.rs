@@ -11,6 +11,8 @@ pub mod wav;
 
 #[cfg(feature = "player")]
 pub mod player;
+#[cfg(feature = "volume")]
+pub mod volume;
 
 #[cfg(test)]
 mod test {
