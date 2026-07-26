@@ -10,6 +10,7 @@ use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::mouse::ScrollDelta;
 use phonoscule::library::{self, Album};
+use phonoscule::queue::{self, Grouping, Scope};
 use phonoscule::sort::SortOrder;
 use phonoscule::{mpris, player, session};
 use std::sync::Arc;
@@ -794,26 +795,6 @@ fn save_player(app: &App) -> Task<Msg> {
     Task::future(session::save_player(paths::player_file(), saved)).discard()
 }
 
-/// What a shuffle permutes: single tracks, or whole albums (each album's tracks stay together, in
-/// their queue order, while the albums land in random order).
-#[derive(Debug, Clone, Copy)]
-pub enum Grouping {
-    Tracks,
-    Albums,
-}
-
-/// How much of the queue a shuffle reorders.
-#[derive(Debug, Clone, Copy)]
-pub enum Scope {
-    /// The playing track (or its whole album) moves to the front of the queue and everything else
-    /// shuffles in behind it, so nothing lands unreachably behind the cursor; playback continues
-    /// undisturbed.
-    Others,
-    /// Literally everything shuffles: playback is interrupted and the cursor rests, paused, on
-    /// the queue's new first track.
-    All,
-}
-
 /// Shuffles the queue in place, visibly: the reordering IS the new playlist (persisted like any
 /// other queue change, so a restart resumes the same order), and the cover flow snaps to the
 /// cursor's new position rather than sweeping. See [`Scope`] for what moves and what keeps
@@ -828,33 +809,8 @@ fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope) -> Task<Msg> {
         app.modal = None;
     }
 
-    // Build the new order as a permutation of indices, so the current track can be followed by
-    // identity (queue items need not be unique -- an album can be queued twice). Tracks are
-    // singleton groups; albums group all of an album's tracks, wherever they sit, in their queue
-    // order.
-    let mut groups: Vec<Vec<usize>> = match grouping {
-        Grouping::Tracks => (0..app.queue.len()).map(|ix| vec![ix]).collect(),
-        Grouping::Albums => {
-            let mut groups: Vec<(u64, Vec<usize>)> = Vec::new();
-            for (ix, item) in app.queue.iter().enumerate() {
-                match groups.iter_mut().find(|(album, _)| *album == item.album_id) {
-                    Some((_, ixs)) => ixs.push(ix),
-                    None => groups.push((item.album_id, vec![ix])),
-                }
-            }
-            groups.into_iter().map(|(_, ixs)| ixs).collect()
-        }
-    };
-    match scope {
-        Scope::All => shuffle(&mut groups),
-        Scope::Others => {
-            // Pin the playing group to the front; only the rest shuffles.
-            let playing = groups.iter().position(|group| group.contains(&app.current)).unwrap_or(0);
-            groups.swap(0, playing);
-            shuffle(&mut groups[1..]);
-        }
-    }
-    let order: Vec<usize> = groups.into_iter().flatten().collect();
+    let albums: Vec<u64> = app.queue.iter().map(|item| item.album_id).collect();
+    let order = queue::shuffle(&albums, app.current, grouping, scope, queue::seed());
 
     let mut old: Vec<Option<QueueItem>> = std::mem::take(&mut app.queue).into_iter().map(Some).collect();
     app.queue = order.iter().map(|&ix| old[ix].take().expect("a permutation visits each index once")).collect();
@@ -873,24 +829,6 @@ fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope) -> Task<Msg> {
     }
     app.anim_pos = flow_target(app);
     Task::batch([save_playlist(app), save_player(app)])
-}
-
-/// Fisher-Yates over a splitmix64 stream seeded from the clock: not cryptographic, plenty for
-/// shuffling a music queue, and spares a randomness dependency.
-fn shuffle<T>(items: &mut [T]) {
-    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-    let mut state = seed.map_or(0x9E37_79B9_7F4A_7C15, |d| d.as_nanos() as u64);
-    let mut next = move || {
-        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    };
-    for i in (1..items.len()).rev() {
-        // The modulo bias is immaterial at queue sizes.
-        items.swap(i, (next() % (i as u64 + 1)) as usize);
-    }
 }
 
 /// Resolves a grid message's index (into the filtered list) to a real album index, or `None` for

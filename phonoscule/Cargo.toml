@@ -19,6 +19,8 @@ config = ["dep:smol", "dep:toml_edit", "dep:shellexpand", "dep:anyhow", "log/std
 library = ["dep:smol", "dep:futures", "dep:serde", "dep:serde_json", "dep:image", "dep:embedded-io-adapters", "log/std"]
 # Album ordering (see `sort`).
 sort = ["library", "dep:serde"]
+# Reordering a play queue (see `queue`).
+queue = []
 # Fuzzy text ranking, for searching a library (see `search`).
 search = []
 # Persisting a player's queue and the state around it across runs (see `session`). Wants std and a
@@ -76,4 +78,9 @@ harness = false
 [[bench]]
 name = "scan"
 harness = false
+required-features = ["library"]
+
+# Reaches into the accent heuristic, so it needs the module that has one.
+[[example]]
+name = "accent_probe"
 required-features = ["library"]

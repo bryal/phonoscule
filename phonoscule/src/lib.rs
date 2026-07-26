@@ -17,6 +17,8 @@ pub mod library;
 pub mod mpris;
 #[cfg(feature = "player")]
 pub mod player;
+#[cfg(feature = "queue")]
+pub mod queue;
 #[cfg(feature = "search")]
 pub mod search;
 #[cfg(feature = "session")]
