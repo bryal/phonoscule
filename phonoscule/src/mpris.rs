@@ -140,8 +140,9 @@ impl MediaWorker {
 const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
 /// Brings the server up. `identity` is the name desktops display; `bus_name` is the last element of
-/// `org.mpris.MediaPlayer2.<bus_name>` it registers as, so it must be a valid D-Bus name element
-/// (letters, digits and underscores, not starting with a digit) and unique among running players.
+/// `org.mpris.MediaPlayer2.<bus_name>` it registers as, so it must be a valid D-Bus *bus* name
+/// element -- letters, digits, underscores and hyphens, not starting with a digit -- and unique among
+/// running players. Hyphens are allowed here, unlike in interface and member names.
 /// An unreachable session bus is not an error: [`Media::active`] then reports false and the player
 /// simply runs without media integration.
 pub fn start(identity: &str, bus_name: &str) -> (Media, MediaWorker) {
@@ -342,8 +343,9 @@ mod test {
         const PATH: &str = "/org/mpris/MediaPlayer2";
         const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
         // A unique bus name: colliding with a really running phonoscule would silently address
-        // all the busctl calls below at it (and toggle the user's playback!).
-        let dbus_name = format!("phonoscule_test_{}", std::process::id());
+        // all the busctl calls below at it (and toggle the user's playback!). Hyphenated, so that
+        // bus names with hyphens stay exercised -- the players use them.
+        let dbus_name = format!("phonoscule-test-{}", std::process::id());
         let mpris = format!("org.mpris.MediaPlayer2.{dbus_name}");
 
         let (media, worker) = start("Phonoscule roundtrip test", &dbus_name);

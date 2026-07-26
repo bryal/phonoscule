@@ -127,7 +127,7 @@ async fn event_loop(
     // in the order they arrived.
     let (tx, rx) = channel::unbounded::<Msg>();
     read_terminal_events(tx.clone());
-    let (media, media_worker) = mpris::start("Phonoscule TUI", "phonoscule_tui");
+    let (media, media_worker) = mpris::start("Phonoscule TUI", "phonoscule-tui");
     let watcher = watcher::start(&model.conf.music_dir);
     let (changes, quiet) = watcher.change_source();
     let sources = [
