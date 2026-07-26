@@ -6,6 +6,7 @@ use futures::StreamExt;
 use iced::Task;
 use phonoscule::config::Conf;
 use phonoscule::library::{self, Album};
+use phonoscule::search;
 use phonoscule::sort::SortOrder;
 use phonoscule::{mpris, player, session, volume, watcher};
 use std::collections::{HashMap, HashSet};
@@ -490,39 +491,10 @@ pub fn refresh_filter(app: &mut App) {
         .enumerate()
         .filter(|(_, album)| app.filter.genre.as_ref().is_none_or(|genre| album.genre == *genre))
         .filter(|(_, album)| app.filter.artist.as_ref().is_none_or(|artist| album.artist == *artist))
-        .filter_map(|(ix, album)| Some((ix, search_rank(&album.title, &app.filter.search)?)))
+        .filter_map(|(ix, album)| Some((ix, search::rank(&album.title, &app.filter.search)?)))
         .collect();
     scored.sort_by(|&(ia, ra), &(ib, rb)| rb.cmp(&ra).then_with(|| sort.cmp(&app.albums[ia], &app.albums[ib])));
     app.filtered = scored.into_iter().map(|(ix, _)| ix).collect();
-}
-
-/// Ranks `candidate` against a fuzzy search: `None` unless it contains every whitespace-split
-/// word of `query` (case-insensitively); otherwise the length of the longest common substring
-/// with the full query, so contiguous hits ("dark side" as a phrase) outrank scattered ones. An
-/// empty query matches everything at rank 0.
-pub fn search_rank(candidate: &str, query: &str) -> Option<usize> {
-    let query = query.to_lowercase();
-    if query.split_whitespace().next().is_none() {
-        return Some(0);
-    }
-    let candidate = candidate.to_lowercase();
-    query.split_whitespace().all(|word| candidate.contains(word)).then(|| lcs_len(&candidate, &query))
-}
-
-/// The length in bytes of the longest common substring of `a` and `b`: the classic quadratic
-/// table, one rolling row. Both inputs are short (titles and queries), so this is microseconds.
-fn lcs_len(a: &str, b: &str) -> usize {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    let mut row = vec![0usize; b.len() + 1];
-    let mut best = 0;
-    for &ca in a {
-        // Walk right-to-left so `row[j - 1]` still holds the previous row's value.
-        for j in (1..=b.len()).rev() {
-            row[j] = if ca == b[j - 1] { row[j - 1] + 1 } else { 0 };
-            best = best.max(row[j]);
-        }
-    }
-    best
 }
 
 /// The values the picker for `subject` searches over: every distinct value in the library,
@@ -541,7 +513,7 @@ pub fn picker_matches(app: &App, subject: PickerSubject, query: &str) -> Vec<Str
     let mut scored: Vec<(String, usize)> = picker_options(app, subject)
         .into_iter()
         .filter_map(|value| {
-            let rank = search_rank(&value, query)?;
+            let rank = search::rank(&value, query)?;
             Some((value, rank))
         })
         .collect();
@@ -766,14 +738,5 @@ mod test {
         cache.complete(9, None);
         assert!(cache.peek(9).is_none());
         assert!(!cache.pending.contains(&9), "a failed decode must clear the pending mark");
-    }
-
-    #[test]
-    fn search_ranks_contiguous_matches_higher() {
-        assert_eq!(search_rank("The Dark Side of the Moon", ""), Some(0), "an empty query matches everything");
-        assert_eq!(search_rank("The Dark Side of the Moon", "dark side"), Some(9), "a phrase hit scores its full length");
-        assert_eq!(search_rank("Darkness on the Far Side", "dark side"), Some(5), "scattered words score the longest run");
-        assert_eq!(search_rank("The Wall", "dark side"), None, "every word must be contained");
-        assert_eq!(search_rank("MONO no aware", "mono"), Some(4), "matching is case-insensitive");
     }
 }

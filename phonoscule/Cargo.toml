@@ -19,6 +19,8 @@ config = ["dep:smol", "dep:toml_edit", "dep:shellexpand", "dep:anyhow", "log/std
 library = ["dep:smol", "dep:futures", "dep:serde", "dep:serde_json", "dep:image", "dep:embedded-io-adapters", "log/std"]
 # Album ordering (see `sort`).
 sort = ["library", "dep:serde"]
+# Fuzzy text ranking, for searching a library (see `search`).
+search = []
 # Persisting a player's queue and the state around it across runs (see `session`). Wants std and a
 # filesystem.
 session = ["player", "sort", "dep:smol", "dep:serde", "dep:serde_json", "log/std"]
