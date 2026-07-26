@@ -236,6 +236,12 @@ impl Covers {
         self.layout.bump();
     }
 
+    /// The artwork file a cover came from, for anything that wants to point elsewhere at it -- the
+    /// desktop's now-playing art, for one.
+    pub fn file_of(&self, cover_id: u64) -> Option<PathBuf> {
+        self.files.get(&cover_id).map(|file| (**file).clone())
+    }
+
     /// Where thumbnails are read from, for the loader.
     pub fn dir(&self) -> Option<PathBuf> {
         self.covers_dir.clone()

@@ -43,7 +43,7 @@ pub enum Playback {
 }
 
 /// A control request from the bus (a media key, `playerctl`, or a widget button).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
     Play,
     Pause,

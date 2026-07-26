@@ -56,7 +56,9 @@ pub struct Restored {
     pub tracks: Vec<PathBuf>,
     pub current: usize,
     pub repeat: Repeat,
-    pub sort: SortOrder,
+    /// The order the last run was browsing in, or `None` if there was no last run to ask -- in which
+    /// case the player's own default applies, which need not be the framework's.
+    pub sort: Option<SortOrder>,
 }
 
 /// Loads and reconciles both files: tracks whose files have vanished since the last run are
@@ -66,8 +68,9 @@ pub struct Restored {
 pub async fn load(playlist: Option<PathBuf>, player: Option<PathBuf>) -> Restored {
     let saved: SavedPlaylist =
         read_json(playlist, "playlist").await.filter(|p: &SavedPlaylist| p.version == PLAYLIST_VERSION).unwrap_or_default();
-    let state: SavedPlayer =
-        read_json(player, "player state").await.filter(|p: &SavedPlayer| p.version == PLAYER_VERSION).unwrap_or_default();
+    let saved_state = read_json(player, "player state").await.filter(|p: &SavedPlayer| p.version == PLAYER_VERSION);
+    let found = saved_state.is_some();
+    let state: SavedPlayer = saved_state.unwrap_or_default();
 
     let mut tracks = Vec::with_capacity(saved.tracks.len());
     let mut current = state.current;
@@ -80,7 +83,7 @@ pub async fn load(playlist: Option<PathBuf>, player: Option<PathBuf>) -> Restore
         }
     }
     let current = current.min(tracks.len().saturating_sub(1));
-    Restored { tracks, current, repeat: state.repeat, sort: state.sort }
+    Restored { tracks, current, repeat: state.repeat, sort: found.then_some(state.sort) }
 }
 
 pub async fn save_playlist(path: Option<PathBuf>, playlist: SavedPlaylist) {
@@ -154,7 +157,7 @@ mod test {
             assert_eq!(restored.tracks, [a, b], "the vanished track is dropped");
             assert_eq!(restored.current, 1, "current follows its item past the dropped one");
             assert_eq!(restored.repeat, Repeat::Album, "the repeat mode round-trips");
-            assert_eq!(restored.sort, sort, "the sort order round-trips");
+            assert_eq!(restored.sort, Some(sort), "the sort order round-trips");
         });
 
         std::fs::remove_dir_all(&root).unwrap();
@@ -167,5 +170,6 @@ mod test {
         assert!(restored.tracks.is_empty());
         assert_eq!(restored.current, 0);
         assert_eq!(restored.repeat, Repeat::Off);
+        assert_eq!(restored.sort, None, "with nothing saved, the player's own default applies");
     }
 }

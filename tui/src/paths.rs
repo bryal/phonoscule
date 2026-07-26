@@ -7,6 +7,13 @@ use std::path::PathBuf;
 /// The name our directories go by, under the XDG roots.
 const DIR: &str = "phonoscule-tui";
 
+/// State survives a cache wipe: `$XDG_STATE_HOME/phonoscule-tui`, falling back to
+/// `~/.local/state/phonoscule-tui`. `None` when neither is determinable, which means the session is
+/// simply not kept.
+fn state_dir() -> Option<PathBuf> {
+    Some(xdg_dir("XDG_STATE_HOME", ".local/state")?.join(DIR))
+}
+
 /// Regenerable caches: `$XDG_CACHE_HOME/phonoscule-tui`, falling back to `~/.cache/phonoscule-tui`.
 fn cache_dir() -> Option<PathBuf> {
     Some(xdg_dir("XDG_CACHE_HOME", ".cache")?.join(DIR))
@@ -14,6 +21,16 @@ fn cache_dir() -> Option<PathBuf> {
 
 fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
     std::env::var(var).ok().filter(|s| !s.is_empty()).map(PathBuf::from).or_else(|| Some(std::env::home_dir()?.join(fallback)))
+}
+
+/// The play queue: just its list of tracks.
+pub fn playlist_file() -> Option<PathBuf> {
+    Some(state_dir()?.join("playlist.json"))
+}
+
+/// The state around the queue: current track, repeat mode, sort order.
+pub fn player_file() -> Option<PathBuf> {
+    Some(state_dir()?.join("player.json"))
 }
 
 /// The tag cache, so a rescan only opens files that changed.

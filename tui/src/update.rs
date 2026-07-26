@@ -3,9 +3,13 @@
 use crate::model::{Focus, Model, QueueItem, ScanState, Subject, View, open_picker, refresh};
 use crate::{covers, keys, logger, paths};
 use phonoscule::library::{self, Album};
+use phonoscule::mpris;
 use phonoscule::player;
 use phonoscule::queue::{self, Grouping, Scope};
+use phonoscule::session;
 use phonoscule::sort::SortOrder;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 /// Everything the event loop reacts to, whatever source it came from.
@@ -22,6 +26,10 @@ pub enum Msg {
     /// Move it to the first or last album.
     SelectEdge(Edge),
     Player(player::Event),
+    /// A control request from the OS: a media key, `playerctl`, a desktop widget.
+    Media(mpris::Control),
+    /// Time to look over the music directory again.
+    Rescan,
     /// A cover finished loading and encoding (see the covers module).
     Cover(covers::Load),
     /// Play the selected album, replacing the queue.
@@ -80,6 +88,8 @@ pub enum After {
     Idle,
     /// Save the album index, which has drifted from what is on disk.
     SaveIndex,
+    /// Look over the music directory again.
+    Rescan,
 }
 
 pub fn update(model: &mut Model, msg: Msg) -> After {
@@ -125,6 +135,8 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 model.queue = items;
                 model.current = 0;
                 model.view = View::Player;
+                model.dirty_playlist = true;
+                model.dirty_player = true;
                 After::Redraw
             }
             None => After::Idle,
@@ -133,6 +145,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             Some(items) => {
                 model.send(player::Cmd::Append { tracks: entries(&items) });
                 model.queue.extend(items);
+                model.dirty_playlist = true;
                 After::Redraw
             }
             None => After::Idle,
@@ -156,6 +169,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
         Msg::CycleRepeat => {
             model.repeat = model.repeat.cycled();
             model.send(player::Cmd::SetRepeat(model.repeat));
+            model.dirty_player = true;
             After::Redraw
         }
         Msg::Cover(load) => {
@@ -231,6 +245,8 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 model.queue = items;
                 model.current = 0;
                 model.view = View::Player;
+                model.dirty_playlist = true;
+                model.dirty_player = true;
                 After::Redraw
             }
         },
@@ -239,6 +255,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             items => {
                 model.send(player::Cmd::Append { tracks: entries(&items) });
                 model.queue.extend(items);
+                model.dirty_playlist = true;
                 After::Redraw
             }
         },
@@ -251,8 +268,41 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             model.pending_seek = None;
             model.play_state = player::PlayState::Paused;
             model.send(player::Cmd::SetQueue { tracks: vec![], start: 0, play: player::PlayState::Paused });
+            model.dirty_playlist = true;
+            model.dirty_player = true;
             After::Redraw
         }
+        Msg::Media(control) => match control {
+            mpris::Control::Play | mpris::Control::Pause | mpris::Control::Toggle | mpris::Control::Stop => {
+                // Play, pause and stop all mean the same thing here, since the engine has one toggle
+                // and the desktop only ever asks for the state we are not in.
+                let wanted = match control {
+                    mpris::Control::Play => player::PlayState::Playing,
+                    _ => player::PlayState::Paused,
+                };
+                if control == mpris::Control::Toggle || wanted != model.play_state {
+                    model.send(player::Cmd::TogglePlayPause);
+                }
+                After::Idle
+            }
+            mpris::Control::Next => update(model, Msg::Next),
+            mpris::Control::Prev => update(model, Msg::Prev),
+            mpris::Control::Seek(micros) => update(model, Msg::Seek(micros / 1_000_000)),
+            mpris::Control::SetPosition(pos) => {
+                model.pos = pos;
+                model.pending_seek = Some(pos);
+                model.send(player::Cmd::Seek(pos));
+                After::Redraw
+            }
+        },
+        Msg::Rescan => match model.scan {
+            // The scan already running will pick up whatever changed.
+            ScanState::Scanning => After::Idle,
+            ScanState::Complete => {
+                model.scan = ScanState::Scanning;
+                After::Rescan
+            }
+        },
         Msg::Player(event) => player_event(model, event),
         Msg::Library(library::ScanEvent::Album(album)) => absorb_album(model, *album),
         Msg::Library(library::ScanEvent::Cover { albums, art }) => {
@@ -306,6 +356,7 @@ fn player_event(model: &mut Model, event: player::Event) -> After {
     match event {
         player::Event::TrackStarted { ix, len } => {
             model.current = ix;
+            model.dirty_player = true;
             model.len = len;
             model.pos = Duration::ZERO;
             // A new track invalidates any seek still settling against the old one.
@@ -351,6 +402,8 @@ fn shuffle(model: &mut Model, grouping: Grouping, scope: Scope) -> After {
 
     let mut old: Vec<Option<QueueItem>> = std::mem::take(&mut model.queue).into_iter().map(Some).collect();
     model.queue = order.iter().map(|&ix| old[ix].take().expect("a permutation visits each slot once")).collect();
+    model.dirty_playlist = true;
+    model.dirty_player = true;
     match scope {
         // Same tracks in a new order: only the cursor follows the playing one, and it keeps playing.
         Scope::Others => {
@@ -389,6 +442,7 @@ fn pick(model: &mut Model) -> After {
         Subject::Sort => {
             let Some(&order) = SortOrder::ALL.get(picker.selected) else { return After::Idle };
             model.sort = order;
+            model.dirty_player = true;
         }
     }
     model.focus = Focus::Albums;
@@ -424,7 +478,7 @@ fn album_items(model: &Model) -> Option<Vec<QueueItem>> {
 }
 
 /// The engine-facing form of queue items: the path, and the album key that repeat-album walks.
-fn entries(items: &[QueueItem]) -> Vec<player::Entry> {
+pub fn entries(items: &[QueueItem]) -> Vec<player::Entry> {
     items.iter().map(|item| player::Entry { path: item.path.clone(), album: item.album_id }).collect()
 }
 
@@ -455,6 +509,7 @@ fn absorb_album(model: &mut Model, mut album: Album) -> After {
         }
         None => model.index_dirty = true,
     }
+    crate::model::hydrate(&mut model.queue, &album);
     let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
     let ix = model.albums.partition_point(|a| key(a) <= key(&album));
     model.albums.insert(ix, album);
@@ -493,6 +548,54 @@ pub fn full_window(model: &Model) -> Vec<u64> {
         .iter()
         .filter_map(|&id| model.albums.iter().find(|album| album.id == id)?.cover_id)
         .collect()
+}
+
+/// Tells the OS what is playing. Fire and forget: the media worker coalesces a burst of these down
+/// to the latest, so this can be called after every round of messages without thought.
+pub fn publish_media(model: &Model, media: &mpris::Media) {
+    let meta = model.playing().map(|item| {
+        let album = model.album_of(item);
+        mpris::Meta {
+            title: item.title.clone(),
+            album: album.map(|a| a.title.clone()).unwrap_or_default(),
+            artist: album.map(|a| a.artist.clone()).unwrap_or_default(),
+            // Absolute, so the desktop can find it whatever our working directory is.
+            cover_url: album
+                .and_then(|album| album.cover_id)
+                .and_then(|cover| model.covers.file_of(cover))
+                .and_then(|file| url_of(&file)),
+            duration: model.len,
+        }
+    });
+    let state = match (model.playing().is_some(), model.play_state) {
+        (false, _) => mpris::Playback::Stopped,
+        (true, player::PlayState::Playing) => mpris::Playback::Playing,
+        (true, player::PlayState::Paused) => mpris::Playback::Paused,
+    };
+    media.publish(mpris::Snapshot { meta, state, position: model.pos });
+}
+
+/// A `file://` URL for a path, which is what MPRIS wants of cover art.
+fn url_of(path: &std::path::Path) -> Option<String> {
+    let path = path.to_str()?;
+    Some(format!("file://{path}"))
+}
+
+/// Writes out whatever part of the session has changed, and forgets that it had. Called once per
+/// burst of messages: a held seek key reports many times a second, and none of that belongs on disk.
+///
+/// Boxed, because the two writes have different types and there are at most two of them a burst.
+pub fn save_session(model: &mut Model) -> Vec<Pin<Box<dyn Future<Output = ()> + Send>>> {
+    let mut writes: Vec<Pin<Box<dyn Future<Output = ()> + Send>>> = Vec::new();
+    if std::mem::take(&mut model.dirty_playlist) {
+        let tracks = model.queue.iter().map(|item| item.path.clone()).collect();
+        writes.push(Box::pin(session::save_playlist(paths::playlist_file(), session::SavedPlaylist::new(tracks))));
+    }
+    if std::mem::take(&mut model.dirty_player) {
+        let saved = session::SavedPlayer::new(model.current, model.repeat, model.sort);
+        writes.push(Box::pin(session::save_player(paths::player_file(), saved)));
+    }
+    writes
 }
 
 /// Options for the boot scan.

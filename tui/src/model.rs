@@ -6,6 +6,7 @@ use phonoscule::config::Conf;
 use phonoscule::library::Album;
 use phonoscule::player;
 use phonoscule::search;
+use phonoscule::session;
 use phonoscule::sort::{Dir, SortField, SortOrder};
 use ratatui::widgets::ListState;
 use std::collections::{BTreeSet, VecDeque};
@@ -179,6 +180,11 @@ pub struct Model {
     /// reports still in flight from before the seek are ignored until it arrives -- otherwise they
     /// yank the bar back and it rubberbands.
     pub pending_seek: Option<Duration>,
+    /// Whether the queue, or the state around it, has changed since it was last written. The event
+    /// loop writes them out after a burst of messages rather than on each one, so holding a seek key
+    /// does not rewrite the session on every report.
+    pub dirty_playlist: bool,
+    pub dirty_player: bool,
     /// Recent log records, newest last (see the logger module).
     pub log: VecDeque<logger::Entry>,
     /// Set to leave the event loop.
@@ -186,16 +192,26 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(conf: Conf, covers: Covers, engine: player::Engine, albums: Vec<Album>) -> Self {
+    /// The model as a previous run left it: the queue it was playing, where in it, and the repeat mode
+    /// and order it was using.
+    pub fn restored(
+        conf: Conf,
+        covers: Covers,
+        engine: player::Engine,
+        albums: Vec<Album>,
+        restored: session::Restored,
+    ) -> Self {
         let mut model = Model {
             engine,
             queue: vec![],
             current: 0,
             play_state: player::PlayState::Paused,
-            repeat: player::Repeat::Off,
+            repeat: restored.repeat,
             pos: Duration::ZERO,
             len: None,
             pending_seek: None,
+            dirty_playlist: false,
+            dirty_player: false,
             conf,
             covers,
             scan: ScanState::Scanning,
@@ -205,13 +221,32 @@ impl Model {
             focus: Focus::Albums,
             shown: vec![],
             shown_dirty: false,
-            sort: INITIAL_SORT,
+            sort: restored.sort.unwrap_or(INITIAL_SORT),
             selected: None,
             list: ListState::default(),
             view: View::Library,
             log: VecDeque::new(),
             quit: false,
         };
+        // Only paths were saved: the titles and album ids come back from the library, matched by
+        // path, so a queue is readable before any scan has run.
+        model.queue = restored
+            .tracks
+            .iter()
+            .map(|path| QueueItem {
+                title: path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+                album_id: 0,
+                path: path.clone(),
+            })
+            .collect();
+        for album in &model.albums {
+            hydrate(&mut model.queue, album);
+        }
+        model.current = restored.current.min(model.queue.len().saturating_sub(1));
+        // A restored session comes up where it left off, on the player, ready to resume.
+        if !model.queue.is_empty() {
+            model.view = View::Player;
+        }
         refresh(&mut model);
         model
     }
@@ -295,6 +330,17 @@ pub fn refresh(model: &mut Model) {
     model.shown = ranked.into_iter().map(|(ix, _)| ix).collect();
 }
 
+/// Fills in the queue items belonging to `album` -- their titles and its id -- which is how a queue
+/// restored from paths alone gets its tags back, at boot and from every scan event after.
+pub fn hydrate(queue: &mut [QueueItem], album: &Album) {
+    for item in queue.iter_mut() {
+        if let Some(track) = album.tracks.iter().find(|track| track.path == item.path) {
+            item.album_id = album.id;
+            item.title = track.title.clone();
+        }
+    }
+}
+
 /// Every distinct value of `subject` in the library, sorted -- what its picker searches over. An
 /// album with no genre tag contributes none, and shows only under "any genre".
 pub fn picker_options(model: &Model, subject: Subject) -> Vec<String> {
@@ -347,6 +393,7 @@ mod testing {
         let engine = player::start(player::Client { name: "phonoscule-tui-test".into(), description: String::new() });
         // A thumbnail directory that need not exist: the tests ask what covers are wanted, and never
         // run the loads that would read it.
-        Model::new(conf, Covers::new(Picker::halfblocks(), Some("/covers".into())), engine, albums)
+        let covers = Covers::new(Picker::halfblocks(), Some("/covers".into()));
+        Model::restored(conf, covers, engine, albums, session::Restored::default())
     }
 }

@@ -15,7 +15,7 @@ mod view;
 
 use futures::StreamExt;
 use model::Model;
-use phonoscule::{config, library, player};
+use phonoscule::{config, library, mpris, player, session, watcher};
 use smol::channel;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -94,6 +94,7 @@ fn run() -> anyhow::Result<()> {
     let conf = smol::block_on(config::load(APP, arg_conf_path))?;
     let forced_protocol = conf.app_str("image-protocol")?.map(str::to_owned);
     let index = smol::block_on(library::load_index(paths::album_index_file()));
+    let restored = smol::block_on(session::load(paths::playlist_file(), paths::player_file()));
 
     // Installs a panic hook that restores the terminal first, so a panic leaves a usable shell
     // rather than a raw-mode one with the alternate screen still up.
@@ -105,7 +106,8 @@ fn run() -> anyhow::Result<()> {
         description: "Terminal application based on the Phonoscule music player library".into(),
     });
     let picker = covers::picker(forced_protocol.as_deref());
-    let model = Model::new(conf, covers::Covers::new(picker, paths::covers_dir()), engine, index);
+    let covers = covers::Covers::new(picker, paths::covers_dir());
+    let model = Model::restored(conf, covers, engine, index, restored);
     // The query's bytes went out behind ratatui's back, and a terminal that did not understand them
     // will have printed them; wipe the screen before the first frame. Through the backend, whose
     // clear is a plain escape sequence -- `Terminal::clear` snapshots the cursor position first, and
@@ -125,15 +127,34 @@ async fn event_loop(
     // in the order they arrived.
     let (tx, rx) = channel::unbounded::<Msg>();
     read_terminal_events(tx.clone());
+    let (media, media_worker) = mpris::start("Phonoscule TUI", "phonoscule_tui");
+    let watcher = watcher::start(&model.conf.music_dir);
+    let (changes, quiet) = watcher.change_source();
     let sources = [
         forward(logs.map(Msg::Log), tx.clone()),
         forward(model.engine.events.clone().map(Msg::Player), tx.clone()),
+        forward(media.events.clone().map(Msg::Media), tx.clone()),
         forward(library::scan(update::scan_options(&model)).map(Msg::Library), tx.clone()),
+        // The music directory noticed changing, and a slow poll behind it in case it never is.
+        forward(watcher::debounce(changes, quiet).map(|()| Msg::Rescan), tx.clone()),
+        forward(every(RESCAN_INTERVAL).map(|()| Msg::Rescan), tx.clone()),
     ];
+    // Runs for the session; it publishes to the bus and yields nothing of its own.
+    let media_task = smol::spawn(media_worker.run());
+
+    // The engine is told what a previous run left, opened but not playing.
+    if !model.queue.is_empty() {
+        model.send(player::Cmd::SetRepeat(model.repeat));
+        model.send(player::Cmd::SetQueue {
+            tracks: update::entries(&model.queue),
+            start: model.current,
+            play: player::PlayState::Paused,
+        });
+    }
 
     terminal.draw(|frame| view::view(frame, &mut model))?;
     while let Ok(msg) = rx.recv().await {
-        let mut redraw = apply(&mut model, msg);
+        let mut redraw = apply(&mut model, msg, &tx);
         // A burst -- a scan reporting hundreds of albums, a held key -- is applied together and
         // drawn once. Bounded by a frame's worth of time, so a library that takes a while to scan
         // still redraws (and still answers the keyboard) while it does, rather than freezing until
@@ -141,7 +162,7 @@ async fn event_loop(
         let deadline = Instant::now() + FRAME;
         while Instant::now() < deadline {
             match rx.try_recv() {
-                Ok(msg) => redraw |= apply(&mut model, msg),
+                Ok(msg) => redraw |= apply(&mut model, msg, &tx),
                 Err(_) => break,
             }
         }
@@ -155,9 +176,27 @@ async fn event_loop(
             // asked for are started once the frame is out.
             load_covers(&mut model, &tx);
         }
+        update::publish_media(&model, &media);
+        for write in update::save_session(&mut model) {
+            smol::spawn(write).detach();
+        }
     }
     drop(sources);
+    drop(media_task);
     Ok(())
+}
+
+/// How often the music directory is polled for changes, behind the filesystem watcher. Unchanged
+/// files are never reopened -- the tag cache is checked against their stat data -- so a quiet poll
+/// costs directory listings.
+const RESCAN_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+/// A stream that yields every `interval`, for whatever wants doing periodically.
+fn every(interval: Duration) -> impl futures::Stream<Item = ()> + Send {
+    futures::stream::unfold((), move |()| async move {
+        smol::Timer::after(interval).await;
+        Some(((), ()))
+    })
 }
 
 /// Starts the cover loads the last frame asked for. Each runs on the executor and lands back as a
@@ -180,13 +219,20 @@ fn load_covers(model: &mut Model, tx: &channel::Sender<Msg>) {
 const FRAME: Duration = Duration::from_millis(16);
 
 /// Applies one message, reporting whether the frame needs redrawing.
-fn apply(model: &mut Model, msg: Msg) -> bool {
+fn apply(model: &mut Model, msg: Msg, tx: &channel::Sender<Msg>) -> bool {
     match update(model, msg) {
         After::Redraw => true,
         After::Idle => false,
         After::SaveIndex => {
             let save = library::save_index(paths::album_index_file(), &model.albums);
             smol::spawn(save).detach();
+            true
+        }
+        After::Rescan => {
+            // Detached rather than held: a rescan ends on its own, and there is nothing to cancel it
+            // for -- the next one is only started once this has reported it is done.
+            let scan = library::scan(update::scan_options(model)).map(Msg::Library);
+            forward(scan, tx.clone()).detach();
             true
         }
     }

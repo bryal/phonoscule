@@ -360,7 +360,7 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             albums: index.clone(),
             index_dirty: false,
             filter: Filter::default(),
-            sort: restored.sort,
+            sort: restored.sort.unwrap_or_default(),
             filtered: vec![],
             view: View::Library,
             selected: None,
