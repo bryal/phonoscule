@@ -46,16 +46,17 @@ fn config_help_tui() -> String {
         "
   [app.tui]
     image-protocol
-               Draw cover art with this terminal image protocol instead of
-               asking the terminal which it speaks: one of {}.
-               Optional; `halfblocks` works anywhere and needs no protocol.
+               Draw cover art with this terminal image protocol rather than
+               asking the terminal which it speaks. One of:
+               {}. Optional; `halfblocks` needs
+               no protocol at all and works anywhere.
 ",
         covers::PROTOCOL_NAMES,
     )
 }
 
 fn help() -> String {
-    format!("{HELP}{}{}", config::config_help(APP), config_help_tui())
+    format!("{HELP}{}{}\n{}", config::config_help(APP), config_help_tui(), keys::HELP)
 }
 
 fn main() {

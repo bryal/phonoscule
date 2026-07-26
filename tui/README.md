@@ -5,9 +5,9 @@ built on the same [Phonoscule](../README.md) framework:
 album-centric browsing and playback in a terminal,
 with real cover art where the terminal can draw it.
 
-Meant for machines the graphical player is too much for -
+Intended primarily as a fallback for machines the graphical player is too much for -
 single-board computers, older laptops, anything without a GPU worth the name -
-and for playing music over ssh.
+and for people who simple like having all their stuff in the terminal.
 
 ## Features
 

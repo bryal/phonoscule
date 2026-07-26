@@ -9,6 +9,56 @@ use crate::update::{Edge, Msg};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use phonoscule::queue::{Grouping, Scope};
 
+/// The bindings below, for `--help`. Kept here rather than beside the argument handling so that
+/// changing a binding puts its description in front of whoever changed it.
+///
+/// Spelled out, unlike the filter bar's `^g` chips, because help is read once and a bar is read at a
+/// glance.
+pub const HELP: &str = "\
+Controls:
+  Anywhere
+    Space              Play or pause
+    Tab, Shift+Tab     Switch between the Library and Player views
+    Ctrl+Q, Ctrl+C     Quit
+    Alt+R              Cycle the repeat mode: off, track, album, queue
+    Ctrl+S, Ctrl+Z     Shuffle the whole queue: by album, by track
+    Alt+S, Alt+Z       Shuffle all but what is playing: by album, by track
+    Ctrl+K             Clear the queue
+
+  Library
+    Up/Down, PgUp/PgDn, Home/End
+                       Move the selection
+    (any letter)       Search album titles, narrowing as you type
+    Backspace          Correct the search
+    Ctrl+F             Back to the search
+    Ctrl+G, Ctrl+T     Pick a genre, an artist
+    Ctrl+O             Pick the order albums are listed in
+    Ctrl+W             Clear every filter
+    Enter              Open the selected album's tracks
+    Alt+Enter          Queue the selected album
+    Ctrl+A, Alt+A      Play, queue every album shown
+
+  An album's tracks
+    Up/Down, PgUp/PgDn, Home/End
+                       Move the selection
+    Enter              Play that track alone
+    Alt+Enter          Queue it, stepping onto the next
+    Ctrl+A, Alt+A      Play, queue the whole album
+    Esc                Close
+
+  A picker
+    (any letter)       Search what it holds
+    Up/Down            Move the selection
+    Enter              Take it; its first row clears the filter it sets
+    Esc                Close, changing nothing
+
+  Player
+    Left/Right         Seek
+    Up/Down            Volume
+    Home/End           Previous, next track
+
+";
+
 /// How far a single seek key press moves, in seconds.
 const SEEK_STEP: i64 = 5;
 
