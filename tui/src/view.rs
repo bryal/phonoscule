@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListState, Paragraph};
+use ratatui::widgets::{Block, List, Paragraph};
 use ratatui_image::StatefulImage;
 
 /// The frame: one header row, the body, one status row. No borders anywhere -- the terminal's own
@@ -76,9 +76,10 @@ fn library(frame: &mut Frame, model: &mut Model, area: Rect) {
 
     let rows: Vec<Line> = model.shown.iter().map(|&ix| album_row(&model.albums[ix])).collect();
     let list = List::new(rows).highlight_style(Style::default().add_modifier(Modifier::REVERSED)).highlight_symbol("");
-    // The list widget owns the scroll offset, so it keeps the selection in view for us.
-    let mut state = ListState::default().with_selected(Some(model.selected_row()));
-    frame.render_stateful_widget(list, list_area, &mut state);
+    // The widget scrolls only when the selection would fall outside the offset it already has, so
+    // moving off the bottom row moves the highlight and leaves the view alone.
+    model.list.select(Some(model.selected_row()));
+    frame.render_stateful_widget(list, list_area, &mut model.list);
 
     if let Some(preview_area) = preview_area {
         preview(frame, model, preview_area);
@@ -169,4 +170,89 @@ fn status_line(model: &Model) -> Paragraph<'static> {
         },
     };
     Paragraph::new(Line::from(format!(" {left}")).fg(Color::DarkGray))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::model::Model;
+    use crate::update::{Edge, Msg, update};
+    use phonoscule::config;
+    use phonoscule::library::{Album, TrackInfo};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui_image::picker::Picker;
+
+    /// Applies a message, discarding what it asks the event loop to do next.
+    fn send(model: &mut Model, msg: Msg) {
+        let _ = update(model, msg);
+    }
+
+    /// A browser over `n` synthetic albums, sorted so their titles read in order.
+    fn browser(n: usize) -> Model {
+        let dir = std::env::temp_dir().join(format!("phonoscule-tui-view-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("conf.toml");
+        std::fs::write(&path, format!("music-dir = {:?}", dir)).unwrap();
+        let conf = smol::block_on(config::load("tui", Some(path))).unwrap();
+
+        let albums = (0..n)
+            .map(|i| Album {
+                id: i as u64,
+                title: format!("Album {i:03}"),
+                artist: format!("Artist {i:03}"),
+                genre: "Genre".into(),
+                year: Some(2000),
+                cover_id: None,
+                cover: None,
+                accent: None,
+                tracks: vec![TrackInfo { path: format!("{i}.opus").into(), title: "Track".into() }],
+            })
+            .collect();
+        Model::new(conf, Picker::halfblocks(), albums)
+    }
+
+    /// The row the selection highlight is drawn on, and the text of the topmost list row -- which
+    /// together say where the view is scrolled to.
+    fn drawn(terminal: &mut Terminal<TestBackend>, model: &mut Model) -> (u16, String) {
+        terminal.draw(|frame| view(frame, model)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let reversed = |y: u16| (0..buffer.area.width).any(|x| buffer[(x, y)].modifier.contains(Modifier::REVERSED));
+        let row = (0..buffer.area.height).find(|&y| reversed(y)).expect("something must be selected");
+        // Row 0 is the header, so the list starts at row 1.
+        let top: String = (0..40).map(|x| buffer[(x, 1)].symbol()).collect();
+        (row, top)
+    }
+
+    /// Moving up off the bottom row must move the highlight, not scroll the list: the view only
+    /// follows the selection when the selection would otherwise leave it.
+    #[test]
+    fn moving_up_from_the_bottom_row_leaves_the_view_alone() {
+        let mut model = browser(100);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+        // Walk past the bottom of the viewport, so the list has scrolled.
+        send(&mut model, Msg::Select(60));
+        let (bottom_row, top_before) = drawn(&mut terminal, &mut model);
+        assert!(bottom_row > 30, "the selection should have reached the bottom of the view, not row {bottom_row}");
+
+        send(&mut model, Msg::Select(-1));
+        let (row, top_after) = drawn(&mut terminal, &mut model);
+        assert_eq!(row, bottom_row - 1, "the highlight should move up one row");
+        assert_eq!(top_after, top_before, "the view should not have scrolled");
+    }
+
+    /// Walking back to the top scrolls the view with the selection, once it has nowhere else to go.
+    #[test]
+    fn walking_off_the_top_scrolls_back() {
+        let mut model = browser(100);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+        send(&mut model, Msg::Select(60));
+        drawn(&mut terminal, &mut model);
+        send(&mut model, Msg::SelectEdge(Edge::First));
+        let (row, top) = drawn(&mut terminal, &mut model);
+        assert_eq!(row, 1, "the first album should be selected on the first list row");
+        assert!(top.starts_with("(2000) Artist 000"), "the view should be back at the top, showing {top:?}");
+    }
 }

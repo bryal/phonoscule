@@ -5,6 +5,7 @@ use crate::logger;
 use phonoscule::config::Conf;
 use phonoscule::library::Album;
 use phonoscule::sort::SortOrder;
+use ratatui::widgets::ListState;
 use ratatui_image::picker::Picker;
 use std::collections::VecDeque;
 
@@ -75,6 +76,11 @@ pub struct Model {
     /// reorders the list under it -- and so nothing needs fixing up when the order changes. `None`
     /// until the selection is moved, which means the first row.
     pub selected: Option<u64>,
+    /// The browser list's own state, which is to say where it is scrolled to. Kept across frames:
+    /// the widget writes the offset it settled on back into it, and a fresh one each frame would
+    /// throw that away and re-derive an offset that only just brings the selection into view --
+    /// pinning it to the bottom row.
+    pub list: ListState,
     pub view: View,
     /// Recent log records, newest last (see the logger module).
     pub log: VecDeque<logger::Entry>,
@@ -95,6 +101,7 @@ impl Model {
             shown_dirty: false,
             sort: SortOrder::default(),
             selected: None,
+            list: ListState::default(),
             view: View::Library,
             log: VecDeque::new(),
             quit: false,
