@@ -4,7 +4,7 @@ use crate::covers;
 use crate::model::{Model, ScanState, View};
 use phonoscule::library::Album;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListState, Paragraph};
@@ -45,6 +45,10 @@ fn header_line(frame: &mut Frame, model: &Model, area: Rect) {
 /// a narrow terminal is better off reading titles than squinting at a thumbnail.
 const PREVIEW_MIN_BODY: u16 = 64;
 
+/// Rows the preview keeps below the cover: the title, artist and byline, a blank, and a few tracks.
+/// The cover gets the rest.
+const DETAILS_ROWS: u16 = 9;
+
 /// How wide the preview pane gets: a third of the body, so a wide terminal shows a bigger cover,
 /// bounded so it neither shrinks below a legible track list nor crowds out the album titles.
 fn preview_width(body: u16) -> u16 {
@@ -73,7 +77,7 @@ fn library(frame: &mut Frame, model: &mut Model, area: Rect) {
     let rows: Vec<Line> = model.shown.iter().map(|&ix| album_row(&model.albums[ix])).collect();
     let list = List::new(rows).highlight_style(Style::default().add_modifier(Modifier::REVERSED)).highlight_symbol("");
     // The list widget owns the scroll offset, so it keeps the selection in view for us.
-    let mut state = ListState::default().with_selected(Some(model.selected));
+    let mut state = ListState::default().with_selected(Some(model.selected_row()));
     frame.render_stateful_widget(list, list_area, &mut state);
 
     if let Some(preview_area) = preview_area {
@@ -87,9 +91,15 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
     let [_, area] = Layout::horizontal([Constraint::Length(2), Constraint::Min(0)]).areas(area);
     let Some(album) = model.selected_album() else { return };
 
-    // The cover is drawn square in pixels, so its height follows from the width and the cell aspect.
-    let cover_height = covers::square(&model.picker, area.width).height.min(area.height / 2);
-    let [cover_area, rest] = Layout::vertical([Constraint::Length(cover_height), Constraint::Min(0)]).areas(area);
+    // The cover takes what the pane can spare once the byline and a few tracks have their rows, as
+    // large as that allows.
+    let for_cover = Size::new(area.width, area.height.saturating_sub(DETAILS_ROWS));
+    let cover_size = match &model.cover {
+        Some(cover) => cover.size_in(for_cover),
+        None => covers::square(&model.picker, for_cover),
+    };
+    let [cover_area, rest] = Layout::vertical([Constraint::Length(cover_size.height), Constraint::Min(0)]).areas(area);
+    let [cover_area, _] = Layout::horizontal([Constraint::Length(cover_size.width), Constraint::Min(0)]).areas(cover_area);
 
     let accent = album.accent.map(|c| Color::Rgb(channel(c.r), channel(c.g), channel(c.b)));
     let mut lines =
@@ -107,7 +117,8 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
 
     match &mut model.cover {
         Some(cover) => {
-            frame.render_stateful_widget(StatefulImage::default(), cover_area, &mut cover.protocol);
+            let image = StatefulImage::default().resize(covers::resize());
+            frame.render_stateful_widget(image, cover_area, &mut cover.protocol);
         }
         // No artwork loaded (still scanning, or the album has none): a block of the album's accent
         // colour, which the index knows before any pixels are read. The same zeroth level of detail

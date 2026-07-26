@@ -58,17 +58,16 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             After::Redraw
         }
         Msg::Select(delta) => {
-            let last = model.shown.len().saturating_sub(1);
-            model.selected = model.selected.saturating_add_signed(delta).min(last);
-            sync_cover(model);
+            let row = model.selected_row().saturating_add_signed(delta);
+            model.select_row(row);
             After::Redraw
         }
         Msg::SelectEdge(edge) => {
-            model.selected = match edge {
+            let row = match edge {
                 Edge::First => 0,
                 Edge::Last => model.shown.len().saturating_sub(1),
             };
-            sync_cover(model);
+            model.select_row(row);
             After::Redraw
         }
         Msg::Library(library::ScanEvent::Album(album)) => absorb_album(model, *album),
@@ -82,12 +81,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 album.accent = Some(art.accent);
                 applied = true;
             }
-            if applied {
-                sync_cover(model);
-                After::Redraw
-            } else {
-                After::Idle
-            }
+            if applied { After::Redraw } else { After::Idle }
         }
         Msg::Library(library::ScanEvent::Done { album_ids }) => {
             let ids: std::collections::HashSet<u64> = album_ids.into_iter().collect();
@@ -95,8 +89,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             model.albums.retain(|album| ids.contains(&album.id));
             model.index_dirty |= model.albums.len() != before;
             model.scan = ScanState::Complete;
-            refresh(model);
-            sync_cover(model);
+            model.shown_dirty = true;
             if std::mem::take(&mut model.index_dirty) { After::SaveIndex } else { After::Redraw }
         }
     }
@@ -132,9 +125,18 @@ fn absorb_album(model: &mut Model, mut album: Album) -> After {
     let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
     let ix = model.albums.partition_point(|a| key(a) <= key(&album));
     model.albums.insert(ix, album);
-    refresh(model);
-    sync_cover(model);
+    // Not re-sorted here: `reconcile` does that once for the whole burst.
+    model.shown_dirty = true;
     After::Redraw
+}
+
+/// Brings the derived state back in line with the albums and the selection, once per burst of
+/// messages rather than once per message (see [`Model::shown_dirty`]).
+pub fn reconcile(model: &mut Model) {
+    if model.shown_dirty {
+        refresh(model);
+    }
+    sync_cover(model);
 }
 
 /// Points the one held cover at the selected album, building it if that album's art has arrived and

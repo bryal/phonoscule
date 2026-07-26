@@ -17,6 +17,7 @@ use model::Model;
 use phonoscule::{config, library};
 use smol::channel;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use update::{After, Msg, update};
 
 /// The name this player goes by: its `[app.tui]` config table and its `$PHONOSCULE_TUI_CONF`.
@@ -111,20 +112,32 @@ async fn event_loop(
     terminal.draw(|frame| view::view(frame, &mut model))?;
     while let Ok(msg) = rx.recv().await {
         let mut redraw = apply(&mut model, msg);
-        // A burst -- a scan reporting hundreds of albums, a held key -- redraws once, at the end.
-        while let Ok(msg) = rx.try_recv() {
-            redraw |= apply(&mut model, msg);
+        // A burst -- a scan reporting hundreds of albums, a held key -- is applied together and
+        // drawn once. Bounded by a frame's worth of time, so a library that takes a while to scan
+        // still redraws (and still answers the keyboard) while it does, rather than freezing until
+        // the last album lands.
+        let deadline = Instant::now() + FRAME;
+        while Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(msg) => redraw |= apply(&mut model, msg),
+                Err(_) => break,
+            }
         }
         if model.quit {
             break;
         }
         if redraw {
+            update::reconcile(&mut model);
             terminal.draw(|frame| view::view(frame, &mut model))?;
         }
     }
     drop(sources);
     Ok(())
 }
+
+/// How long messages are absorbed before drawing. Enough to swallow a burst whole, short enough that
+/// a scan's steady stream of albums still yields a frame several times a second.
+const FRAME: Duration = Duration::from_millis(16);
 
 /// Applies one message, reporting whether the frame needs redrawing.
 fn apply(model: &mut Model, msg: Msg) -> bool {

@@ -63,12 +63,18 @@ pub struct Model {
     /// Whether `albums` has drifted from the persisted index since it was last written, so the
     /// quiet rescans don't rewrite it every time.
     pub index_dirty: bool,
-    /// Indices into `albums` in display order (see [`refresh`]). Every selection is an index into
-    /// this.
+    /// Indices into `albums` in display order (see [`refresh`]).
     pub shown: Vec<usize>,
+    /// Whether `shown` still reflects `albums` and `sort`. Set by anything that changes either;
+    /// cleared by [`refresh`], which the event loop calls once per burst of messages rather than
+    /// once per message -- re-sorting the whole library on each of a scan's hundreds of album
+    /// reports is what made the first frame take seconds to arrive.
+    pub shown_dirty: bool,
     pub sort: SortOrder,
-    /// The browser's selection, as an index into `shown`.
-    pub selected: usize,
+    /// The album the browser's selection sits on, by id, so it stays on that album as the scan
+    /// reorders the list under it -- and so nothing needs fixing up when the order changes. `None`
+    /// until the selection is moved, which means the first row.
+    pub selected: Option<u64>,
     pub view: View,
     /// Recent log records, newest last (see the logger module).
     pub log: VecDeque<logger::Entry>,
@@ -86,8 +92,9 @@ impl Model {
             albums,
             index_dirty: false,
             shown: vec![],
+            shown_dirty: false,
             sort: SortOrder::default(),
-            selected: 0,
+            selected: None,
             view: View::Library,
             log: VecDeque::new(),
             quit: false,
@@ -96,9 +103,20 @@ impl Model {
         model
     }
 
+    /// Which row of `shown` the selection sits on: the selected album's, or the first.
+    pub fn selected_row(&self) -> usize {
+        self.selected.and_then(|id| self.shown.iter().position(|&ix| self.albums[ix].id == id)).unwrap_or(0)
+    }
+
     /// The album the browser's selection sits on.
     pub fn selected_album(&self) -> Option<&Album> {
-        self.albums.get(*self.shown.get(self.selected)?)
+        self.albums.get(*self.shown.get(self.selected_row())?)
+    }
+
+    /// Puts the selection on the album at `row`, clamped to the list.
+    pub fn select_row(&mut self, row: usize) {
+        let row = row.min(self.shown.len().saturating_sub(1));
+        self.selected = self.shown.get(row).map(|&ix| self.albums[ix].id);
     }
 
     pub fn push_log(&mut self, entry: logger::Entry) {
@@ -109,16 +127,12 @@ impl Model {
     }
 }
 
-/// Recomputes the display order from [`Model::sort`], keeping the selection on the album it was on
-/// where that album is still there.
+/// Recomputes the display order from [`Model::sort`]. The selection needs no fixing up: it names an
+/// album, not a row.
 pub fn refresh(model: &mut Model) {
-    let was = model.selected_album().map(|album| album.id);
+    model.shown_dirty = false;
     let sort = model.sort;
     let mut shown: Vec<usize> = (0..model.albums.len()).collect();
     shown.sort_by(|&a, &b| sort.cmp(&model.albums[a], &model.albums[b]));
     model.shown = shown;
-    model.selected = was
-        .and_then(|id| model.shown.iter().position(|&ix| model.albums[ix].id == id))
-        .unwrap_or(model.selected)
-        .min(model.shown.len().saturating_sub(1));
 }
