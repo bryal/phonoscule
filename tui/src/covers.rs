@@ -21,6 +21,7 @@ use ratatui_image::protocol::Protocol;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// How many encoded thumbnails are held. The library's own size does not enter into it.
 const THUMB_CAPACITY: usize = 32;
@@ -51,10 +52,41 @@ pub enum Quality {
 }
 
 /// An encoded cover, and the area it was encoded for. Kept together because an encoding is good for
-/// one size only: the terminal being resized makes it a miss rather than something to stretch.
+/// one size only: a lookup at any other misses rather than stretching what it found, which is what
+/// catches a load that was already in flight when the terminal changed shape.
 struct Encoded {
     protocol: Protocol,
     size: Size,
+}
+
+/// Which layout the covers belong to, bumped whenever every one of them is invalidated at once -- a
+/// resize. Shared with the loaders, which read it to abandon work for a layout that has since gone:
+/// decoding artwork and encoding it costs tens of milliseconds, and there is no point spending them
+/// on a cover that will be rejected on arrival.
+///
+/// A generation rather than the area itself, because the two caches are filled at two different
+/// sizes -- the browser's preview pane and the player's -- and one counter invalidates both without
+/// either having to know the other's.
+#[derive(Clone)]
+pub struct Layout(Arc<AtomicU64>);
+
+impl Layout {
+    fn new() -> Self {
+        Layout(Arc::new(AtomicU64::new(0)))
+    }
+
+    fn get(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn bump(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Whether `generation` is still the current layout.
+    pub fn current(&self, generation: u64) -> bool {
+        self.get() == generation
+    }
 }
 
 /// The covers held for display, and the terminal's way of drawing them.
@@ -73,6 +105,7 @@ pub struct Covers {
     /// Ids that must not be evicted, per quality.
     pinned_thumbs: HashSet<u64>,
     pinned_full: HashSet<u64>,
+    layout: Layout,
 }
 
 /// One cover to load and encode, off the UI thread.
@@ -82,6 +115,9 @@ pub struct Request {
     /// The area to encode for, and the artwork file when a high-resolution decode is wanted.
     pub size: Size,
     pub file: Option<Arc<PathBuf>>,
+    /// The layout this was asked for in (see [`Layout`]); the load gives up if it is no longer
+    /// current.
+    pub generation: u64,
 }
 
 /// A loaded, encoded cover on its way back to a cache.
@@ -89,7 +125,9 @@ pub struct Load {
     pub cover_id: u64,
     pub quality: Quality,
     pub size: Size,
-    /// `None` if it could not be read or decoded, which leaves it retryable.
+    pub generation: u64,
+    /// `None` if it could not be read or decoded, or if the layout changed while it was being
+    /// loaded. Either way it leaves the cover retryable.
     pub protocol: Option<Protocol>,
 }
 
@@ -104,7 +142,13 @@ impl Covers {
             wanted: Vec::new(),
             pinned_thumbs: HashSet::new(),
             pinned_full: HashSet::new(),
+            layout: Layout::new(),
         }
+    }
+
+    /// The current layout, for a loader to check against.
+    pub fn layout(&self) -> Layout {
+        self.layout.clone()
     }
 
     /// Remembers where a cover's artwork lives, so it can be decoded large later. Learnt from the
@@ -116,7 +160,8 @@ impl Covers {
     /// The best encoded cover held for `id` at `size`, preferring the high-resolution one. `None`
     /// when neither is there yet, or neither was encoded for this size.
     pub fn best(&mut self, id: u64, size: Size) -> Option<&Protocol> {
-        // Checked before borrowing, since only one of the two lookups may keep its borrow.
+        // Whichever cache holds it at this size. Each is filled by one pane at one size, so at most
+        // one of them can: the other's entries were encoded for a different area.
         let full = self.full.get(id).is_some_and(|held| held.size == size);
         let cache = if full { &mut self.full } else { &mut self.thumbs };
         cache.get(id).filter(|held| held.size == size).map(|held| &held.protocol)
@@ -147,7 +192,7 @@ impl Covers {
             cache.forget(cover_id);
         }
         if cache.start_loading(cover_id) {
-            self.wanted.push(Request { cover_id, quality, size, file });
+            self.wanted.push(Request { cover_id, quality, size, file, generation: self.layout.get() });
         }
     }
 
@@ -164,12 +209,16 @@ impl Covers {
 
     /// Takes in a finished load.
     pub fn absorb(&mut self, load: Load) {
-        let Load { cover_id, quality, size, protocol } = load;
+        let Load { cover_id, quality, size, generation, protocol } = load;
+        let stale = !self.layout.current(generation);
         let (cache, pinned) = match quality {
             Quality::Thumb => (&mut self.thumbs, &self.pinned_thumbs),
             Quality::Full => (&mut self.full, &self.pinned_full),
         };
         match protocol {
+            // Encoded for a layout that has since gone: drop it rather than cache something no
+            // lookup will accept, and let it be asked for again at the size now wanted.
+            Some(_) if stale => cache.give_up(cover_id),
             Some(protocol) => cache.insert(cover_id, Encoded { protocol, size }, pinned),
             // Leave it uncached and retryable: a thumbnail may appear once the scan writes it.
             None => cache.give_up(cover_id),
@@ -182,6 +231,9 @@ impl Covers {
     pub fn clear(&mut self) {
         self.thumbs.clear();
         self.full.clear();
+        // Loads in flight are for the layout that just went: they will give up on their own, and
+        // anything already finished is dropped on arrival.
+        self.layout.bump();
     }
 
     /// Where thumbnails are read from, for the loader.
@@ -193,9 +245,14 @@ impl Covers {
 /// Loads a cover and encodes it for the area it will be drawn in. The expensive half runs on the
 /// blocking pool: a few milliseconds of decoding, resizing and encoding has no business on the
 /// thread drawing frames.
-pub async fn load(picker: Picker, dir: Option<PathBuf>, request: Request) -> Load {
-    let Request { cover_id, quality, size, file } = request;
-    let give_up = Load { cover_id, quality, size, protocol: None };
+pub async fn load(picker: Picker, dir: Option<PathBuf>, layout: Layout, request: Request) -> Load {
+    let Request { cover_id, quality, size, file, generation } = request;
+    let give_up = Load { cover_id, quality, size, generation, protocol: None };
+    // Checked before the expensive parts, and again before the encode: a resize while this was
+    // queued means nothing it produces will be wanted.
+    if !layout.current(generation) {
+        return give_up;
+    }
     let image = match quality {
         Quality::Thumb => {
             let Some(dir) = dir else { return give_up };
@@ -217,13 +274,16 @@ pub async fn load(picker: Picker, dir: Option<PathBuf>, request: Request) -> Loa
             }
         }
     };
+    if !layout.current(generation) {
+        return give_up;
+    }
     let protocol = smol::unblock(move || {
         // The encoded form only: the pixels above are dropped here, rather than held for as long as
         // the cover is cached.
         picker.new_protocol(image::DynamicImage::ImageRgba8(image), size, resize()).ok()
     })
     .await;
-    Load { cover_id, quality, size, protocol }
+    Load { cover_id, quality, size, generation, protocol }
 }
 
 /// Asks the terminal what it can draw images with. Must run after the alternate screen is up but
@@ -322,7 +382,7 @@ mod test {
         let (small, large) = (Size::new(20, 10), Size::new(40, 20));
         let mut covers = covers();
         let protocol = encoded(&covers.picker, small);
-        covers.absorb(Load { cover_id: 7, quality: Quality::Thumb, size: small, protocol: Some(protocol) });
+        covers.absorb(Load { cover_id: 7, quality: Quality::Thumb, size: small, generation: 0, protocol: Some(protocol) });
 
         assert!(covers.best(7, small).is_some(), "held at the size it was encoded for");
         assert!(covers.best(7, large).is_none(), "not at any other");
@@ -335,7 +395,7 @@ mod test {
         let (small, large) = (Size::new(20, 10), Size::new(40, 20));
         let mut covers = covers();
         let protocol = encoded(&covers.picker, small);
-        covers.absorb(Load { cover_id: 7, quality: Quality::Thumb, size: small, protocol: Some(protocol) });
+        covers.absorb(Load { cover_id: 7, quality: Quality::Thumb, size: small, generation: 0, protocol: Some(protocol) });
         assert!(covers.take_wanted().is_empty());
 
         covers.want(7, Quality::Thumb, small);
@@ -356,7 +416,7 @@ mod test {
         let mut covers = covers();
         for id in 0..3 {
             let protocol = encoded(&covers.picker, size);
-            covers.absorb(Load { cover_id: id, quality: Quality::Thumb, size, protocol: Some(protocol) });
+            covers.absorb(Load { cover_id: id, quality: Quality::Thumb, size, generation: 0, protocol: Some(protocol) });
         }
         assert!(covers.best(1, size).is_some());
 
@@ -378,7 +438,7 @@ mod test {
         covers.want(7, Quality::Thumb, size);
         assert!(covers.take_wanted().is_empty(), "not asked twice while in flight");
 
-        covers.absorb(Load { cover_id: 7, quality: Quality::Thumb, size, protocol: None });
+        covers.absorb(Load { cover_id: 7, quality: Quality::Thumb, size, generation: 0, protocol: None });
         covers.want(7, Quality::Thumb, size);
         assert_eq!(covers.take_wanted().len(), 1, "asked again once the load failed");
     }

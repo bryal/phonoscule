@@ -124,9 +124,11 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
 }
 
 /// Draws the cover for `cover_id` in `area`, asking for it -- and for `also`, the ones worth having
-/// ready -- at the size this pane draws them in. `quality` is what this pane wants; the other is
-/// drawn if it happens to be held, since a thumbnail upscaled beats a blank while a large cover
-/// decodes.
+/// ready -- at the size this pane draws them in.
+///
+/// Each pane asks for one quality at one size, which is what keeps a cache to a single live size: the
+/// browser's preview wants thumbnails, the player wants the artwork decoded, and neither asks for the
+/// other's at its own size.
 ///
 /// Until a cover arrives, and for an album that has no artwork at all, the area is filled with the
 /// album's accent colour, which the index knows long before any pixels are read. So a cover never
@@ -143,12 +145,6 @@ fn draw_cover(
     let size = Size::new(area.width, area.height);
     if let Some(id) = cover_id {
         model.covers.want(id, quality, size);
-        // A large cover has to be decoded from the original artwork, which takes far longer than
-        // reading a thumbnail: ask for the thumbnail at this size as well, so something sharper than
-        // a flat colour is there in the meantime.
-        if quality == covers::Quality::Full {
-            model.covers.want(id, covers::Quality::Thumb, size);
-        }
         for &other in also {
             model.covers.want(other, quality, size);
         }
@@ -425,6 +421,7 @@ fn total_time(model: &Model) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::covers::Quality;
     use crate::model::{Model, browser};
     use crate::update::{Edge, Msg, update};
     use ratatui::Terminal;
@@ -463,6 +460,49 @@ mod test {
         let (row, top_after) = drawn(&mut terminal, &mut model);
         assert_eq!(row, bottom_row - 1, "the highlight should move up one row");
         assert_eq!(top_after, top_before, "the view should not have scrolled");
+    }
+
+    /// Each pane asks for one quality only, which is what keeps each cache to a single live size. A
+    /// pane that asked the other's cache at its own size would hold two sizes there, and an album both
+    /// browsed and playing would have its cover re-encoded on every switch between the views.
+    #[test]
+    fn each_pane_asks_for_one_quality() {
+        let mut model = browser(5);
+        for album in &mut model.albums {
+            album.cover_id = Some(album.id + 100);
+        }
+        // Artwork is only asked for where its file is known, so let the player have somewhere to
+        // decode from.
+        for id in 100..105 {
+            model.covers.learn_file(id, std::sync::Arc::new("/cover.jpg".into()));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+        terminal.draw(|frame| view(frame, &mut model)).unwrap();
+        let browsing = model.covers.take_wanted();
+        assert!(!browsing.is_empty(), "the browser asks for the covers it shows");
+        assert!(browsing.iter().all(|r| r.quality == Quality::Thumb), "the browser asks for thumbnails only");
+
+        // Let those loads finish. A load still in flight would hide a second request for the same
+        // cover, which is exactly the case this test is here to catch.
+        for request in browsing {
+            let pixels = image::RgbaImage::from_pixel(8, 8, image::Rgba([9, 9, 9, 255]));
+            let image = image::DynamicImage::ImageRgba8(pixels);
+            let protocol = model.covers.picker.new_protocol(image, request.size, covers::resize()).unwrap();
+            model.covers.absorb(covers::Load {
+                cover_id: request.cover_id,
+                quality: request.quality,
+                size: request.size,
+                generation: 0,
+                protocol: Some(protocol),
+            });
+        }
+
+        send(&mut model, Msg::PlaySelected);
+        terminal.draw(|frame| view(frame, &mut model)).unwrap();
+        let playing = model.covers.take_wanted();
+        assert!(!playing.is_empty(), "the player asks for the cover it shows");
+        assert!(playing.iter().all(|r| r.quality == Quality::Full), "the player asks for artwork only");
     }
 
     /// Walking back to the top scrolls the view with the selection, once it has nowhere else to go.

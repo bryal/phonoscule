@@ -238,6 +238,8 @@ mod testing {
             })
             .collect();
         let engine = player::start(player::Client { name: "phonoscule-tui-test".into(), description: String::new() });
-        Model::new(conf, Covers::new(Picker::halfblocks(), None), engine, albums)
+        // A thumbnail directory that need not exist: the tests ask what covers are wanted, and never
+        // run the loads that would read it.
+        Model::new(conf, Covers::new(Picker::halfblocks(), Some("/covers".into())), engine, albums)
     }
 }

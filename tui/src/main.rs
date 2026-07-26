@@ -164,10 +164,11 @@ async fn event_loop(
 /// message, so the few milliseconds of resizing and encoding never hold up a keypress.
 fn load_covers(model: &mut Model, tx: &channel::Sender<Msg>) {
     let dir = model.covers.dir();
+    let layout = model.covers.layout();
     for request in model.covers.take_wanted() {
-        let (picker, dir, tx) = (model.covers.picker.clone(), dir.clone(), tx.clone());
+        let (picker, dir, layout, tx) = (model.covers.picker.clone(), dir.clone(), layout.clone(), tx.clone());
         smol::spawn(async move {
-            let load = covers::load(picker, dir, request).await;
+            let load = covers::load(picker, dir, layout, request).await;
             let _ = tx.send(Msg::Cover(load)).await;
         })
         .detach();
