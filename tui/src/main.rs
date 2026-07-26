@@ -4,6 +4,7 @@
 //! with the playing album's cover art shown through whatever image protocol the terminal speaks.
 //! Follows the model/update/view architecture; this file boots it and runs the event loop.
 
+mod covers;
 mod keys;
 mod logger;
 mod model;
@@ -76,11 +77,18 @@ fn run() -> anyhow::Result<()> {
     let logs = logger::start();
     let conf = smol::block_on(config::load(APP, arg_conf_path))?;
     let index = smol::block_on(library::load_index(paths::album_index_file()));
-    let model = Model::new(conf, index);
 
     // Installs a panic hook that restores the terminal first, so a panic leaves a usable shell
     // rather than a raw-mode one with the alternate screen still up.
     let mut terminal = ratatui::init();
+    // Between entering the alternate screen and reading any terminal event, which is where the
+    // protocol query has to happen (it writes to stdout and reads the reply from stdin).
+    let model = Model::new(conf, covers::picker(), index);
+    // The query's bytes went out behind ratatui's back, and a terminal that did not understand them
+    // will have printed them; wipe the screen before the first frame. Through the backend, whose
+    // clear is a plain escape sequence -- `Terminal::clear` snapshots the cursor position first, and
+    // reading that back needs a reply the terminal may never send.
+    ratatui::backend::Backend::clear(terminal.backend_mut())?;
     let result = smol::block_on(event_loop(&mut terminal, model, logs));
     ratatui::restore();
     result

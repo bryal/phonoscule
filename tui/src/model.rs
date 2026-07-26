@@ -1,9 +1,11 @@
 //! The application state.
 
+use crate::covers::Cover;
 use crate::logger;
 use phonoscule::config::Conf;
 use phonoscule::library::Album;
 use phonoscule::sort::SortOrder;
+use ratatui_image::picker::Picker;
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,11 @@ const LOG_CAPACITY: usize = 500;
 
 pub struct Model {
     pub conf: Conf,
+    /// What the terminal can draw images with (see the covers module).
+    pub picker: Picker,
+    /// The cover on screen, the only one held: the browser's selection, or the playing album once
+    /// there is one.
+    pub cover: Option<Cover>,
     pub scan: ScanState,
     /// Every album, ordered by artist then title -- the order scan events upsert into, not the
     /// order the browser shows. See [`shown`](Self::shown).
@@ -70,9 +77,11 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(conf: Conf, albums: Vec<Album>) -> Self {
+    pub fn new(conf: Conf, picker: Picker, albums: Vec<Album>) -> Self {
         let mut model = Model {
             conf,
+            picker,
+            cover: None,
             scan: ScanState::Scanning,
             albums,
             index_dirty: false,

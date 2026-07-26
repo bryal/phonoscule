@@ -1,7 +1,7 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{Model, ScanState, View, refresh};
-use crate::{keys, logger, paths};
+use crate::{covers, keys, logger, paths};
 use phonoscule::library::{self, Album};
 
 /// Everything the event loop reacts to, whatever source it came from.
@@ -60,6 +60,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
         Msg::Select(delta) => {
             let last = model.shown.len().saturating_sub(1);
             model.selected = model.selected.saturating_add_signed(delta).min(last);
+            sync_cover(model);
             After::Redraw
         }
         Msg::SelectEdge(edge) => {
@@ -67,6 +68,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 Edge::First => 0,
                 Edge::Last => model.shown.len().saturating_sub(1),
             };
+            sync_cover(model);
             After::Redraw
         }
         Msg::Library(library::ScanEvent::Album(album)) => absorb_album(model, *album),
@@ -80,7 +82,12 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 album.accent = Some(art.accent);
                 applied = true;
             }
-            if applied { After::Redraw } else { After::Idle }
+            if applied {
+                sync_cover(model);
+                After::Redraw
+            } else {
+                After::Idle
+            }
         }
         Msg::Library(library::ScanEvent::Done { album_ids }) => {
             let ids: std::collections::HashSet<u64> = album_ids.into_iter().collect();
@@ -89,6 +96,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             model.index_dirty |= model.albums.len() != before;
             model.scan = ScanState::Complete;
             refresh(model);
+            sync_cover(model);
             if std::mem::take(&mut model.index_dirty) { After::SaveIndex } else { After::Redraw }
         }
     }
@@ -125,7 +133,21 @@ fn absorb_album(model: &mut Model, mut album: Album) -> After {
     let ix = model.albums.partition_point(|a| key(a) <= key(&album));
     model.albums.insert(ix, album);
     refresh(model);
+    sync_cover(model);
     After::Redraw
+}
+
+/// Points the one held cover at the selected album, building it if that album's art has arrived and
+/// dropping it if the selection has none. Cheap and idempotent, so callers fire it after anything
+/// that could have moved the selection or delivered art.
+fn sync_cover(model: &mut Model) {
+    let art = model.selected_album().and_then(|album| album.cover.as_ref().map(|art| (album.id, art.clone())));
+    match art {
+        // Already the right one: leave it be, or its resize and encode would be thrown away.
+        Some((id, _)) if model.cover.as_ref().is_some_and(|cover| cover.album == id) => (),
+        Some((id, art)) => model.cover = covers::build(&model.picker, id, &art),
+        None => model.cover = None,
+    }
 }
 
 /// Options for the boot scan.

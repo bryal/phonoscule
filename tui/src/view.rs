@@ -1,12 +1,14 @@
 //! Drawing the frame: a header, the body of whichever view is up, and a status line.
 
+use crate::covers;
 use crate::model::{Model, ScanState, View};
 use phonoscule::library::Album;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListState, Paragraph};
+use ratatui::widgets::{Block, List, ListState, Paragraph};
+use ratatui_image::StatefulImage;
 
 /// The frame: one header row, the body, one status row. No borders anywhere -- the terminal's own
 /// edges are frame enough, and every row spent on decoration is a row not spent on albums.
@@ -39,7 +41,17 @@ fn header_line(frame: &mut Frame, model: &Model, area: Rect) {
     frame.render_widget(Paragraph::new(right).fg(Color::DarkGray), info);
 }
 
-/// The album browser: one row per album, `(year) artist - title`.
+/// The width below which the browser drops the preview pane and gives the whole body to the list --
+/// a narrow terminal is better off reading titles than squinting at a thumbnail.
+const PREVIEW_MIN_BODY: u16 = 64;
+
+/// How wide the preview pane gets: a third of the body, so a wide terminal shows a bigger cover,
+/// bounded so it neither shrinks below a legible track list nor crowds out the album titles.
+fn preview_width(body: u16) -> u16 {
+    (body / 3).clamp(30, 48)
+}
+
+/// The album browser: the list on the left, the selected album's cover and details on the right.
 fn library(frame: &mut Frame, model: &mut Model, area: Rect) {
     if model.shown.is_empty() {
         let message = match model.scan {
@@ -49,11 +61,68 @@ fn library(frame: &mut Frame, model: &mut Model, area: Rect) {
         frame.render_widget(Paragraph::new(message).centered().fg(Color::DarkGray), area);
         return;
     }
+    let (list_area, preview_area) = match area.width >= PREVIEW_MIN_BODY {
+        true => {
+            let [list, preview] =
+                Layout::horizontal([Constraint::Min(0), Constraint::Length(preview_width(area.width))]).areas(area);
+            (list, Some(preview))
+        }
+        false => (area, None),
+    };
+
     let rows: Vec<Line> = model.shown.iter().map(|&ix| album_row(&model.albums[ix])).collect();
     let list = List::new(rows).highlight_style(Style::default().add_modifier(Modifier::REVERSED)).highlight_symbol("");
     // The list widget owns the scroll offset, so it keeps the selection in view for us.
     let mut state = ListState::default().with_selected(Some(model.selected));
-    frame.render_stateful_widget(list, area, &mut state);
+    frame.render_stateful_widget(list, list_area, &mut state);
+
+    if let Some(preview_area) = preview_area {
+        preview(frame, model, preview_area);
+    }
+}
+
+/// The selected album: its cover, then its byline, then its tracks. Indented one column off the
+/// list, with no divider -- the cover is edge enough.
+fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
+    let [_, area] = Layout::horizontal([Constraint::Length(2), Constraint::Min(0)]).areas(area);
+    let Some(album) = model.selected_album() else { return };
+
+    // The cover is drawn square in pixels, so its height follows from the width and the cell aspect.
+    let cover_height = covers::square(&model.picker, area.width).height.min(area.height / 2);
+    let [cover_area, rest] = Layout::vertical([Constraint::Length(cover_height), Constraint::Min(0)]).areas(area);
+
+    let accent = album.accent.map(|c| Color::Rgb(channel(c.r), channel(c.g), channel(c.b)));
+    let mut lines =
+        vec![Line::from(Span::raw(album.title.clone()).bold()), Line::from(Span::raw(album.artist.clone()).fg(Color::Cyan))];
+    let year = album.year.map(|year| year.to_string());
+    let genre = Some(album.genre.clone()).filter(|genre| !genre.is_empty());
+    let byline: Vec<String> = [year, genre].into_iter().flatten().collect();
+    if !byline.is_empty() {
+        lines.push(Line::from(Span::raw(byline.join(" - ")).fg(Color::DarkGray)));
+    }
+    lines.push(Line::default());
+    for (n, track) in album.tracks.iter().enumerate() {
+        lines.push(Line::from(vec![Span::raw(format!("{:02} ", n + 1)).fg(Color::DarkGray), Span::raw(track.title.clone())]));
+    }
+
+    match &mut model.cover {
+        Some(cover) => {
+            frame.render_stateful_widget(StatefulImage::default(), cover_area, &mut cover.protocol);
+        }
+        // No artwork loaded (still scanning, or the album has none): a block of the album's accent
+        // colour, which the index knows before any pixels are read. The same zeroth level of detail
+        // the GUI's grid shows.
+        None => {
+            let fill = accent.unwrap_or(Color::DarkGray);
+            frame.render_widget(Block::default().style(Style::default().bg(fill)), cover_area);
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), rest);
+}
+
+/// An accent colour component as a terminal one.
+fn channel(c: f32) -> u8 {
+    (c.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 fn album_row(album: &Album) -> Line<'_> {
