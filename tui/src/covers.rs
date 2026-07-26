@@ -8,7 +8,7 @@ use image::imageops::FilterType;
 use phonoscule::library::{self, CoverArt};
 use ratatui::layout::Size;
 use ratatui_image::Resize;
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 
 /// The cover currently held for display, and which album it belongs to.
@@ -17,11 +17,27 @@ pub struct Cover {
     pub protocol: StatefulProtocol,
 }
 
-/// Asks the terminal what it can do. Must run after the alternate screen is up but before terminal
-/// events are read, since it writes a query to stdout and reads the reply from stdin.
+/// Asks the terminal what it can draw images with. Must run after the alternate screen is up but
+/// before terminal events are read, since it writes a query to stdout and reads the reply from stdin.
 ///
-/// A terminal that answers nothing gets half blocks, which need no protocol at all.
-pub fn picker() -> Picker {
+/// The query costs more than it looks: it reads stdin on a thread of its own, which outlives this
+/// call and keeps reading until the terminal sends a device status report. Keys pressed before that
+/// arrives are eaten by it rather than delivered to us, so a terminal that answers slowly (or not at
+/// all) leaves the player unable to type for as long as two seconds after it starts.
+///
+/// `forced` names a protocol to use instead, skipping the query and its cost entirely.
+pub fn picker(forced: Option<&str>) -> Picker {
+    if let Some(name) = forced {
+        let mut picker = Picker::halfblocks();
+        match protocol_named(name) {
+            Some(protocol) => {
+                picker.set_protocol_type(protocol);
+                log::info!("image protocol {protocol:?}, from the config");
+            }
+            None => log::warn!("unknown image protocol {name:?}, using half blocks"),
+        }
+        return picker;
+    }
     match Picker::from_query_stdio() {
         Ok(picker) => {
             log::info!("terminal image protocol: {:?}", picker.protocol_type());
@@ -31,6 +47,19 @@ pub fn picker() -> Picker {
             log::warn!("could not query the terminal for an image protocol, using half blocks: {e}");
             Picker::halfblocks()
         }
+    }
+}
+
+/// The protocols nameable in the config.
+pub const PROTOCOL_NAMES: &str = "kitty, sixel, iterm2, halfblocks";
+
+fn protocol_named(name: &str) -> Option<ProtocolType> {
+    match name {
+        "kitty" => Some(ProtocolType::Kitty),
+        "sixel" => Some(ProtocolType::Sixel),
+        "iterm2" => Some(ProtocolType::Iterm2),
+        "halfblocks" => Some(ProtocolType::Halfblocks),
+        _ => None,
     }
 }
 

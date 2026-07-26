@@ -39,8 +39,22 @@ Options:
 
 ";
 
+/// This player's own config settings, listed after the shared ones.
+fn config_help_tui() -> String {
+    format!(
+        "
+  [app.tui]
+    image-protocol
+               Draw cover art with this terminal image protocol instead of
+               asking the terminal which it speaks: one of {}.
+               Optional; `halfblocks` works anywhere and needs no protocol.
+",
+        covers::PROTOCOL_NAMES,
+    )
+}
+
 fn help() -> String {
-    format!("{HELP}{}", config::config_help(APP))
+    format!("{HELP}{}{}", config::config_help(APP), config_help_tui())
 }
 
 fn main() {
@@ -77,6 +91,7 @@ fn run() -> anyhow::Result<()> {
     // Before the terminal is taken over, so failures here print normally.
     let logs = logger::start();
     let conf = smol::block_on(config::load(APP, arg_conf_path))?;
+    let forced_protocol = conf.app_str("image-protocol")?.map(str::to_owned);
     let index = smol::block_on(library::load_index(paths::album_index_file()));
 
     // Installs a panic hook that restores the terminal first, so a panic leaves a usable shell
@@ -84,7 +99,7 @@ fn run() -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     // Between entering the alternate screen and reading any terminal event, which is where the
     // protocol query has to happen (it writes to stdout and reads the reply from stdin).
-    let model = Model::new(conf, covers::picker(), index);
+    let model = Model::new(conf, covers::picker(forced_protocol.as_deref()), index);
     // The query's bytes went out behind ratatui's back, and a terminal that did not understand them
     // will have printed them; wipe the screen before the first frame. Through the backend, whose
     // clear is a plain escape sequence -- `Terminal::clear` snapshots the cursor position first, and
@@ -103,8 +118,8 @@ async fn event_loop(
     // Every source fans into one channel, so the loop has a single thing to await and messages stay
     // in the order they arrived.
     let (tx, rx) = channel::unbounded::<Msg>();
+    read_terminal_events(tx.clone());
     let sources = [
-        forward(terminal_events(), tx.clone()),
         forward(logs.map(Msg::Log), tx.clone()),
         forward(library::scan(update::scan_options(&model)).map(Msg::Library), tx.clone()),
     ];
@@ -152,20 +167,33 @@ fn apply(model: &mut Model, msg: Msg) -> bool {
     }
 }
 
-/// Key presses and resizes, as messages. Anything else the terminal reports (mouse, focus, pastes)
-/// is not bound to anything yet.
-fn terminal_events() -> impl futures::Stream<Item = Msg> + Send {
-    crossterm::event::EventStream::new().filter_map(|event| async {
-        match event {
-            Ok(crossterm::event::Event::Key(key)) => Some(Msg::Key(key)),
-            Ok(crossterm::event::Event::Resize(..)) => Some(Msg::Resize),
-            Ok(_) => None,
-            Err(e) => {
-                log::warn!("terminal event error: {e}");
-                None
+/// Reads key presses and resizes into the message channel, on a thread of its own.
+///
+/// Its own thread, and blocking reads, because nothing may come between a key press and the loop
+/// that answers it. Sharing an executor with the library scan is what made the player unable to
+/// type while it ran: the scan is a task that is almost always ready, so an event source beside it
+/// waits its turn. Anything else the terminal reports (mouse, focus, pastes) is bound to nothing yet.
+fn read_terminal_events(tx: channel::Sender<Msg>) {
+    let spawned = std::thread::Builder::new().name("phonoscule-input".into()).spawn(move || {
+        loop {
+            let msg = match crossterm::event::read() {
+                Ok(crossterm::event::Event::Key(key)) => Msg::Key(key),
+                Ok(crossterm::event::Event::Resize(..)) => Msg::Resize,
+                Ok(_) => continue,
+                Err(e) => {
+                    log::warn!("cannot read terminal events: {e}");
+                    return;
+                }
+            };
+            // Fails once the loop is gone, which is how this thread learns to stop.
+            if tx.send_blocking(msg).is_err() {
+                return;
             }
         }
-    })
+    });
+    if let Err(e) = spawned {
+        log::error!("cannot start the input thread, the keyboard will not work: {e}");
+    }
 }
 
 /// Pumps a stream into the message channel for as long as the returned task is held. Dropping it
