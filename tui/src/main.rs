@@ -134,6 +134,7 @@ async fn event_loop(
         forward(logs.map(Msg::Log), tx.clone()),
         forward(model.engine.events.clone().map(Msg::Player), tx.clone()),
         forward(media.events.clone().map(Msg::Media), tx.clone()),
+        forward(model.mixer.events.clone().map(Msg::VolumeChanged), tx.clone()),
         forward(library::scan(update::scan_options(&model)).map(Msg::Library), tx.clone()),
         // The music directory noticed changing, and a slow poll behind it in case it never is.
         forward(watcher::debounce(changes, quiet).map(|()| Msg::Rescan), tx.clone()),

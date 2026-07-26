@@ -112,13 +112,19 @@ fn header_line(frame: &mut Frame, model: &Model, area: Rect) {
         let label = Span::raw(view.label());
         spans.push(if view == model.view { label.bold().fg(Color::White) } else { label.fg(Color::DarkGray) });
     }
+    // The volume belongs to the application rather than to either view, so it shows in both -- and
+    // only once the mixer has said what it is.
+    let volume = match model.volume {
+        Some(volume) => format!("vol {}%   ", (volume * 100.0).round() as u32),
+        None => String::new(),
+    };
     let right = match model.view {
-        View::Library if model.filter.is_empty() => format!("{} ", plural(model.shown.len(), "album")),
-        View::Library => format!("{} of {} albums ", model.shown.len(), model.albums.len()),
+        View::Library if model.filter.is_empty() => format!("{volume}{} ", plural(model.shown.len(), "album")),
+        View::Library => format!("{volume}{} of {} albums ", model.shown.len(), model.albums.len()),
         // Albums, not tracks: the status line's "track N of M" already counts those.
         View::Player => match album_runs(model) {
-            0 => String::new(),
-            runs => format!("{} queued ", plural(runs, "album")),
+            0 => volume,
+            runs => format!("{volume}{} queued ", plural(runs, "album")),
         },
     };
     let [tabs, info] = Layout::horizontal([Constraint::Min(0), Constraint::Length(right.len() as u16)]).areas(area);

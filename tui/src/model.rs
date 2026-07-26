@@ -8,6 +8,7 @@ use phonoscule::player;
 use phonoscule::search;
 use phonoscule::session;
 use phonoscule::sort::{Dir, SortField, SortOrder};
+use phonoscule::volume;
 use ratatui::widgets::ListState;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
@@ -167,6 +168,9 @@ pub struct Model {
     pub list: ListState,
     pub view: View,
     pub engine: player::Engine,
+    /// Handle to the OS mixer, which owns the application's volume; [`volume`](Self::volume) mirrors
+    /// what it reports.
+    pub mixer: volume::VolumeControl,
     pub queue: Vec<QueueItem>,
     /// Which queue item is playing, an index into `queue`.
     pub current: usize,
@@ -180,6 +184,13 @@ pub struct Model {
     /// reports still in flight from before the seek are ignored until it arrives -- otherwise they
     /// yank the bar back and it rubberbands.
     pub pending_seek: Option<Duration>,
+    /// The application's volume as the OS mixer last reported it, 1.0 being 100%. `None` until the
+    /// first reading, which also means there is nothing to show -- no mixer, or none yet.
+    pub volume: Option<f32>,
+    /// The volume last asked of the mixer, held until a reading reaches it. The volume bar's
+    /// [`pending_seek`](Self::pending_seek): a burst of steps moves the bar at once, and the mixer's
+    /// echoes of earlier values must not drag it back.
+    pub pending_volume: Option<f32>,
     /// Whether the queue's titles and album ids need matching against the library again, because the
     /// library changed under it. Done once per burst of messages rather than per album reported: a
     /// scan reports hundreds, and re-matching a whole queue for each is the same quadratic cost.
@@ -207,6 +218,7 @@ impl Model {
     ) -> Self {
         let mut model = Model {
             engine,
+            mixer: volume::start(),
             queue: vec![],
             current: 0,
             play_state: player::PlayState::Paused,
@@ -214,6 +226,8 @@ impl Model {
             pos: Duration::ZERO,
             len: None,
             pending_seek: None,
+            volume: None,
+            pending_volume: None,
             queue_stale: false,
             dirty_playlist: false,
             dirty_player: false,

@@ -12,6 +12,9 @@ use phonoscule::queue::{Grouping, Scope};
 /// How far a single seek key press moves, in seconds.
 const SEEK_STEP: i64 = 5;
 
+/// How much a single volume key press moves, of the whole range.
+const VOLUME_STEP: f32 = 0.05;
+
 /// The message a key press means, given what has focus and which view is up. `None` if it is bound
 /// to nothing.
 pub fn key_to_msg(view: View, focus: &Focus, key: KeyEvent) -> Option<Msg> {
@@ -89,6 +92,8 @@ pub fn key_to_msg(view: View, focus: &Focus, key: KeyEvent) -> Option<Msg> {
         View::Player => match key.code {
             KeyCode::Left => Some(Msg::Seek(-SEEK_STEP)),
             KeyCode::Right => Some(Msg::Seek(SEEK_STEP)),
+            KeyCode::Up => Some(Msg::BumpVolume(VOLUME_STEP)),
+            KeyCode::Down => Some(Msg::BumpVolume(-VOLUME_STEP)),
             KeyCode::Home => Some(Msg::Prev),
             KeyCode::End => Some(Msg::Next),
             _ => None,

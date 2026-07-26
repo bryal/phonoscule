@@ -26,6 +26,10 @@ pub enum Msg {
     /// Move it to the first or last album.
     SelectEdge(Edge),
     Player(player::Event),
+    /// The OS mixer reported the application's volume.
+    VolumeChanged(f32),
+    /// Step the volume by this much, 1.0 being the whole range.
+    BumpVolume(f32),
     /// A control request from the OS: a media key, `playerctl`, a desktop widget.
     Media(mpris::Control),
     /// Time to look over the music directory again.
@@ -271,6 +275,32 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             model.dirty_playlist = true;
             model.dirty_player = true;
             After::Redraw
+        }
+        Msg::BumpVolume(delta) => match model.volume {
+            // Nothing to step from until the mixer has said where it is.
+            None => After::Idle,
+            Some(volume) => {
+                let wanted = (volume + delta).clamp(0.0, 1.0);
+                // Moved at once and remembered, so a burst of steps accumulates from here rather than
+                // from the reading that is still catching up.
+                model.volume = Some(wanted);
+                model.pending_volume = Some(wanted);
+                model.mixer.set(wanted);
+                After::Redraw
+            }
+        },
+        Msg::VolumeChanged(volume) => {
+            // While a set of ours is in flight, ignore readings until the mixer reaches (about) what
+            // was asked: earlier ones still on their way would drag the bar back. The tolerance is
+            // generous against the mixer's own rounding and narrow against a real step.
+            match model.pending_volume {
+                Some(wanted) if (volume - wanted).abs() > 0.005 => After::Idle,
+                _ => {
+                    model.pending_volume = None;
+                    model.volume = Some(volume);
+                    After::Redraw
+                }
+            }
         }
         Msg::Media(control) => match control {
             mpris::Control::Play | mpris::Control::Pause | mpris::Control::Toggle | mpris::Control::Stop => {
@@ -914,5 +944,71 @@ mod test {
         reconcile(&mut model);
         assert!(model.queue.iter().all(|item| item.album_id == known.albums[1].id), "every item found its album");
         assert_eq!(model.queue[0].title, known.albums[1].tracks[0].title, "and its title");
+    }
+
+    /// Volume within a hair of `wanted`. Stepping accumulates floats, so exact equality is the wrong
+    /// question to ask of it.
+    fn assert_volume(model: &Model, wanted: f32) {
+        let got = model.volume.expect("a volume should be known");
+        assert!((got - wanted).abs() < 0.001, "volume {got} should be about {wanted}");
+    }
+
+    /// The volume is not stepped before the mixer has said where it is: there is nothing to step from,
+    /// and guessing at full would jump someone's volume on the first key press.
+    #[test]
+    fn volume_does_nothing_until_the_mixer_reports() {
+        let mut model = browser(2);
+        assert_eq!(model.volume, None);
+        send(&mut model, Msg::BumpVolume(0.05));
+        assert_eq!(model.volume, None, "still nothing to show");
+
+        send(&mut model, Msg::VolumeChanged(0.4));
+        assert_volume(&model, 0.4);
+        send(&mut model, Msg::BumpVolume(0.05));
+        assert_volume(&model, 0.45);
+    }
+
+    /// Volume steps accumulate, and the mixer's echoes of earlier values do not drag the bar back --
+    /// the same fault the seek bar had.
+    #[test]
+    fn stale_volume_readings_do_not_drag_the_bar_back() {
+        let mut model = browser(2);
+        send(&mut model, Msg::VolumeChanged(0.5));
+
+        for _ in 0..4 {
+            send(&mut model, Msg::BumpVolume(0.05));
+        }
+        assert_volume(&model, 0.7);
+
+        for stale in [0.5, 0.55, 0.6] {
+            send(&mut model, Msg::VolumeChanged(stale));
+            assert_volume(&model, 0.7);
+        }
+
+        // Once the mixer arrives at what was asked, its readings drive the bar again -- which is how
+        // a change made in some other mixer still shows up here.
+        send(&mut model, Msg::VolumeChanged(0.7));
+        send(&mut model, Msg::VolumeChanged(0.72));
+        assert_volume(&model, 0.72);
+    }
+
+    /// Stepping past either end stops there rather than wrapping or asking the mixer for nonsense.
+    #[test]
+    fn volume_clamps_at_both_ends() {
+        let mut model = browser(2);
+        send(&mut model, Msg::VolumeChanged(0.95));
+        for _ in 0..4 {
+            send(&mut model, Msg::BumpVolume(0.05));
+        }
+        assert_volume(&model, 1.0);
+
+        // Settle the set before pretending the mixer went elsewhere, or the reading is ignored as the
+        // stale echo it would otherwise look like.
+        send(&mut model, Msg::VolumeChanged(1.0));
+        send(&mut model, Msg::VolumeChanged(0.05));
+        for _ in 0..4 {
+            send(&mut model, Msg::BumpVolume(-0.05));
+        }
+        assert_volume(&model, 0.0);
     }
 }
