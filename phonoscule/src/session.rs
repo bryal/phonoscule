@@ -1,18 +1,20 @@
-//! Persistence of the player's session across runs, split over two files in the XDG state
-//! directory: `playlist.json` is the queue itself -- essentially just the list of tracks -- while
-//! `player.json` holds the session state around it (current index, repeat mode, and the library's
-//! sort order). The split keeps the playlist a plain track list, one step away from a future M3U
-//! export/import, while the volatile session state churns in its own small file.
+//! Persistence of a player's session across runs, split over two files in the XDG state directory:
+//! `playlist.json` is the queue itself -- essentially just the list of tracks -- while `player.json`
+//! holds the state around it (current index, repeat mode, and the library's sort order). The split
+//! keeps the playlist a plain track list, one step away from a future M3U export/import, while the
+//! volatile state churns in its own small file.
 //!
-//! Only paths are stored: tags and album grouping rehydrate from the library scan at boot (see the
-//! `ScanEvent::Album` handling in `update`). Both files are saved best-effort on every change and
-//! loaded once at boot; the session restores paused at the start of the current track.
+//! Only paths are stored: tags and album grouping rehydrate from the library scan at boot. Both
+//! files are saved best-effort on every change and loaded once at boot; the session restores paused
+//! at the start of the current track.
 //!
 //! State directory, not cache: unlike the tag or cover caches, a queue can't be regenerated, so it
 //! must survive a cache wipe.
+//!
+//! Wants std and a filesystem.
 
-use phonoscule::player::Repeat;
-use phonoscule::sort::SortOrder;
+use crate::player::Repeat;
+use crate::sort::SortOrder;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -164,7 +166,7 @@ mod test {
             smol::fs::write(&a, b"x").await.unwrap();
             smol::fs::write(&b, b"x").await.unwrap();
 
-            let sort = phonoscule::sort::SortOrder { field: phonoscule::sort::SortField::Year, ..Default::default() };
+            let sort = SortOrder { field: crate::sort::SortField::Year, ..Default::default() };
             save_playlist(playlist.clone(), SavedPlaylist::new(vec![a.clone(), root.join("gone.opus"), b.clone()])).await;
             save_player(player.clone(), SavedPlayer::new(2, Repeat::Album, sort)).await;
             let restored = load(playlist.clone(), player.clone()).await;

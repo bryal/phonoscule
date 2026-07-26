@@ -15,6 +15,8 @@ pub mod library;
 pub mod mpris;
 #[cfg(feature = "player")]
 pub mod player;
+#[cfg(feature = "session")]
+pub mod session;
 #[cfg(feature = "sort")]
 pub mod sort;
 #[cfg(feature = "volume")]

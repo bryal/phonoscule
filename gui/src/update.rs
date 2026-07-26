@@ -10,8 +10,7 @@ use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::mouse::ScrollDelta;
 use phonoscule::library::{self, Album};
 use phonoscule::sort::SortOrder;
-use phonoscule::{mpris, player};
-use phonoscule_gui::playlist;
+use phonoscule::{mpris, player, session};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -783,15 +782,15 @@ fn queue_album(app: &mut App, ix: usize) -> Task<Msg> {
 /// everything that changes the queue, so a crash or an exit at any point loses nothing.
 fn save_playlist(app: &App) -> Task<Msg> {
     let tracks = app.queue.iter().map(|item| item.path.clone()).collect();
-    Task::future(playlist::save_playlist(playlist::playlist_file(), playlist::SavedPlaylist::new(tracks))).discard()
+    Task::future(session::save_playlist(session::playlist_file(), session::SavedPlaylist::new(tracks))).discard()
 }
 
 /// Snapshots the session state around the queue (current track, repeat mode, sort order) to disk;
 /// returned by everything that changes any of them. Split from [`save_playlist`]: these changes
 /// are frequent and needn't rewrite the whole track list.
 fn save_player(app: &App) -> Task<Msg> {
-    let saved = playlist::SavedPlayer::new(app.current, app.repeat, app.sort);
-    Task::future(playlist::save_player(playlist::player_file(), saved)).discard()
+    let saved = session::SavedPlayer::new(app.current, app.repeat, app.sort);
+    Task::future(session::save_player(session::player_file(), saved)).discard()
 }
 
 /// What a shuffle permutes: single tracks, or whole albums (each album's tracks stay together, in

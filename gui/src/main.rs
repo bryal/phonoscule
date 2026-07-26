@@ -10,9 +10,8 @@ mod view;
 
 use model::{App, Modal, View, boot, flow_target, glow_animating};
 use phonoscule::library;
-use phonoscule::watcher;
+use phonoscule::{session, watcher};
 use phonoscule_gui::conf::{self, Conf};
-use phonoscule_gui::playlist;
 use smol::channel;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -87,7 +86,7 @@ fn run() -> anyhow::Result<()> {
     simple_logger::SimpleLogger::new().with_level(log::LevelFilter::Info).env().init().unwrap();
 
     let conf = smol::block_on(Conf::load(conf::locate(arg_conf_path)))?;
-    let restored = smol::block_on(playlist::load(playlist::playlist_file(), playlist::player_file()));
+    let restored = smol::block_on(session::load(session::playlist_file(), session::player_file()));
     let index = smol::block_on(library::load_index(library::default_index_file()));
 
     let app = iced::application(boot(conf, restored, index), update, view)

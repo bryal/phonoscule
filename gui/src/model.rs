@@ -5,9 +5,8 @@ use futures::StreamExt;
 use iced::Task;
 use phonoscule::library::{self, Album};
 use phonoscule::sort::SortOrder;
-use phonoscule::{mpris, player, volume, watcher};
+use phonoscule::{mpris, player, session, volume, watcher};
 use phonoscule_gui::conf::Conf;
-use phonoscule_gui::playlist;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -337,7 +336,7 @@ impl Default for HiResCache {
     }
 }
 
-pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl Fn() -> (App, Task<Msg>) {
+pub fn boot(conf: Conf, restored: session::Restored, index: Vec<Album>) -> impl Fn() -> (App, Task<Msg>) {
     move || {
         let (media, media_worker) = mpris::start("Phonoscule", "phonoscule");
         let mut app = App {

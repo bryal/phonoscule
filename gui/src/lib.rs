@@ -5,4 +5,3 @@ pub mod album_grid;
 pub mod background;
 pub mod conf;
 pub mod coverflow;
-pub mod playlist;

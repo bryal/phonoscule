@@ -17,6 +17,9 @@ default = []
 library = ["dep:smol", "dep:futures", "dep:serde", "dep:serde_json", "dep:image", "dep:embedded-io-adapters", "log/std"]
 # Album ordering (see `sort`).
 sort = ["library", "dep:serde"]
+# Persisting a player's queue and the state around it across runs (see `session`). Wants std and a
+# filesystem.
+session = ["player", "sort", "dep:smol", "dep:serde", "dep:serde_json", "log/std"]
 # The play-queue engine (see `player`). Wants std, a filesystem, and PulseAudio.
 player = ["dep:smol", "dep:pulse-simple", "dep:embedded-io-adapters", "dep:serde", "log/std"]
 # Per-application volume through the OS mixer (see `volume`). Wants std.
