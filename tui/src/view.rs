@@ -143,9 +143,12 @@ fn preview_width(body: u16) -> u16 {
 /// The album browser: the list on the left, the selected album's cover and details on the right.
 fn library(frame: &mut Frame, model: &mut Model, area: Rect) {
     if model.shown.is_empty() {
-        let message = match model.scan {
-            ScanState::Scanning => format!("Scanning {}...", model.conf.music_dir.display()),
-            ScanState::Complete => format!("No albums found under {}", model.conf.music_dir.display()),
+        // An empty library and a filter that matches none of it are different problems, and telling
+        // someone their library is empty while it holds hundreds of albums is no help at all.
+        let message = match (model.albums.is_empty(), model.scan) {
+            (true, ScanState::Scanning) => format!("Scanning {}...", model.conf.music_dir.display()),
+            (true, ScanState::Complete) => format!("No albums found under {}", model.conf.music_dir.display()),
+            (false, _) => "No albums match the filter".to_string(),
         };
         frame.render_widget(Paragraph::new(message).centered().fg(Color::DarkGray), area);
         return;
@@ -187,7 +190,7 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
     let (cover_id, nearby) = (album.cover_id, nearby_covers(model));
     let mut lines =
         vec![Line::from(Span::raw(album.title.clone()).bold()), Line::from(Span::raw(album.artist.clone()).fg(Color::Cyan))];
-    let year = album.year.map(|year| year.to_string());
+    let year = album.year.map(|year| format!("{year:04}"));
     let genre = Some(album.genre.clone()).filter(|genre| !genre.is_empty());
     let byline: Vec<String> = [year, genre].into_iter().flatten().collect();
     if !byline.is_empty() {
@@ -251,7 +254,9 @@ fn channel(c: f32) -> u8 {
 
 fn album_row(album: &Album) -> Line<'_> {
     let year = match album.year {
-        Some(year) => format!("({year}) "),
+        // Four digits whatever the year, so a stray `(0)` from an unparseable date tag does not
+        // scallop the left edge of every title beside it.
+        Some(year) => format!("({year:04}) "),
         None => "       ".to_string(),
     };
     Line::from(vec![
@@ -312,7 +317,7 @@ fn now_playing(frame: &mut Frame, model: &mut Model, area: Rect) {
     let mut lines = vec![Line::default(), Line::from(Span::raw(title).bold())];
     if let Some((artist, album, year)) = byline {
         lines.push(Line::from(Span::raw(artist).fg(Color::Cyan)));
-        let year = year.map(|y| format!(" ({y})")).unwrap_or_default();
+        let year = year.map(|y| format!(" ({y:04})")).unwrap_or_default();
         lines.push(Line::from(Span::raw(format!("{album}{year}")).fg(Color::DarkGray)));
     }
     frame.render_widget(Paragraph::new(lines), rest);
@@ -541,6 +546,25 @@ mod test {
         let (row, top_after) = drawn(&mut terminal, &mut model);
         assert_eq!(row, bottom_row - 1, "the highlight should move up one row");
         assert_eq!(top_after, top_before, "the view should not have scrolled");
+    }
+
+    /// A filter that matches nothing says so, rather than claiming the library is empty -- which it
+    /// is not, and which would send someone looking for a problem with their music directory.
+    #[test]
+    fn a_filter_matching_nothing_says_so() {
+        let mut model = browser(5);
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+
+        send(&mut model, Msg::Search(Some('z')));
+        send(&mut model, Msg::Typed('z'));
+        send(&mut model, Msg::Typed('z'));
+        crate::update::reconcile(&mut model);
+        assert!(model.shown.is_empty(), "nothing matches zzz");
+
+        terminal.draw(|frame| view(frame, &mut model)).unwrap();
+        let drawn: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+        assert!(drawn.contains("No albums match the filter"), "{drawn:?}");
+        assert!(!drawn.contains("No albums found"), "the library is not empty");
     }
 
     /// Each pane asks for one quality only, which is what keeps each cache to a single live size. A
