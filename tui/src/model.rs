@@ -5,7 +5,7 @@ use crate::logger;
 use phonoscule::config::Conf;
 use phonoscule::library::Album;
 use phonoscule::player;
-use phonoscule::sort::SortOrder;
+use phonoscule::sort::{Dir, SortField, SortOrder};
 use ratatui::widgets::ListState;
 use ratatui_image::picker::Picker;
 use std::collections::VecDeque;
@@ -58,6 +58,11 @@ pub struct QueueItem {
     pub album_id: u64,
     pub title: String,
 }
+
+/// The order the browser starts in: by artist, then by year within each artist. The framework's own
+/// default sorts by album name, which reads as no order at all in a list whose rows lead with the
+/// year and the artist.
+const INITIAL_SORT: SortOrder = SortOrder { group_by_artist: Some(Dir::Asc), field: SortField::Year, field_dir: Dir::Asc };
 
 /// How many log records are kept for the log view; older ones are dropped.
 const LOG_CAPACITY: usize = 500;
@@ -127,7 +132,7 @@ impl Model {
             index_dirty: false,
             shown: vec![],
             shown_dirty: false,
-            sort: SortOrder::default(),
+            sort: INITIAL_SORT,
             selected: None,
             list: ListState::default(),
             view: View::Library,

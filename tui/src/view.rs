@@ -23,7 +23,7 @@ pub fn view(frame: &mut Frame, model: &mut Model) {
         View::Library => library(frame, model, body),
         View::Player => player(frame, model, body),
     }
-    frame.render_widget(status_line(model), status);
+    status_line(frame, model, status);
 }
 
 /// The view tabs on the left, and on the right whatever the current view wants said about itself.
@@ -36,7 +36,11 @@ fn header_line(frame: &mut Frame, model: &Model, area: Rect) {
     }
     let right = match model.view {
         View::Library => format!("{} albums ", model.shown.len()),
-        View::Player => format!("{} in queue ", model.queue.len()),
+        // Albums, not tracks: the status line's "track N of M" already counts those.
+        View::Player => match album_runs(model) {
+            0 => String::new(),
+            runs => format!("{} queued ", plural(runs, "album")),
+        },
     };
     let [tabs, info] = Layout::horizontal([Constraint::Min(0), Constraint::Length(right.len() as u16)]).areas(area);
     frame.render_widget(Paragraph::new(Line::from(spans)), tabs);
@@ -212,6 +216,19 @@ fn now_playing(frame: &mut Frame, model: &mut Model, area: Rect) {
     frame.render_widget(Paragraph::new(lines), rest);
 }
 
+/// How many runs of tracks from one album the queue holds -- what the player lists as groups.
+fn album_runs(model: &Model) -> usize {
+    let mut runs = 0;
+    let mut last: Option<u64> = None;
+    for item in &model.queue {
+        if last != Some(item.album_id) {
+            runs += 1;
+            last = Some(item.album_id);
+        }
+    }
+    runs
+}
+
 /// Which line of the queue listing the playing track sits on, album bylines and blanks included.
 fn playing_row(model: &Model) -> usize {
     let mut row = 0;
@@ -233,13 +250,8 @@ fn playing_row(model: &Model) -> usize {
 /// the album's accent.
 fn seek_bar(model: &Model, width: u16) -> Paragraph<'static> {
     let elapsed = fmt_time(model.pos);
-    let total = model.len.map(fmt_time).unwrap_or_else(|| "-:--".into());
-    let accent = model
-        .playing()
-        .and_then(|item| model.album_of(item))
-        .and_then(|album| album.accent)
-        .map(|c| Color::Rgb(channel(c.r), channel(c.g), channel(c.b)))
-        .unwrap_or(Color::Cyan);
+    let total = total_time(model);
+    let accent = accent_of(model);
     // The bar takes what the two timestamps and their spacing leave.
     let labels = elapsed.len() + total.len() + 4;
     let bar = usize::from(width).saturating_sub(labels);
@@ -292,50 +304,95 @@ fn fmt_time(t: Duration) -> String {
     }
 }
 
-/// The status line: what is playing, and the scan's progress while it runs. A warning or error the
-/// framework logged takes the line over instead -- there is nowhere else for it to go in a terminal
-/// we have taken over, and a silently failed scan is worse than a cluttered status line.
-fn status_line(model: &Model) -> Paragraph<'static> {
+/// The status line, holding what the view above it does not already show.
+///
+/// In the browser that is what is playing, since the player is not on screen. In the player it is
+/// only the state around the playback the view already spells out: how it is playing, and where in
+/// the queue. A warning or error the framework logged takes the whole line over -- a terminal we
+/// have taken over leaves nowhere else for it, and a failed scan should not pass in silence.
+fn status_line(frame: &mut Frame, model: &Model, area: Rect) {
     if let Some(entry) = model.log.back().filter(|entry| entry.level <= log::Level::Warn) {
         let color = if entry.level == log::Level::Error { Color::Red } else { Color::Yellow };
-        return Paragraph::new(Line::from(format!(" {}", entry.message)).fg(color));
+        frame.render_widget(Paragraph::new(Line::from(format!(" {}", entry.message)).fg(color)), area);
+        return;
     }
-    let Some(item) = model.playing() else {
-        let left = match model.scan {
-            ScanState::Scanning => format!(" Scanning {}...", model.conf.music_dir.display()),
-            ScanState::Complete => String::new(),
-        };
-        return Paragraph::new(Line::from(left).fg(Color::DarkGray));
+    let (left, right) = match model.view {
+        View::Library => (browsing_status(model), selection_status(model)),
+        View::Player => (playing_status(model), queue_status(model)),
     };
-    let state = match model.play_state {
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(right.width() as u16 + 1)]).areas(area);
+    frame.render_widget(Paragraph::new(left), left_area);
+    frame.render_widget(Paragraph::new(right).right_aligned(), right_area);
+}
+
+/// While browsing: the scan's progress, else what is playing out of sight in the player.
+fn browsing_status(model: &Model) -> Line<'static> {
+    if model.scan == ScanState::Scanning {
+        return Line::from(format!(" Scanning {}...", model.conf.music_dir.display())).fg(Color::DarkGray);
+    }
+    let Some(item) = model.playing() else { return Line::default() };
+    let artist = model.album_of(item).map(|album| album.artist.clone()).unwrap_or_default();
+    Line::from(vec![
+        Span::raw(format!(" {} ", state_word(model))).fg(Color::DarkGray),
+        Span::raw(item.title.clone()).fg(accent_of(model)),
+        Span::raw(format!(" - {artist}")).fg(Color::DarkGray),
+        Span::raw(format!("  [{}/{}]", fmt_time(model.pos), total_time(model))).fg(Color::DarkGray),
+    ])
+}
+
+/// While browsing: how many tracks the selected album holds.
+fn selection_status(model: &Model) -> Line<'static> {
+    match model.selected_album() {
+        Some(album) => Line::from(plural(album.tracks.len(), "track")).fg(Color::DarkGray),
+        None => Line::default(),
+    }
+}
+
+/// `1 track`, `2 tracks`.
+fn plural(n: usize, noun: &str) -> String {
+    let s = if n == 1 { "" } else { "s" };
+    format!("{n} {noun}{s}")
+}
+
+/// In the player: how it is playing. The title, album and times are all on screen above.
+fn playing_status(model: &Model) -> Line<'static> {
+    let repeat = match model.repeat {
+        player::Repeat::Off => String::new(),
+        player::Repeat::Track => "   repeat track".to_string(),
+        player::Repeat::Album => "   repeat album".to_string(),
+        player::Repeat::Playlist => "   repeat queue".to_string(),
+    };
+    Line::from(vec![Span::raw(format!(" {}", state_word(model))).fg(accent_of(model)), Span::raw(repeat).fg(Color::DarkGray)])
+}
+
+/// In the player: where in the queue playback has reached.
+fn queue_status(model: &Model) -> Line<'static> {
+    if model.queue.is_empty() {
+        return Line::default();
+    }
+    Line::from(format!("track {} of {}", model.current + 1, model.queue.len())).fg(Color::DarkGray)
+}
+
+fn state_word(model: &Model) -> &'static str {
+    match model.play_state {
         player::PlayState::Playing => "Playing",
         player::PlayState::Paused => "Paused",
-    };
-    let byline = match model.album_of(item) {
-        Some(album) => format!("{} - {}", album.artist, album.title),
-        None => String::new(),
-    };
-    let elapsed = fmt_time(model.pos);
-    let total = model.len.map(fmt_time).unwrap_or_else(|| "-".into());
-    // Tinted with the playing album's accent, the one thing the GUI's glow can be in a terminal.
-    let accent = model
-        .album_of(item)
+    }
+}
+
+/// The playing album's accent colour, for the few things tinted by it.
+fn accent_of(model: &Model) -> Color {
+    model
+        .playing()
+        .and_then(|item| model.album_of(item))
         .and_then(|album| album.accent)
         .map(|c| Color::Rgb(channel(c.r), channel(c.g), channel(c.b)))
-        .unwrap_or(Color::Cyan);
-    let repeat = match model.repeat {
-        player::Repeat::Off => "",
-        player::Repeat::Track => "  rpt:track",
-        player::Repeat::Album => "  rpt:album",
-        player::Repeat::Playlist => "  rpt:queue",
-    };
-    Paragraph::new(Line::from(vec![
-        Span::raw(format!(" {state}: ")).fg(Color::DarkGray),
-        Span::raw(item.title.clone()).fg(accent).bold(),
-        Span::raw(format!("  {byline}")).fg(Color::DarkGray),
-        Span::raw(format!("  [{elapsed}/{total}]")).fg(Color::DarkGray),
-        Span::raw(repeat).fg(Color::DarkGray),
-    ]))
+        .unwrap_or(Color::Cyan)
+}
+
+fn total_time(model: &Model) -> String {
+    model.len.map(fmt_time).unwrap_or_else(|| "-:--".into())
 }
 
 #[cfg(test)]
