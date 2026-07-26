@@ -8,10 +8,10 @@ use crate::model::{
 use iced::Task;
 use iced::keyboard::{Key, Modifiers, key::Named};
 use iced::mouse::ScrollDelta;
-use phonoscule::player;
+use phonoscule::{mpris, player};
 use phonoscule_gui::library::{self, Album};
+use phonoscule_gui::playlist;
 use phonoscule_gui::sort::SortOrder;
-use phonoscule_gui::{media, playlist};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -133,7 +133,7 @@ pub enum Msg {
         track: usize,
     },
     Player(player::Event),
-    Media(media::Control),
+    Media(mpris::Control),
     Toggle,
     /// Step to the next track (End, and the on-screen button). `repeat` marks a held-key
     /// auto-repeat, which the handler rate-limits; a fresh press or button click passes `false`.
@@ -592,27 +592,27 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.pos = app.len.unwrap_or(Duration::ZERO);
                 app.pending_seek = None;
                 // Report Stopped to the OS (the bar still shows the last track, but nothing plays).
-                app.media.publish(media::Snapshot { meta: None, state: media::Playback::Stopped, position: app.pos });
+                app.media.publish(mpris::Snapshot { meta: None, state: mpris::Playback::Stopped, position: app.pos });
             }
         },
         Msg::Media(control) => match control {
-            media::Control::Play => match app.play_state {
+            mpris::Control::Play => match app.play_state {
                 player::PlayState::Paused => app.send(player::Cmd::TogglePlayPause),
                 player::PlayState::Playing => (),
             },
             // We have no stopped-with-a-track-open state; pausing is the closest thing.
-            media::Control::Pause | media::Control::Stop => match app.play_state {
+            mpris::Control::Pause | mpris::Control::Stop => match app.play_state {
                 player::PlayState::Playing => app.send(player::Cmd::TogglePlayPause),
                 player::PlayState::Paused => (),
             },
-            media::Control::Toggle => app.send(player::Cmd::TogglePlayPause),
-            media::Control::Next => app.send(player::Cmd::Next),
-            media::Control::Prev => app.send(player::Cmd::Prev),
-            media::Control::Seek(offset) => {
+            mpris::Control::Toggle => app.send(player::Cmd::TogglePlayPause),
+            mpris::Control::Next => app.send(player::Cmd::Next),
+            mpris::Control::Prev => app.send(player::Cmd::Prev),
+            mpris::Control::Seek(offset) => {
                 let dir = if offset >= 0 { SeekDir::Forward } else { SeekDir::Backward };
                 do_seek(app, Seek::By(dir, Duration::from_micros(offset.unsigned_abs())));
             }
-            media::Control::SetPosition(t) => app.send(player::Cmd::Seek(t)),
+            mpris::Control::SetPosition(t) => app.send(player::Cmd::Seek(t)),
         },
         Msg::Toggle => app.send(player::Cmd::TogglePlayPause),
         Msg::Next { repeat } => {
@@ -1082,7 +1082,7 @@ fn rescan_options(app: &App) -> library::ScanOptions {
 /// media worker coalesces a burst of these down to the latest and rate-limits the actual pushes,
 /// so callers need not throttle.
 fn publish_media(app: &App) {
-    let meta = app.queue.get(app.current).map(|item| media::Meta {
+    let meta = app.queue.get(app.current).map(|item| mpris::Meta {
         title: item.title.clone(),
         album: item.album.clone(),
         artist: item.artist.clone(),
@@ -1091,10 +1091,10 @@ fn publish_media(app: &App) {
         duration: app.len,
     });
     let state = match app.play_state {
-        player::PlayState::Playing => media::Playback::Playing,
-        player::PlayState::Paused => media::Playback::Paused,
+        player::PlayState::Playing => mpris::Playback::Playing,
+        player::PlayState::Paused => mpris::Playback::Paused,
     };
-    app.media.publish(media::Snapshot { meta, state, position: app.pos });
+    app.media.publish(mpris::Snapshot { meta, state, position: app.pos });
 }
 
 /// How many album runs on each side of the playing one the cover flow ensures are held in the

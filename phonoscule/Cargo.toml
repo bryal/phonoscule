@@ -18,6 +18,8 @@ player = ["dep:smol", "dep:pulse-simple", "dep:embedded-io-adapters", "dep:serde
 volume = ["dep:smol", "dep:libpulse-binding", "log/std"]
 # Watching the music directory for changes (see `watcher`). Wants std and a filesystem.
 watcher = ["dep:smol", "dep:futures", "dep:notify", "log/std"]
+# An MPRIS server for media keys and desktop now-playing (see `mpris`). Wants a D-Bus session bus.
+mpris = ["dep:smol", "dep:zbus", "log/std"]
 
 [dependencies]
 # rev is latest as of its commit date 2026-07-05
@@ -35,6 +37,7 @@ pulse-simple         = { version = "1.0.1", optional = true }
 serde                = { version = "1.0.228", features = ["derive"], optional = true }
 futures              = { version = "0.3.32", optional = true }
 notify               = { version = "8.2", optional = true }
+zbus                 = { version = "5.17", optional = true }
 
 # The Linux volume-mixer backend; other platforms build the module's mixerless fallback instead.
 # Speaks to PipeWire via pipewire-pulse.

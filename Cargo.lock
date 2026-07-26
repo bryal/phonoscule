@@ -3868,6 +3868,7 @@ dependencies = [
  "simple_logger",
  "smol",
  "utf8-decode",
+ "zbus",
 ]
 
 [[package]]
@@ -3909,7 +3910,6 @@ dependencies = [
  "smol",
  "toml_edit",
  "url",
- "zbus",
 ]
 
 [[package]]

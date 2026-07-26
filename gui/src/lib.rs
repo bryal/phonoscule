@@ -6,6 +6,5 @@ pub mod background;
 pub mod conf;
 pub mod coverflow;
 pub mod library;
-pub mod media;
 pub mod playlist;
 pub mod sort;

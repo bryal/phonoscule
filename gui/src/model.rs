@@ -3,11 +3,11 @@
 use crate::update::Msg;
 use futures::StreamExt;
 use iced::Task;
-use phonoscule::{player, volume, watcher};
+use phonoscule::{mpris, player, volume, watcher};
 use phonoscule_gui::conf::Conf;
 use phonoscule_gui::library::{self, Album};
+use phonoscule_gui::playlist;
 use phonoscule_gui::sort::SortOrder;
-use phonoscule_gui::{media, playlist};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -143,7 +143,7 @@ pub struct App {
     /// Handle to the OS media integration. State changes are published to it (see
     /// [`publish_media`](crate::update)); a worker coalesces and pushes them, so the update loop
     /// holds no rate-limiting state of its own.
-    pub media: media::Media,
+    pub media: mpris::Media,
     /// Handle to the OS mixer (see the volume module): [`App::volume`] mirrors its readings.
     pub mixer: volume::VolumeControl,
     pub watcher: watcher::Watcher,
@@ -328,7 +328,7 @@ impl Default for HiResCache {
 
 pub fn boot(conf: Conf, restored: playlist::Restored, index: Vec<Album>) -> impl Fn() -> (App, Task<Msg>) {
     move || {
-        let (media, media_worker) = media::start();
+        let (media, media_worker) = mpris::start("Phonoscule", "phonoscule");
         let mut app = App {
             engine: player::start(player::Client {
                 name: "phonoscule-gui".into(),
