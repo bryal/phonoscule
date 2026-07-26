@@ -1,29 +1,107 @@
 //! Drawing the frame: a header, the body of whichever view is up, and a status line.
 
 use crate::covers;
-use crate::model::{Model, ScanState, View};
+use crate::model::{Focus, Model, Picker, ScanState, Subject, View};
 use phonoscule::library::Album;
 use phonoscule::player;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, Paragraph};
+use ratatui::widgets::{Block, Clear, List, ListState, Paragraph};
 use ratatui_image::Image;
 use std::time::Duration;
 
 /// The frame: one header row, the body, one status row. No borders anywhere -- the terminal's own
 /// edges are frame enough, and every row spent on decoration is a row not spent on albums.
 pub fn view(frame: &mut Frame, model: &mut Model) {
-    let [header, body, status] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+    // The browser carries a filter row under the header; the player has nothing to put there.
+    let filter_rows = match model.view {
+        View::Library => 1,
+        View::Player => 0,
+    };
+    let [header, filters, body, status] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(filter_rows), Constraint::Min(1), Constraint::Length(1)])
+            .areas(frame.area());
 
     header_line(frame, model, header);
+    if filter_rows > 0 {
+        filter_line(frame, model, filters);
+    }
     match model.view {
         View::Library => library(frame, model, body),
         View::Player => player(frame, model, body),
     }
     status_line(frame, model, status);
+    // Over everything, since it is what the keyboard is talking to.
+    if let Focus::Picker(picker) = &model.focus {
+        picker_overlay(frame, picker, body);
+    }
+}
+
+/// The filter row: the order in use, the genre and artist picked, and the album search. Each is dim
+/// while it lets everything through and lit once it narrows something, so what is filtering is
+/// visible at a glance -- and the key that opens each sits beside it.
+fn filter_line(frame: &mut Frame, model: &Model, area: Rect) {
+    let searching = matches!(model.focus, Focus::Search);
+    let mut spans = vec![
+        chip("^o", &model.sort.label(), true),
+        Span::raw("  "),
+        chip("^g", model.filter.genre.as_deref().unwrap_or("any genre"), model.filter.genre.is_some()),
+        Span::raw("  "),
+        chip("^t", model.filter.artist.as_deref().unwrap_or("any artist"), model.filter.artist.is_some()),
+        Span::raw("  "),
+        Span::raw("^f").fg(Color::DarkGray),
+        Span::raw(" "),
+    ];
+    match (searching, model.filter.search.is_empty()) {
+        (false, true) => spans.push(Span::raw("search").fg(Color::DarkGray)),
+        _ => {
+            spans.push(Span::raw(model.filter.search.clone()).fg(Color::White));
+            // A block where the next character will land, so it is clear the keys are going here.
+            if searching {
+                spans.push(Span::raw("█").fg(Color::White));
+            }
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// One filter chip: the key that opens it, then its value, lit when it is narrowing something.
+fn chip(key: &str, value: &str, lit: bool) -> Span<'static> {
+    let value = Span::raw(format!("{key} {value}"));
+    if lit { value.fg(Color::Cyan) } else { value.fg(Color::DarkGray) }
+}
+
+/// A picker, over the body: its search, then its rows, the selection highlighted. Sized to what it
+/// holds, up to half the body, and anchored top-left so the album list stays partly visible.
+fn picker_overlay(frame: &mut Frame, picker: &Picker, body: Rect) {
+    let title = match picker.subject {
+        Subject::Genre => "Genre",
+        Subject::Artist => "Artist",
+        Subject::Sort => "Order",
+    };
+    let width = body.width.clamp(20, 48);
+    let height = (picker.rows() as u16 + 3).min(body.height.max(4));
+    let area = Rect { x: body.x + 2, y: body.y, width, height };
+    frame.render_widget(Clear, area);
+
+    let block = Block::bordered().title(format!(" {title} ")).border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [query_area, rows_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+    let query = Line::from(vec![Span::raw(picker.query.clone()).fg(Color::White), Span::raw("█").fg(Color::White)]);
+    frame.render_widget(Paragraph::new(query), query_area);
+
+    let mut rows: Vec<Line> = Vec::new();
+    if picker.has_any_row() {
+        rows.push(Line::from(Span::raw(format!("any {}", title.to_lowercase())).fg(Color::DarkGray)));
+    }
+    rows.extend(picker.matches.iter().map(|value| Line::from(value.clone())));
+    let list = List::new(rows).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(picker.selected));
+    frame.render_stateful_widget(list, rows_area, &mut state);
 }
 
 /// The view tabs on the left, and on the right whatever the current view wants said about itself.
@@ -35,7 +113,8 @@ fn header_line(frame: &mut Frame, model: &Model, area: Rect) {
         spans.push(if view == model.view { label.bold().fg(Color::White) } else { label.fg(Color::DarkGray) });
     }
     let right = match model.view {
-        View::Library => format!("{} albums ", model.shown.len()),
+        View::Library if model.filter.is_empty() => format!("{} ", plural(model.shown.len(), "album")),
+        View::Library => format!("{} of {} albums ", model.shown.len(), model.albums.len()),
         // Albums, not tracks: the status line's "track N of M" already counts those.
         View::Player => match album_runs(model) {
             0 => String::new(),
@@ -432,6 +511,9 @@ mod test {
         let _ = update(model, msg);
     }
 
+    /// Where the browser's list starts: below the header and the filter row.
+    const FIRST_LIST_ROW: u16 = 2;
+
     /// The row the selection highlight is drawn on, and the text of the topmost list row -- which
     /// together say where the view is scrolled to.
     fn drawn(terminal: &mut Terminal<TestBackend>, model: &mut Model) -> (u16, String) {
@@ -439,8 +521,7 @@ mod test {
         let buffer = terminal.backend().buffer();
         let reversed = |y: u16| (0..buffer.area.width).any(|x| buffer[(x, y)].modifier.contains(Modifier::REVERSED));
         let row = (0..buffer.area.height).find(|&y| reversed(y)).expect("something must be selected");
-        // Row 0 is the header, so the list starts at row 1.
-        let top: String = (0..40).map(|x| buffer[(x, 1)].symbol()).collect();
+        let top: String = (0..40).map(|x| buffer[(x, FIRST_LIST_ROW)].symbol()).collect();
         (row, top)
     }
 
@@ -515,7 +596,7 @@ mod test {
         drawn(&mut terminal, &mut model);
         send(&mut model, Msg::SelectEdge(Edge::First));
         let (row, top) = drawn(&mut terminal, &mut model);
-        assert_eq!(row, 1, "the first album should be selected on the first list row");
+        assert_eq!(row, FIRST_LIST_ROW, "the first album should be selected on the first list row");
         assert!(top.starts_with("(2000) Artist 000"), "the view should be back at the top, showing {top:?}");
     }
 }

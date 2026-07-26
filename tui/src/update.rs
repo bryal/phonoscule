@@ -1,9 +1,10 @@
 //! The messages, and how each of them changes the model.
 
-use crate::model::{Model, QueueItem, ScanState, View, refresh};
+use crate::model::{Focus, Model, QueueItem, ScanState, Subject, View, open_picker, refresh};
 use crate::{covers, keys, logger, paths};
 use phonoscule::library::{self, Album};
 use phonoscule::player;
+use phonoscule::sort::SortOrder;
 use std::time::Duration;
 
 /// Everything the event loop reacts to, whatever source it came from.
@@ -33,6 +34,25 @@ pub enum Msg {
     Seek(i64),
     /// Cycle the repeat mode.
     CycleRepeat,
+    /// Start typing an album search, beginning with this character if typing is what opened it.
+    Search(Option<char>),
+    /// A character typed into whatever has focus: the album search, or a picker's own search.
+    Typed(char),
+    /// Rub out the last character typed.
+    Rubout,
+    /// Open a picker over this subject.
+    OpenPicker(Subject),
+    /// Move a picker's selection by this many rows, clamped.
+    PickerMove(isize),
+    /// Take what the picker's selection sits on: a filter value, or an order.
+    Pick,
+    /// Leave whatever has focus, keeping what it has narrowed to.
+    Done,
+    /// Clear every filter, and leave the search or picker that was setting one.
+    ClearFilters,
+    /// Play, or queue, every album the filter lets through, in the order shown.
+    PlayShown,
+    QueueShown,
     Quit,
 }
 
@@ -55,7 +75,7 @@ pub enum After {
 
 pub fn update(model: &mut Model, msg: Msg) -> After {
     match msg {
-        Msg::Key(key) => match keys::key_to_msg(model.view, key) {
+        Msg::Key(key) => match keys::key_to_msg(model.view, &model.focus, key) {
             Some(msg) => update(model, msg),
             None => After::Idle,
         },
@@ -133,6 +153,79 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             model.covers.absorb(load);
             After::Redraw
         }
+        Msg::Search(first) => {
+            model.focus = Focus::Search;
+            if let Some(c) = first {
+                model.filter.search.push(c);
+                model.shown_dirty = true;
+            }
+            After::Redraw
+        }
+        Msg::Typed(c) => match &mut model.focus {
+            Focus::Search => {
+                model.filter.search.push(c);
+                model.shown_dirty = true;
+                After::Redraw
+            }
+            Focus::Picker(picker) => {
+                picker.query.push(c);
+                requery(model);
+                After::Redraw
+            }
+            Focus::Albums => After::Idle,
+        },
+        Msg::Rubout => match &mut model.focus {
+            Focus::Search => {
+                model.filter.search.pop();
+                model.shown_dirty = true;
+                After::Redraw
+            }
+            Focus::Picker(picker) => {
+                picker.query.pop();
+                requery(model);
+                After::Redraw
+            }
+            Focus::Albums => After::Idle,
+        },
+        Msg::OpenPicker(subject) => {
+            model.focus = Focus::Picker(open_picker(model, subject));
+            After::Redraw
+        }
+        Msg::PickerMove(delta) => {
+            let Focus::Picker(picker) = &mut model.focus else { return After::Idle };
+            let last = picker.rows().saturating_sub(1);
+            picker.selected = picker.selected.saturating_add_signed(delta).min(last);
+            After::Redraw
+        }
+        Msg::Pick => pick(model),
+        Msg::Done => {
+            model.focus = Focus::Albums;
+            After::Redraw
+        }
+        Msg::ClearFilters => {
+            model.filter = Default::default();
+            model.focus = Focus::Albums;
+            model.shown_dirty = true;
+            After::Redraw
+        }
+        Msg::PlayShown => match shown_items(model) {
+            items if items.is_empty() => After::Idle,
+            items => {
+                model.send(player::Cmd::SetQueue { tracks: entries(&items), start: 0, play: player::PlayState::Playing });
+                model.queue = items;
+                model.current = 0;
+                model.view = View::Player;
+                After::Redraw
+            }
+        },
+        Msg::QueueShown => match shown_items(model) {
+            items if items.is_empty() => After::Idle,
+            items => {
+                model.send(player::Cmd::Append { tracks: entries(&items) });
+                model.queue.extend(items);
+                After::Redraw
+            }
+        },
         Msg::Player(event) => player_event(model, event),
         Msg::Library(library::ScanEvent::Album(album)) => absorb_album(model, *album),
         Msg::Library(library::ScanEvent::Cover { albums, art }) => {
@@ -217,6 +310,50 @@ fn player_event(model: &mut Model, event: player::Event) -> After {
             After::Redraw
         }
     }
+}
+
+/// Re-ranks an open picker's matches against its query, putting the selection back at the top.
+fn requery(model: &mut Model) {
+    let Focus::Picker(picker) = &model.focus else { return };
+    let (subject, query) = (picker.subject, picker.query.clone());
+    let matches = phonoscule::search::matches(crate::model::picker_options(model, subject), &query);
+    let Focus::Picker(picker) = &mut model.focus else { return };
+    picker.matches = matches;
+    // Row 0 is the "any" entry where there is one, so the first match is the row below it.
+    picker.selected = usize::from(picker.has_any_row());
+}
+
+/// Applies what an open picker's selection sits on, and closes it.
+fn pick(model: &mut Model) -> After {
+    let Focus::Picker(picker) = &model.focus else { return After::Idle };
+    let picked = picker.picked().map(str::to_owned);
+    match picker.subject {
+        Subject::Genre => model.filter.genre = picked,
+        Subject::Artist => model.filter.artist = picked,
+        Subject::Sort => {
+            let Some(&order) = SortOrder::ALL.get(picker.selected) else { return After::Idle };
+            model.sort = order;
+        }
+    }
+    model.focus = Focus::Albums;
+    model.shown_dirty = true;
+    After::Redraw
+}
+
+/// Every shown album's tracks as queue items, in the order shown.
+fn shown_items(model: &Model) -> Vec<QueueItem> {
+    model
+        .shown
+        .iter()
+        .filter_map(|&ix| model.albums.get(ix))
+        .flat_map(|album| {
+            album.tracks.iter().map(|track| QueueItem {
+                path: track.path.clone(),
+                album_id: album.id,
+                title: track.title.clone(),
+            })
+        })
+        .collect()
 }
 
 /// The selected album's tracks as queue items, or `None` if nothing is selected.
@@ -434,5 +571,96 @@ mod test {
 
         send(&mut model, Msg::Player(player::Event::Progress(Duration::from_secs(2))));
         assert_eq!(model.pos, Duration::from_secs(2), "the new track's reports are not held off");
+    }
+
+    /// A picked genre and artist narrow the browser, and clearing brings everything back.
+    #[test]
+    fn filters_narrow_what_the_browser_shows() {
+        let mut model = browser(6);
+        let all = model.shown.len();
+        assert_eq!(all, 6);
+
+        send(&mut model, Msg::OpenPicker(Subject::Genre));
+        send(&mut model, Msg::Typed('m'));
+        send(&mut model, Msg::Pick);
+        reconcile(&mut model);
+        assert_eq!(model.filter.genre.as_deref(), Some("Metal"));
+        assert!(model.shown.len() < all, "a genre narrows the list");
+        assert!(model.shown.iter().all(|&ix| model.albums[ix].genre == "Metal"), "and everything shown is of that genre");
+
+        send(&mut model, Msg::ClearFilters);
+        reconcile(&mut model);
+        assert_eq!(model.shown.len(), all, "clearing brings the rest back");
+        assert!(model.filter.is_empty());
+    }
+
+    /// The picker's "any" row clears the filter it was setting.
+    #[test]
+    fn the_any_row_clears_a_filter() {
+        let mut model = browser(6);
+        send(&mut model, Msg::OpenPicker(Subject::Genre));
+        send(&mut model, Msg::Typed('j'));
+        send(&mut model, Msg::Pick);
+        reconcile(&mut model);
+        assert_eq!(model.filter.genre.as_deref(), Some("Jazz"));
+
+        send(&mut model, Msg::OpenPicker(Subject::Genre));
+        // Row 0 is "any genre", which is where a freshly opened picker sits.
+        send(&mut model, Msg::Pick);
+        reconcile(&mut model);
+        assert_eq!(model.filter.genre, None, "picking `any` clears it");
+    }
+
+    /// Typing searches album titles, and what is typed survives leaving the field.
+    #[test]
+    fn typing_searches_album_titles() {
+        let mut model = browser(20);
+        send(&mut model, Msg::Search(Some('0')));
+        send(&mut model, Msg::Typed('0'));
+        send(&mut model, Msg::Typed('3'));
+        reconcile(&mut model);
+        assert_eq!(model.filter.search, "003");
+        assert_eq!(model.shown.len(), 1, "one album is titled Album 003");
+
+        send(&mut model, Msg::Rubout);
+        reconcile(&mut model);
+        assert_eq!(model.filter.search, "00");
+        assert!(model.shown.len() > 1, "rubbing out widens the search again");
+
+        send(&mut model, Msg::Done);
+        assert!(matches!(model.focus, Focus::Albums), "the keys go back to the list");
+        assert_eq!(model.filter.search, "00", "and the search it narrowed to stands");
+    }
+
+    /// The sort picker changes the order, and opens on the order in use.
+    #[test]
+    fn the_sort_picker_changes_the_order() {
+        let mut model = browser(6);
+        let before = model.shown.clone();
+        send(&mut model, Msg::OpenPicker(Subject::Sort));
+        let Focus::Picker(picker) = &model.focus else { panic!("a picker should be open") };
+        assert_eq!(SortOrder::ALL[picker.selected], model.sort, "the picker opens on the order in use");
+
+        send(&mut model, Msg::PickerMove(1));
+        send(&mut model, Msg::Pick);
+        reconcile(&mut model);
+        assert_ne!(model.sort, SortOrder::default());
+        assert_ne!(model.shown, before, "the browser is reordered");
+    }
+
+    /// Playing everything shown queues the filtered albums, not the whole library.
+    #[test]
+    fn playing_everything_shown_respects_the_filter() {
+        let mut model = browser(6);
+        send(&mut model, Msg::OpenPicker(Subject::Genre));
+        send(&mut model, Msg::Typed('m'));
+        send(&mut model, Msg::Pick);
+        reconcile(&mut model);
+        let shown: Vec<u64> = model.shown.iter().map(|&ix| model.albums[ix].id).collect();
+
+        send(&mut model, Msg::PlayShown);
+        let queued: std::collections::HashSet<u64> = model.queue.iter().map(|item| item.album_id).collect();
+        assert_eq!(queued.len(), shown.len(), "every shown album is queued and nothing else");
+        assert!(queued.iter().all(|id| shown.contains(id)));
     }
 }

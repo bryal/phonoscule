@@ -5,9 +5,10 @@ use crate::logger;
 use phonoscule::config::Conf;
 use phonoscule::library::Album;
 use phonoscule::player;
+use phonoscule::search;
 use phonoscule::sort::{Dir, SortField, SortOrder};
 use ratatui::widgets::ListState;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -49,6 +50,71 @@ pub enum ScanState {
     Complete,
 }
 
+/// What the browser shows, of everything in the library: a genre and an artist picked exactly, and a
+/// fuzzy search over album titles, all of which must pass.
+#[derive(Debug, Clone, Default)]
+pub struct Filter {
+    pub genre: Option<String>,
+    pub artist: Option<String>,
+    pub search: String,
+}
+
+impl Filter {
+    /// Whether it lets everything through, so there is nothing to clear.
+    pub fn is_empty(&self) -> bool {
+        self.genre.is_none() && self.artist.is_none() && self.search.is_empty()
+    }
+}
+
+/// What the keyboard is talking to. Only one thing at a time, by construction.
+#[derive(Debug, Clone)]
+pub enum Focus {
+    /// The album list: the arrow keys move the selection, typing starts a search.
+    Albums,
+    /// The album search field: typing appends to the query and the browser narrows as it goes.
+    Search,
+    /// A picker over the current view (see [`Picker`]).
+    Picker(Picker),
+}
+
+/// What a picker is picking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subject {
+    Genre,
+    Artist,
+    /// The browser's order, over [`SortOrder::ALL`] rather than over library values.
+    Sort,
+}
+
+/// An open picker: a search over the subject's values, the ones matching it, and where the selection
+/// sits. Row 0 is the standing "any" entry that clears the filter, so row `n + 1` is `matches[n]`;
+/// the sort picker has no such entry, its options being an order and not a filter.
+#[derive(Debug, Clone)]
+pub struct Picker {
+    pub subject: Subject,
+    pub query: String,
+    pub matches: Vec<String>,
+    pub selected: usize,
+}
+
+impl Picker {
+    /// Whether row 0 is the "any genre"/"any artist" entry that clears the filter.
+    pub fn has_any_row(&self) -> bool {
+        self.subject != Subject::Sort
+    }
+
+    /// How many rows it shows.
+    pub fn rows(&self) -> usize {
+        self.matches.len() + usize::from(self.has_any_row())
+    }
+
+    /// The value the selection sits on, or `None` for the "any" row.
+    pub fn picked(&self) -> Option<&str> {
+        let ix = self.selected.checked_sub(usize::from(self.has_any_row()))?;
+        self.matches.get(ix).map(String::as_str)
+    }
+}
+
 /// A track in the play queue. Its album is named by id rather than carried along: the album list
 /// holds the tags and the cover already, and looking them up beats keeping a second copy.
 #[derive(Debug, Clone)]
@@ -77,7 +143,11 @@ pub struct Model {
     /// Whether `albums` has drifted from the persisted index since it was last written, so the
     /// quiet rescans don't rewrite it every time.
     pub index_dirty: bool,
-    /// Indices into `albums` in display order (see [`refresh`]).
+    /// Which albums the browser shows, of everything in `albums`.
+    pub filter: Filter,
+    /// What the keyboard is talking to.
+    pub focus: Focus,
+    /// Indices into `albums` in display order, filtered (see [`refresh`]).
     pub shown: Vec<usize>,
     /// Whether `shown` still reflects `albums` and `sort`. Set by anything that changes either;
     /// cleared by [`refresh`], which the event loop calls once per burst of messages rather than
@@ -131,6 +201,8 @@ impl Model {
             scan: ScanState::Scanning,
             albums,
             index_dirty: false,
+            filter: Filter::default(),
+            focus: Focus::Albums,
             shown: vec![],
             shown_dirty: false,
             sort: INITIAL_SORT,
@@ -202,14 +274,47 @@ impl Model {
     }
 }
 
-/// Recomputes the display order from [`Model::sort`]. The selection needs no fixing up: it names an
-/// album, not a row.
+/// Recomputes which albums the browser shows and in what order: those the filter lets through,
+/// ordered by [`Model::sort`]. A search overrides that order, ranking its best matches first, with
+/// the sort breaking ties; an empty one leaves the order alone, every album ranking equal.
+///
+/// The selection needs no fixing up: it names an album, not a row.
 pub fn refresh(model: &mut Model) {
     model.shown_dirty = false;
     let sort = model.sort;
-    let mut shown: Vec<usize> = (0..model.albums.len()).collect();
-    shown.sort_by(|&a, &b| sort.cmp(&model.albums[a], &model.albums[b]));
-    model.shown = shown;
+    let filter = &model.filter;
+    let mut ranked: Vec<(usize, usize)> = model
+        .albums
+        .iter()
+        .enumerate()
+        .filter(|(_, album)| filter.genre.as_ref().is_none_or(|genre| album.genre == *genre))
+        .filter(|(_, album)| filter.artist.as_ref().is_none_or(|artist| album.artist == *artist))
+        .filter_map(|(ix, album)| Some((ix, search::rank(&album.title, &filter.search)?)))
+        .collect();
+    ranked.sort_by(|&(a, ra), &(b, rb)| rb.cmp(&ra).then_with(|| sort.cmp(&model.albums[a], &model.albums[b])));
+    model.shown = ranked.into_iter().map(|(ix, _)| ix).collect();
+}
+
+/// Every distinct value of `subject` in the library, sorted -- what its picker searches over. An
+/// album with no genre tag contributes none, and shows only under "any genre".
+pub fn picker_options(model: &Model, subject: Subject) -> Vec<String> {
+    let values: BTreeSet<&String> = match subject {
+        Subject::Genre => model.albums.iter().map(|a| &a.genre).filter(|genre| !genre.is_empty()).collect(),
+        Subject::Artist => model.albums.iter().map(|a| &a.artist).collect(),
+        Subject::Sort => return SortOrder::ALL.iter().map(|order| order.label()).collect(),
+    };
+    values.into_iter().cloned().collect()
+}
+
+/// A picker over `subject`, showing everything until its query narrows it.
+pub fn open_picker(model: &Model, subject: Subject) -> Picker {
+    let matches = picker_options(model, subject);
+    // The sort picker opens on the order in use, so stepping from it is stepping from where you are.
+    let selected = match subject {
+        Subject::Sort => SortOrder::ALL.iter().position(|&order| order == model.sort).unwrap_or(0),
+        _ => 0,
+    };
+    Picker { subject, query: String::new(), matches, selected }
 }
 
 #[cfg(test)]
@@ -228,9 +333,9 @@ mod testing {
             .map(|i| Album {
                 id: i as u64,
                 title: format!("Album {i:03}"),
-                artist: format!("Artist {i:03}"),
-                genre: "Genre".into(),
-                year: Some(2000),
+                artist: format!("Artist {:03}", i % 3),
+                genre: if i % 2 == 0 { "Metal".into() } else { "Jazz".into() },
+                year: Some(2000 + (i % 5) as u32),
                 cover_id: None,
                 cover: None,
                 accent: None,
