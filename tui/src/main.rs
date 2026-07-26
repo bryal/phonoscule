@@ -14,7 +14,7 @@ mod view;
 
 use futures::StreamExt;
 use model::Model;
-use phonoscule::{config, library};
+use phonoscule::{config, library, player};
 use smol::channel;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -99,7 +99,11 @@ fn run() -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     // Between entering the alternate screen and reading any terminal event, which is where the
     // protocol query has to happen (it writes to stdout and reads the reply from stdin).
-    let model = Model::new(conf, covers::picker(forced_protocol.as_deref()), index);
+    let engine = player::start(player::Client {
+        name: "phonoscule-tui".into(),
+        description: "Terminal application based on the Phonoscule music player library".into(),
+    });
+    let model = Model::new(conf, covers::picker(forced_protocol.as_deref()), engine, index);
     // The query's bytes went out behind ratatui's back, and a terminal that did not understand them
     // will have printed them; wipe the screen before the first frame. Through the backend, whose
     // clear is a plain escape sequence -- `Terminal::clear` snapshots the cursor position first, and
@@ -121,6 +125,7 @@ async fn event_loop(
     read_terminal_events(tx.clone());
     let sources = [
         forward(logs.map(Msg::Log), tx.clone()),
+        forward(model.engine.events.clone().map(Msg::Player), tx.clone()),
         forward(library::scan(update::scan_options(&model)).map(Msg::Library), tx.clone()),
     ];
 

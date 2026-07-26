@@ -4,10 +4,13 @@ use crate::covers::Cover;
 use crate::logger;
 use phonoscule::config::Conf;
 use phonoscule::library::Album;
+use phonoscule::player;
 use phonoscule::sort::SortOrder;
 use ratatui::widgets::ListState;
 use ratatui_image::picker::Picker;
 use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -47,6 +50,15 @@ pub enum ScanState {
     Complete,
 }
 
+/// A track in the play queue. Its album is named by id rather than carried along: the album list
+/// holds the tags and the cover already, and looking them up beats keeping a second copy.
+#[derive(Debug, Clone)]
+pub struct QueueItem {
+    pub path: PathBuf,
+    pub album_id: u64,
+    pub title: String,
+}
+
 /// How many log records are kept for the log view; older ones are dropped.
 const LOG_CAPACITY: usize = 500;
 
@@ -82,6 +94,15 @@ pub struct Model {
     /// pinning it to the bottom row.
     pub list: ListState,
     pub view: View,
+    pub engine: player::Engine,
+    pub queue: Vec<QueueItem>,
+    /// Which queue item is playing, an index into `queue`.
+    pub current: usize,
+    pub play_state: player::PlayState,
+    pub repeat: player::Repeat,
+    pub pos: Duration,
+    /// The playing track's length, once the engine has opened it and said so.
+    pub len: Option<Duration>,
     /// Recent log records, newest last (see the logger module).
     pub log: VecDeque<logger::Entry>,
     /// Set to leave the event loop.
@@ -89,8 +110,15 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(conf: Conf, picker: Picker, albums: Vec<Album>) -> Self {
+    pub fn new(conf: Conf, picker: Picker, engine: player::Engine, albums: Vec<Album>) -> Self {
         let mut model = Model {
+            engine,
+            queue: vec![],
+            current: 0,
+            play_state: player::PlayState::Paused,
+            repeat: player::Repeat::Off,
+            pos: Duration::ZERO,
+            len: None,
             conf,
             picker,
             cover: None,
@@ -126,6 +154,24 @@ impl Model {
         self.selected = self.shown.get(row).map(|&ix| self.albums[ix].id);
     }
 
+    /// The queue item playing, if the queue isn't empty.
+    pub fn playing(&self) -> Option<&QueueItem> {
+        self.queue.get(self.current)
+    }
+
+    /// The album a queue item belongs to, if it is still in the library.
+    pub fn album_of(&self, item: &QueueItem) -> Option<&Album> {
+        self.albums.iter().find(|album| album.id == item.album_id)
+    }
+
+    /// Sends a command to the engine. The channel is unbounded, so this only fails once the engine
+    /// is gone.
+    pub fn send(&self, cmd: player::Cmd) {
+        if self.engine.cmd.try_send(cmd).is_err() {
+            log::error!("the player engine is gone");
+        }
+    }
+
     pub fn push_log(&mut self, entry: logger::Entry) {
         if self.log.len() == LOG_CAPACITY {
             self.log.pop_front();
@@ -142,4 +188,39 @@ pub fn refresh(model: &mut Model) {
     let mut shown: Vec<usize> = (0..model.albums.len()).collect();
     shown.sort_by(|&a, &b| sort.cmp(&model.albums[a], &model.albums[b]));
     model.shown = shown;
+}
+
+#[cfg(test)]
+pub use testing::browser;
+
+#[cfg(test)]
+mod testing {
+    use super::*;
+    use phonoscule::config;
+    use phonoscule::library::TrackInfo;
+    use ratatui_image::picker::Picker;
+    /// A browser over `n` synthetic albums, sorted so their titles read in order.
+    pub fn browser(n: usize) -> Model {
+        let dir = std::env::temp_dir().join(format!("phonoscule-tui-view-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("conf.toml");
+        std::fs::write(&path, format!("music-dir = {:?}", dir)).unwrap();
+        let conf = smol::block_on(config::load("tui", Some(path))).unwrap();
+
+        let albums = (0..n)
+            .map(|i| Album {
+                id: i as u64,
+                title: format!("Album {i:03}"),
+                artist: format!("Artist {i:03}"),
+                genre: "Genre".into(),
+                year: Some(2000),
+                cover_id: None,
+                cover: None,
+                accent: None,
+                tracks: vec![TrackInfo { path: format!("{i}.opus").into(), title: "Track".into() }],
+            })
+            .collect();
+        let engine = player::start(player::Client { name: "phonoscule-tui-test".into(), description: String::new() });
+        Model::new(conf, Picker::halfblocks(), engine, albums)
+    }
 }
