@@ -61,13 +61,16 @@ pub fn key_to_msg(view: View, focus: &Focus, key: KeyEvent) -> Option<Msg> {
             // Enter plays the selection, as the GUI's Ctrl+Space does -- which a terminal cannot be
             // relied on to deliver at all. Alt+Enter queues it, matching the GUI's Alt+Space.
             KeyCode::Enter if alt => Some(Msg::QueueSelected),
-            KeyCode::Enter if ctrl => Some(Msg::PlayShown),
-            // Alt+A appends everything shown. The GUI's Alt+Enter does this, but that queues the
-            // selection here, and Ctrl+Alt+Enter is not a chord to inflict on anyone.
+            // Everything the filter lets through: Ctrl+A plays it, Alt+A appends it. The GUI's pair
+            // is Ctrl+Enter and Alt+Enter, but Alt+Enter queues the selection here, and terminals
+            // take Ctrl+Enter for themselves -- Ghostty toggles full screen with it.
+            KeyCode::Char('a') if ctrl => Some(Msg::PlayShown),
             KeyCode::Char('a') if alt => Some(Msg::QueueShown),
             KeyCode::Enter => Some(Msg::PlaySelected),
             // Typing searches, which is why no letter carries a binding of its own.
             KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => Some(Msg::Search(Some(c))),
+            // As does rubbing out, for correcting a search after the keys have gone back to the list.
+            KeyCode::Backspace => Some(Msg::Rubout),
             _ => None,
         },
         View::Player => match key.code {

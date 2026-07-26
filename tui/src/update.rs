@@ -185,7 +185,14 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 requery(model);
                 After::Redraw
             }
-            Focus::Albums => After::Idle,
+            // Rubbing out is editing the search, so it takes the keys there as typing does -- for
+            // correcting a search after the keys have gone back to the list.
+            Focus::Albums => {
+                model.focus = Focus::Search;
+                model.filter.search.pop();
+                model.shown_dirty = true;
+                After::Redraw
+            }
         },
         Msg::OpenPicker(subject) => {
             model.focus = Focus::Picker(open_picker(model, subject));
@@ -630,6 +637,23 @@ mod test {
         send(&mut model, Msg::Done);
         assert!(matches!(model.focus, Focus::Albums), "the keys go back to the list");
         assert_eq!(model.filter.search, "00", "and the search it narrowed to stands");
+    }
+
+    /// Rubbing out from the album list edits the search, rather than doing nothing: having typed a
+    /// search and gone back to the list, backspace is how it gets corrected.
+    #[test]
+    fn rubbing_out_from_the_list_edits_the_search() {
+        let mut model = browser(20);
+        send(&mut model, Msg::Search(Some('0')));
+        send(&mut model, Msg::Typed('0'));
+        send(&mut model, Msg::Typed('3'));
+        send(&mut model, Msg::Done);
+        assert!(matches!(model.focus, Focus::Albums));
+
+        send(&mut model, Msg::Rubout);
+        reconcile(&mut model);
+        assert!(matches!(model.focus, Focus::Search), "the keys go to the search");
+        assert_eq!(model.filter.search, "00", "and the last character is gone");
     }
 
     /// The sort picker changes the order, and opens on the order in use.

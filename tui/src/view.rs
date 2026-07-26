@@ -51,20 +51,19 @@ fn filter_line(frame: &mut Frame, model: &Model, area: Rect) {
         Span::raw("  "),
         chip("^t", model.filter.artist.as_deref().unwrap_or("any artist"), model.filter.artist.is_some()),
         Span::raw("  "),
-        Span::raw("^f").fg(Color::DarkGray),
-        Span::raw(" "),
+        Span::raw("^a play  ").fg(Color::DarkGray),
+        Span::raw("^f ").fg(Color::DarkGray),
     ];
     match (searching, model.filter.search.is_empty()) {
         (false, true) => spans.push(Span::raw("search").fg(Color::DarkGray)),
-        _ => {
-            spans.push(Span::raw(model.filter.search.clone()).fg(Color::White));
-            // A block where the next character will land, so it is clear the keys are going here.
-            if searching {
-                spans.push(Span::raw("█").fg(Color::White));
-            }
-        }
+        _ => spans.push(Span::raw(model.filter.search.clone()).fg(Color::White)),
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    let line = Line::from(spans);
+    // The terminal's own cursor marks where typing goes, rather than a block drawn to look like one.
+    if searching {
+        frame.set_cursor_position((area.x + line.width() as u16, area.y));
+    }
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 /// One filter chip: the key that opens it, then its value, lit when it is narrowing something.
@@ -91,7 +90,8 @@ fn picker_overlay(frame: &mut Frame, picker: &Picker, body: Rect) {
     frame.render_widget(block, area);
 
     let [query_area, rows_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
-    let query = Line::from(vec![Span::raw(picker.query.clone()).fg(Color::White), Span::raw("█").fg(Color::White)]);
+    let query = Line::from(Span::raw(picker.query.clone()).fg(Color::White));
+    frame.set_cursor_position((query_area.x + query.width() as u16, query_area.y));
     frame.render_widget(Paragraph::new(query), query_area);
 
     let mut rows: Vec<Line> = Vec::new();
