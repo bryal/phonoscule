@@ -1,89 +1,160 @@
 //! Cover art in the terminal, through whatever image protocol it speaks.
 //!
-//! Covers are kept in a bounded cache (see the cache module), so what this costs does not grow with
+//! Covers are kept in bounded caches (see the cache module), so what this costs does not grow with
 //! the size of the library -- the point of the player, which is meant for machines that have not got
 //! the memory to hold a library's worth of artwork.
 //!
-//! What is cached is the *encoded* cover, ready for the terminal, because that is the expensive part:
-//! reading a thumbnail off disk costs tens of microseconds and building a protocol from it about as
-//! much, while the resize and encode behind them cost a few milliseconds. So it happens off the UI
-//! thread and the covers arrive as messages ([`Load`]); until one does, a view draws the album's
-//! accent colour, which is known long before any pixels are.
+//! What is cached is the *encoded* cover and nothing else: the source pixels are dropped once it is
+//! encoded, because an entry that kept them would weigh its 400 KiB (or a high-resolution cover's
+//! 3 MiB) for as long as it was held. Encoding is also the expensive part -- reading a thumbnail off
+//! disk costs tens of microseconds against a few milliseconds to resize and encode it -- so it runs
+//! off the UI thread and covers arrive as messages ([`Load`]). Until one does, a view draws the
+//! album's accent colour, which is known long before any pixels are, so a keypress waits for nothing.
 
 use crate::cache::Lru;
 use image::imageops::FilterType;
 use phonoscule::library;
 use ratatui::layout::Size;
+use ratatui_image::Resize;
 use ratatui_image::picker::{Picker, ProtocolType};
-use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::{Resize, ResizeEncodeRender};
-use std::collections::HashSet;
+use ratatui_image::protocol::Protocol;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
-/// How many encoded covers are held. Thirty-two of them is twelve megabytes of half blocks or fifty
-/// of kitty, which is a fair price for scrolling back over ground just covered; the library's own
-/// size does not enter into it.
+/// How many encoded thumbnails are held. The library's own size does not enter into it.
 const THUMB_CAPACITY: usize = 32;
 
-/// How far either side of the browser's cursor covers are loaded before they are asked for, and kept
-/// from being evicted. Small, because a cover that is not there yet costs nothing but a coloured
+/// How many encoded high-resolution covers are held. Fewer, because only the player shows them and
+/// it shows one at a time; the rest of the room is for skipping back and forth through the queue.
+const FULL_CAPACITY: usize = 16;
+
+/// How far either side of the browser's cursor thumbnails are loaded before they are asked for, and
+/// kept from being evicted. Small, because a cover that is not there yet costs nothing but a coloured
 /// block: this is for the neighbours a single keypress reaches, not for guessing where the user is
 /// headed.
 pub const PIN_RADIUS: usize = 2;
 
+/// How many albums either side of the playing one in the queue keep a high-resolution cover ready.
+/// Asymmetric because skipping forward is the commoner move.
+pub const FULL_BEHIND: usize = 1;
+pub const FULL_AHEAD: usize = 2;
+
+/// Which of an album's two covers is meant. They are cached apart: the thumbnail is what a browser
+/// row wants, the high-resolution decode what a player filling half the screen wants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quality {
+    /// The scan's cached thumbnail: a file read, no image decoding.
+    Thumb,
+    /// Decoded from the original artwork, for a cover drawn large.
+    Full,
+}
+
+/// An encoded cover, and the area it was encoded for. Kept together because an encoding is good for
+/// one size only: the terminal being resized makes it a miss rather than something to stretch.
+struct Encoded {
+    protocol: Protocol,
+    size: Size,
+}
+
 /// The covers held for display, and the terminal's way of drawing them.
 pub struct Covers {
     pub picker: Picker,
-    /// Where thumbnails are read from, or `None` if there is no cache directory to read (in which
-    /// case covers simply never appear -- see [`want`](Self::want)).
+    /// Where thumbnails are read from, or `None` if there is no cache directory to read -- in which
+    /// case covers never appear and the accent colours stand in for good.
     covers_dir: Option<PathBuf>,
-    thumbs: Lru<StatefulProtocol>,
-    /// Covers to load, taken by the event loop after each round of messages.
+    /// The artwork file each cover came from, for decoding it at a higher resolution than the
+    /// thumbnail. Paths only: a few kilobytes for a whole library.
+    files: HashMap<u64, Arc<PathBuf>>,
+    thumbs: Lru<Encoded>,
+    full: Lru<Encoded>,
+    /// Covers to load, taken by the event loop once the frame that asked for them is out.
     wanted: Vec<Request>,
-    /// Ids that must not be evicted: the browser's cursor and its neighbours.
-    pinned: HashSet<u64>,
+    /// Ids that must not be evicted, per quality.
+    pinned_thumbs: HashSet<u64>,
+    pinned_full: HashSet<u64>,
 }
 
 /// One cover to load and encode, off the UI thread.
 pub struct Request {
     pub cover_id: u64,
-    /// The area it is being encoded for. An encoding is good for one size, so this is part of the
-    /// request rather than settled afterwards.
+    pub quality: Quality,
+    /// The area to encode for, and the artwork file when a high-resolution decode is wanted.
     pub size: Size,
+    pub file: Option<Arc<PathBuf>>,
 }
 
-/// A loaded, encoded cover on its way back to the cache.
+/// A loaded, encoded cover on its way back to a cache.
 pub struct Load {
     pub cover_id: u64,
-    /// `None` if the thumbnail could not be read -- never cached, or the file went away.
-    pub protocol: Option<StatefulProtocol>,
+    pub quality: Quality,
+    pub size: Size,
+    /// `None` if it could not be read or decoded, which leaves it retryable.
+    pub protocol: Option<Protocol>,
 }
 
 impl Covers {
     pub fn new(picker: Picker, covers_dir: Option<PathBuf>) -> Self {
-        Covers { picker, covers_dir, thumbs: Lru::new(THUMB_CAPACITY), wanted: Vec::new(), pinned: HashSet::new() }
+        Covers {
+            picker,
+            covers_dir,
+            files: HashMap::new(),
+            thumbs: Lru::new(THUMB_CAPACITY),
+            full: Lru::new(FULL_CAPACITY),
+            wanted: Vec::new(),
+            pinned_thumbs: HashSet::new(),
+            pinned_full: HashSet::new(),
+        }
     }
 
-    /// The encoded cover for `id`, if it is held. Marks it as just used, so it is the last thing
-    /// evicted.
-    pub fn get(&mut self, id: u64) -> Option<&mut StatefulProtocol> {
-        self.thumbs.get(id)
+    /// Remembers where a cover's artwork lives, so it can be decoded large later. Learnt from the
+    /// scan, which reports it alongside the thumbnail.
+    pub fn learn_file(&mut self, cover_id: u64, file: Arc<PathBuf>) {
+        self.files.insert(cover_id, file);
     }
 
-    /// Asks for a cover to be loaded and encoded for `size`, unless it is already held or on its way.
-    /// Cheap and idempotent, so a caller can ask on every frame.
-    pub fn want(&mut self, cover_id: u64, size: Size) {
-        if self.covers_dir.is_none() || size.width == 0 || size.height == 0 {
+    /// The best encoded cover held for `id` at `size`, preferring the high-resolution one. `None`
+    /// when neither is there yet, or neither was encoded for this size.
+    pub fn best(&mut self, id: u64, size: Size) -> Option<&Protocol> {
+        // Checked before borrowing, since only one of the two lookups may keep its borrow.
+        let full = self.full.get(id).is_some_and(|held| held.size == size);
+        let cache = if full { &mut self.full } else { &mut self.thumbs };
+        cache.get(id).filter(|held| held.size == size).map(|held| &held.protocol)
+    }
+
+    /// Asks for a cover, unless it is held at this size already or is on its way. Cheap and
+    /// idempotent, so a caller can ask on every frame.
+    pub fn want(&mut self, cover_id: u64, quality: Quality, size: Size) {
+        if size.width == 0 || size.height == 0 {
             return;
         }
-        if self.thumbs.start_loading(cover_id) {
-            self.wanted.push(Request { cover_id, size });
+        let file = match quality {
+            Quality::Thumb if self.covers_dir.is_none() => return,
+            Quality::Thumb => None,
+            // Nothing to decode from: the scan has not reported this cover yet.
+            Quality::Full => match self.files.get(&cover_id) {
+                Some(file) => Some(file.clone()),
+                None => return,
+            },
+        };
+        let cache = match quality {
+            Quality::Thumb => &mut self.thumbs,
+            Quality::Full => &mut self.full,
+        };
+        // A cover encoded for a different size is stale, not held: ask again at the new one.
+        let stale = cache.get(cover_id).is_some_and(|held| held.size != size);
+        if stale {
+            cache.forget(cover_id);
+        }
+        if cache.start_loading(cover_id) {
+            self.wanted.push(Request { cover_id, quality, size, file });
         }
     }
 
-    /// Names the covers that must stay held: the ones a single keypress can reach.
-    pub fn pin(&mut self, ids: impl IntoIterator<Item = u64>) {
-        self.pinned = ids.into_iter().collect();
+    /// Names the covers of each quality that must stay held.
+    pub fn pin(&mut self, thumbs: impl IntoIterator<Item = u64>, full: impl IntoIterator<Item = u64>) {
+        self.pinned_thumbs = thumbs.into_iter().collect();
+        self.pinned_full = full.into_iter().collect();
     }
 
     /// The loads to start, handed to whoever runs them.
@@ -93,10 +164,15 @@ impl Covers {
 
     /// Takes in a finished load.
     pub fn absorb(&mut self, load: Load) {
-        match load.protocol {
-            Some(protocol) => self.thumbs.insert(load.cover_id, protocol, &self.pinned),
-            // Leave it uncached and retryable: the thumbnail may appear once the scan writes it.
-            None => self.thumbs.give_up(load.cover_id),
+        let Load { cover_id, quality, size, protocol } = load;
+        let (cache, pinned) = match quality {
+            Quality::Thumb => (&mut self.thumbs, &self.pinned_thumbs),
+            Quality::Full => (&mut self.full, &self.pinned_full),
+        };
+        match protocol {
+            Some(protocol) => cache.insert(cover_id, Encoded { protocol, size }, pinned),
+            // Leave it uncached and retryable: a thumbnail may appear once the scan writes it.
+            None => cache.give_up(cover_id),
         }
     }
 
@@ -106,22 +182,40 @@ impl Covers {
     }
 }
 
-/// Reads a cached thumbnail and encodes it for `size`. The expensive half runs on the blocking pool:
-/// a few milliseconds of resizing and encoding has no business on the thread drawing frames.
-pub async fn load(picker: Picker, dir: PathBuf, request: Request) -> Load {
-    let Request { cover_id, size } = request;
-    let Some(pixels) = library::read_thumbnail(&dir, cover_id).await else {
-        return Load { cover_id, protocol: None };
+/// Loads a cover and encodes it for the area it will be drawn in. The expensive half runs on the
+/// blocking pool: a few milliseconds of decoding, resizing and encoding has no business on the
+/// thread drawing frames.
+pub async fn load(picker: Picker, dir: Option<PathBuf>, request: Request) -> Load {
+    let Request { cover_id, quality, size, file } = request;
+    let give_up = Load { cover_id, quality, size, protocol: None };
+    let image = match quality {
+        Quality::Thumb => {
+            let Some(dir) = dir else { return give_up };
+            let Some(pixels) = library::read_thumbnail(&dir, cover_id).await else { return give_up };
+            let edge = library::THUMB;
+            match image::RgbaImage::from_raw(edge, edge, pixels.to_vec()) {
+                Some(image) => image,
+                None => return give_up,
+            }
+        }
+        Quality::Full => {
+            let Some(file) = file else { return give_up };
+            // Decoded straight to the size it will be drawn at, so the artwork is resized once.
+            let edge = drawn_edge(&picker, size);
+            let Some(pixels) = library::decode_cover((*file).clone(), edge).await else { return give_up };
+            match image::RgbaImage::from_raw(edge, edge, pixels.to_vec()) {
+                Some(image) => image,
+                None => return give_up,
+            }
+        }
     };
     let protocol = smol::unblock(move || {
-        let image = image::RgbaImage::from_raw(library::THUMB, library::THUMB, pixels.to_vec())?;
-        let mut protocol = picker.new_resize_protocol(image::DynamicImage::ImageRgba8(image));
-        // Encode here, rather than leaving the first render to do it.
-        protocol.resize_encode(&resize(), size);
-        Some(protocol)
+        // The encoded form only: the pixels above are dropped here, rather than held for as long as
+        // the cover is cached.
+        picker.new_protocol(image::DynamicImage::ImageRgba8(image), size, resize()).ok()
     })
     .await;
-    Load { cover_id, protocol }
+    Load { cover_id, quality, size, protocol }
 }
 
 /// Asks the terminal what it can draw images with. Must run after the alternate screen is up but
@@ -168,6 +262,15 @@ fn protocol_named(name: &str) -> Option<ProtocolType> {
         "halfblocks" => Some(ProtocolType::Halfblocks),
         _ => None,
     }
+}
+
+/// The pixel edge an area of `size` cells covers: what a cover drawn there should be decoded to.
+/// The longer side, since the cover is square and gets center-cropped to fit.
+fn drawn_edge(picker: &Picker, size: Size) -> u32 {
+    let font = picker.font_size();
+    let width = u32::from(size.width) * u32::from(font.width);
+    let height = u32::from(size.height) * u32::from(font.height);
+    width.max(height).max(1)
 }
 
 /// How a cover is fitted to the space it is given. `Scale` rather than `Fit`, which clamps to the

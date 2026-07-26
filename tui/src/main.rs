@@ -163,7 +163,7 @@ async fn event_loop(
 /// Starts the cover loads the last frame asked for. Each runs on the executor and lands back as a
 /// message, so the few milliseconds of resizing and encoding never hold up a keypress.
 fn load_covers(model: &mut Model, tx: &channel::Sender<Msg>) {
-    let Some(dir) = model.covers.dir() else { return };
+    let dir = model.covers.dir();
     for request in model.covers.take_wanted() {
         let (picker, dir, tx) = (model.covers.picker.clone(), dir.clone(), tx.clone());
         smol::spawn(async move {

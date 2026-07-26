@@ -9,7 +9,7 @@ use ratatui::layout::{Constraint, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, Paragraph};
-use ratatui_image::StatefulImage;
+use ratatui_image::Image;
 use std::time::Duration;
 
 /// The frame: one header row, the body, one status row. No borders anywhere -- the terminal's own
@@ -105,7 +105,7 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
     let [cover_area, _] = Layout::horizontal([Constraint::Length(cover_size.width), Constraint::Min(0)]).areas(cover_area);
 
     let accent = album.accent.map(|c| Color::Rgb(channel(c.r), channel(c.g), channel(c.b)));
-    let (cover_id, pinned) = (album.cover_id, pinned_covers(model));
+    let (cover_id, nearby) = (album.cover_id, nearby_covers(model));
     let mut lines =
         vec![Line::from(Span::raw(album.title.clone()).bold()), Line::from(Span::raw(album.artist.clone()).fg(Color::Cyan))];
     let year = album.year.map(|year| year.to_string());
@@ -119,26 +119,35 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
         lines.push(Line::from(vec![Span::raw(format!("{:02} ", n + 1)).fg(Color::DarkGray), Span::raw(track.title.clone())]));
     }
 
-    draw_cover(frame, model, cover_area, cover_id, accent, &pinned);
+    draw_cover(frame, model, cover_area, cover_id, accent, covers::Quality::Thumb, &nearby);
     frame.render_widget(Paragraph::new(lines), rest);
 }
 
-/// Draws the cover for `cover_id` in `area`, asking for it if it is not cached yet.
+/// Draws the cover for `cover_id` in `area`, asking for it -- and for `also`, the ones worth having
+/// ready -- at the size this pane draws them in. `quality` is what this pane wants; the other is
+/// drawn if it happens to be held, since a thumbnail upscaled beats a blank while a large cover
+/// decodes.
 ///
-/// Until it arrives -- and for an album that has no artwork at all -- the area is filled with the
-/// album's accent colour, which the album index knows long before any pixels are read. So a cover
-/// never holds up a keypress; the colour is simply replaced when the artwork is ready.
-fn draw_cover(frame: &mut Frame, model: &mut Model, area: Rect, cover_id: Option<u64>, accent: Option<Color>, pinned: &[u64]) {
+/// Until a cover arrives, and for an album that has no artwork at all, the area is filled with the
+/// album's accent colour, which the index knows long before any pixels are read. So a cover never
+/// holds up a keypress; the colour is simply replaced once the artwork is ready.
+fn draw_cover(
+    frame: &mut Frame,
+    model: &mut Model,
+    area: Rect,
+    cover_id: Option<u64>,
+    accent: Option<Color>,
+    quality: covers::Quality,
+    also: &[u64],
+) {
     let size = Size::new(area.width, area.height);
     if let Some(id) = cover_id {
-        // Everything worth having ready, at the size this pane draws them: encodings are per-size.
-        for &id in pinned {
-            model.covers.want(id, size);
+        model.covers.want(id, quality, size);
+        for &other in also {
+            model.covers.want(other, quality, size);
         }
-        model.covers.want(id, size);
-        if let Some(protocol) = model.covers.get(id) {
-            let image = StatefulImage::default().resize(covers::resize());
-            frame.render_stateful_widget(image, area, protocol);
+        if let Some(protocol) = model.covers.best(id, size) {
+            frame.render_widget(Image::new(protocol), area);
             return;
         }
     }
@@ -146,8 +155,9 @@ fn draw_cover(frame: &mut Frame, model: &mut Model, area: Rect, cover_id: Option
     frame.render_widget(Block::default().style(Style::default().bg(fill)), area);
 }
 
-/// The covers around the browser's cursor, which are worth having before they are asked for.
-fn pinned_covers(model: &Model) -> Vec<u64> {
+/// The albums around the browser's cursor, whose thumbnails are worth having before they are asked
+/// for: a single keypress reaches them.
+fn nearby_covers(model: &Model) -> Vec<u64> {
     let row = model.selected_row();
     let first = row.saturating_sub(covers::PIN_RADIUS);
     (first..=row + covers::PIN_RADIUS).filter_map(|row| model.album_at(row)?.cover_id).collect()
@@ -211,9 +221,12 @@ fn now_playing(frame: &mut Frame, model: &mut Model, area: Rect) {
     let [cover_area, rest] = Layout::vertical([Constraint::Length(cover_size.height), Constraint::Min(0)]).areas(area);
     let [cover_area, _] = Layout::horizontal([Constraint::Length(cover_size.width), Constraint::Min(0)]).areas(cover_area);
 
+    // The player draws a cover large, so it wants the high-resolution decode; the queue's neighbours
+    // get theirs ready too, for skipping through it.
     let cover_id = model.playing().and_then(|item| model.album_of(item)).and_then(|album| album.cover_id);
     let accent = Some(accent_of(model));
-    draw_cover(frame, model, cover_area, cover_id, accent, &[]);
+    let ahead = crate::update::full_window(model);
+    draw_cover(frame, model, cover_area, cover_id, accent, covers::Quality::Full, &ahead);
 
     let mut lines = vec![Line::default(), Line::from(Span::raw(title).bold())];
     if let Some((artist, album, year)) = byline {

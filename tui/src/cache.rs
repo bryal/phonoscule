@@ -63,6 +63,11 @@ impl<T> Lru<T> {
         }
     }
 
+    /// Drops an entry that is no longer any use, so it can be loaded afresh.
+    pub fn forget(&mut self, id: u64) {
+        self.entries.remove(&id);
+    }
+
     /// Abandons a load that failed, so a later attempt is not deduplicated away forever.
     pub fn give_up(&mut self, id: u64) {
         self.pending.remove(&id);

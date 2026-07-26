@@ -137,6 +137,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             // are on disk in the thumbnail cache, to be read back a few at a time as covers are
             // shown. What is worth keeping is the accent colour, which stands in for artwork that
             // has not been loaded yet and costs twelve bytes.
+            model.covers.learn_file(art.id, art.file.clone());
             let mut applied = false;
             for album in model.albums.iter_mut().filter(|a| albums.contains(&a.id) && a.cover_id == Some(art.id)) {
                 model.index_dirty |= album.accent != Some(art.accent);
@@ -273,19 +274,27 @@ pub fn reconcile(model: &mut Model) {
     pin_covers(model);
 }
 
-/// Names the covers that must stay cached: the browser's cursor and the albums a single keypress
-/// reaches either side of it, or the playing album in the player. Prefetching them is the view's
-/// business, which is where the size they must be encoded for is known.
+/// Names the covers that must stay cached: around the browser's cursor for thumbnails, and around
+/// the playing album in the queue for the high-resolution ones. Loading them is the view's business,
+/// which is where the size they must be encoded for is known.
 fn pin_covers(model: &mut Model) {
-    let ids: Vec<u64> = match model.view {
-        View::Library => {
-            let row = model.selected_row();
-            let first = row.saturating_sub(covers::PIN_RADIUS);
-            (first..=row + covers::PIN_RADIUS).filter_map(|row| model.album_at(row)?.cover_id).collect()
-        }
-        View::Player => model.playing().and_then(|item| model.album_of(item)).and_then(|a| a.cover_id).into_iter().collect(),
-    };
-    model.covers.pin(ids);
+    let row = model.selected_row();
+    let first = row.saturating_sub(covers::PIN_RADIUS);
+    let thumbs: Vec<u64> = (first..=row + covers::PIN_RADIUS).filter_map(|row| model.album_at(row)?.cover_id).collect();
+    model.covers.pin(thumbs, full_window(model));
+}
+
+/// The albums whose high-resolution covers are worth having ready: the playing one, and its
+/// neighbours in the queue.
+pub fn full_window(model: &Model) -> Vec<u64> {
+    let albums = model.queue_albums();
+    let Some(playing) = model.playing().map(|item| item.album_id) else { return vec![] };
+    let Some(at) = albums.iter().position(|&id| id == playing) else { return vec![] };
+    let first = at.saturating_sub(covers::FULL_BEHIND);
+    albums[first..(at + covers::FULL_AHEAD + 1).min(albums.len())]
+        .iter()
+        .filter_map(|&id| model.albums.iter().find(|album| album.id == id)?.cover_id)
+        .collect()
 }
 
 /// Options for the boot scan.

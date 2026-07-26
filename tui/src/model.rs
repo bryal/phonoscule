@@ -170,6 +170,17 @@ impl Model {
         self.queue.get(self.current)
     }
 
+    /// The queue's albums in order, one entry per run of tracks from the same album.
+    pub fn queue_albums(&self) -> Vec<u64> {
+        let mut albums = Vec::new();
+        for item in &self.queue {
+            if albums.last() != Some(&item.album_id) {
+                albums.push(item.album_id);
+            }
+        }
+        albums
+    }
+
     /// The album a queue item belongs to, if it is still in the library.
     pub fn album_of(&self, item: &QueueItem) -> Option<&Album> {
         self.albums.iter().find(|album| album.id == item.album_id)
