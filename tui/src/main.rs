@@ -1,91 +1,161 @@
 //! Phonoscule TUI: an album-focused music player for the terminal.
 //!
-//! A sketch: it draws a static now-playing frame from dummy state, to prove out cover art in the
-//! terminal (see [`ratatui_image`]). None of it is wired to the player yet.
+//! The terminal counterpart of `phonoscule-gui`: the same album-centric browsing, drawn in text,
+//! with the playing album's cover art shown through whatever image protocol the terminal speaks.
+//! Follows the model/update/view architecture; this file boots it and runs the event loop.
 
-use crossterm::event::{self, Event, KeyCode};
-use ratatui::{
-    Frame,
-    layout::{Alignment, Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Gauge, Paragraph},
-};
-use ratatui_image::{StatefulImage, picker::Picker, protocol::StatefulProtocol};
-use std::time::Duration;
+mod keys;
+mod logger;
+mod model;
+mod paths;
+mod update;
+mod view;
 
-struct App {
-    /// Playback position through the track, 0 to 1.
-    progress: f64,
-    current_time: String,
-    is_playing: bool,
-    cover: StatefulProtocol,
+use futures::StreamExt;
+use model::Model;
+use phonoscule::{config, library};
+use smol::channel;
+use std::path::PathBuf;
+use update::{After, Msg, update};
+
+/// The name this player goes by: its `[app.tui]` config table and its `$PHONOSCULE_TUI_CONF`.
+const APP: &str = "tui";
+
+/// `--help` text: what the program is and how to run it. [`help`] follows it with the config
+/// section.
+const HELP: &str = "\
+Phonoscule: an album-art-focused music player for the terminal.
+
+Usage: phonoscule-tui [CONFIG]
+
+Arguments:
+  CONFIG         (optional) Path to a config file.
+
+Options:
+  -h, --help     Print this help and exit.
+  -V, --version  Print version information and exit.
+
+";
+
+fn help() -> String {
+    format!("{HELP}{}", config::config_help(APP))
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(path) = std::env::args().nth(1) else {
-        return Err("usage: phonoscule-tui <cover-image>".into());
-    };
+fn main() {
+    // Any startup failure -- a bad argument, an unreadable config, a terminal that cannot be put
+    // into raw mode -- prints the help after it, pointing at how to run the program and where its
+    // config lives.
+    if let Err(e) = run() {
+        eprintln!("Error: {e:?}\n");
+        eprint!("{}", help());
+        std::process::exit(1);
+    }
+}
 
-    // Asks the terminal what image protocol it speaks, falling back to unicode half blocks.
-    let picker = Picker::from_query_stdio()?;
-    let mut app = App {
-        progress: 0.45,
-        current_time: "01:23".to_string(),
-        is_playing: true,
-        cover: picker.new_resize_protocol(image::open(&path)?),
-    };
+fn run() -> anyhow::Result<()> {
+    // Deliberately tiny hand-rolled argument handling (no dependency): the two flags, and at most
+    // one positional -- a config path.
+    let mut arg_conf_path = None;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{}", help());
+                return Ok(());
+            }
+            "-V" | "--version" => {
+                println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            _ if arg.starts_with('-') => anyhow::bail!("unknown option `{arg}`"),
+            _ if arg_conf_path.is_none() => arg_conf_path = Some(PathBuf::from(arg)),
+            _ => anyhow::bail!("expected at most one argument: a path to a config file"),
+        }
+    }
 
+    // Before the terminal is taken over, so failures here print normally.
+    let logs = logger::start();
+    let conf = smol::block_on(config::load(APP, arg_conf_path))?;
+    let index = smol::block_on(library::load_index(paths::album_index_file()));
+    let model = Model::new(conf, index);
+
+    // Installs a panic hook that restores the terminal first, so a panic leaves a usable shell
+    // rather than a raw-mode one with the alternate screen still up.
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut app);
+    let result = smol::block_on(event_loop(&mut terminal, model, logs));
     ratatui::restore();
-    result?;
+    result
+}
+
+async fn event_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    mut model: Model,
+    logs: channel::Receiver<logger::Entry>,
+) -> anyhow::Result<()> {
+    // Every source fans into one channel, so the loop has a single thing to await and messages stay
+    // in the order they arrived.
+    let (tx, rx) = channel::unbounded::<Msg>();
+    let sources = [
+        forward(terminal_events(), tx.clone()),
+        forward(logs.map(Msg::Log), tx.clone()),
+        forward(library::scan(update::scan_options(&model)).map(Msg::Library), tx.clone()),
+    ];
+
+    terminal.draw(|frame| view::view(frame, &mut model))?;
+    while let Ok(msg) = rx.recv().await {
+        let mut redraw = apply(&mut model, msg);
+        // A burst -- a scan reporting hundreds of albums, a held key -- redraws once, at the end.
+        while let Ok(msg) = rx.try_recv() {
+            redraw |= apply(&mut model, msg);
+        }
+        if model.quit {
+            break;
+        }
+        if redraw {
+            terminal.draw(|frame| view::view(frame, &mut model))?;
+        }
+    }
+    drop(sources);
     Ok(())
 }
 
-fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Result<()> {
-    loop {
-        terminal.draw(|frame| draw(frame, app))?;
-        if !event::poll(Duration::from_millis(16))? {
-            continue;
-        }
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') => return Ok(()),
-                KeyCode::Char(' ') => app.is_playing = !app.is_playing,
-                _ => (),
-            }
+/// Applies one message, reporting whether the frame needs redrawing.
+fn apply(model: &mut Model, msg: Msg) -> bool {
+    match update(model, msg) {
+        After::Redraw => true,
+        After::Idle => false,
+        After::SaveIndex => {
+            let save = library::save_index(paths::album_index_file(), &model.albums);
+            smol::spawn(save).detach();
+            true
         }
     }
 }
 
-fn draw(frame: &mut Frame, app: &mut App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Min(10),   // cover art
-            Constraint::Length(1), // seek bar
-            Constraint::Length(1), // controls
-        ])
-        .split(frame.area());
+/// Key presses and resizes, as messages. Anything else the terminal reports (mouse, focus, pastes)
+/// is not bound to anything yet.
+fn terminal_events() -> impl futures::Stream<Item = Msg> + Send {
+    crossterm::event::EventStream::new().filter_map(|event| async {
+        match event {
+            Ok(crossterm::event::Event::Key(key)) => Some(Msg::Key(key)),
+            Ok(crossterm::event::Event::Resize(..)) => Some(Msg::Resize),
+            Ok(_) => None,
+            Err(e) => {
+                log::warn!("terminal event error: {e}");
+                None
+            }
+        }
+    })
+}
 
-    let cover_block = Block::default().borders(Borders::ALL).title(" Now Playing ");
-    frame.render_stateful_widget(StatefulImage::default(), cover_block.inner(chunks[0]), &mut app.cover);
-    frame.render_widget(cover_block, chunks[0]);
-
-    let seek = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(10), Constraint::Length(7)])
-        .split(chunks[1]);
-    let bar = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-        .use_unicode(true)
-        .ratio(app.progress);
-    frame.render_widget(bar, seek[0]);
-    frame.render_widget(Paragraph::new(format!(" {} ", app.current_time)).alignment(Alignment::Right), seek[1]);
-
-    let play_icon = if app.is_playing { "⏸" } else { "▶" };
-    let controls =
-        Paragraph::new(format!("⏮   {play_icon}   ⏭")).alignment(Alignment::Center).style(Style::default().fg(Color::White));
-    frame.render_widget(controls, chunks[2]);
+/// Pumps a stream into the message channel for as long as the returned task is held. Dropping it
+/// stops the source, which is how the scan is cancelled on exit.
+fn forward(stream: impl futures::Stream<Item = Msg> + Send + 'static, tx: channel::Sender<Msg>) -> smol::Task<()> {
+    smol::spawn(async move {
+        let mut stream = std::pin::pin!(stream);
+        while let Some(msg) = stream.next().await {
+            if tx.send(msg).await.is_err() {
+                return;
+            }
+        }
+    })
 }

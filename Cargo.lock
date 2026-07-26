@@ -3917,11 +3917,15 @@ dependencies = [
 name = "phonoscule-tui"
 version = "0.1.0-dev"
 dependencies = [
+ "anyhow",
  "crossterm",
+ "futures",
  "image",
+ "log",
  "phonoscule",
  "ratatui",
  "ratatui-image",
+ "smol",
 ]
 
 [[package]]
