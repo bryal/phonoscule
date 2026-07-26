@@ -108,6 +108,11 @@ pub struct Model {
     pub pos: Duration,
     /// The playing track's length, once the engine has opened it and said so.
     pub len: Option<Duration>,
+    /// The position last asked of the engine, held until playback actually reaches it. A burst of
+    /// seeks accumulates from here rather than from the round-trip-lagged reported position, and
+    /// reports still in flight from before the seek are ignored until it arrives -- otherwise they
+    /// yank the bar back and it rubberbands.
+    pub pending_seek: Option<Duration>,
     /// Recent log records, newest last (see the logger module).
     pub log: VecDeque<logger::Entry>,
     /// Set to leave the event loop.
@@ -124,6 +129,7 @@ impl Model {
             repeat: player::Repeat::Off,
             pos: Duration::ZERO,
             len: None,
+            pending_seek: None,
             conf,
             picker,
             cover: None,
@@ -204,11 +210,16 @@ mod testing {
     use phonoscule::config;
     use phonoscule::library::TrackInfo;
     use ratatui_image::picker::Picker;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     /// A browser over `n` synthetic albums, sorted so their titles read in order.
+    ///
+    /// Its config gets a file of its own: the tests run in parallel, and sharing one path meant a
+    /// test could read it while another was rewriting it.
     pub fn browser(n: usize) -> Model {
-        let dir = std::env::temp_dir().join(format!("phonoscule-tui-view-test-{}", std::process::id()));
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("phonoscule-tui-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("conf.toml");
+        let path = dir.join(format!("conf-{}.toml", NEXT.fetch_add(1, Ordering::Relaxed)));
         std::fs::write(&path, format!("music-dir = {:?}", dir)).unwrap();
         let conf = smol::block_on(config::load("tui", Some(path))).unwrap();
 

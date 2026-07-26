@@ -115,11 +115,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             After::Idle
         }
         Msg::Seek(by) => {
-            // Relative to where the bar already is, so a held key accumulates instead of every
-            // press starting from the same reported position.
-            let pos = model.pos.as_secs_f64() + by as f64;
-            model.pos = Duration::from_secs_f64(pos.max(0.0));
-            model.send(player::Cmd::Seek(model.pos));
+            seek(model, by);
             After::Redraw
         }
         Msg::CycleRepeat => {
@@ -153,15 +149,44 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
     }
 }
 
+/// How close a reported position must be to a pending seek's target to count as arrived, after
+/// which live reports drive the bar again. Wide enough that the first report once playback catches up
+/// clears it, narrow relative to a seek step so it does not clear mid-scrub while a key is held.
+const SEEK_SETTLE: Duration = Duration::from_secs(1);
+
+/// Seeks `by` seconds, forwards or back. Taken relative to where the bar already is -- which this
+/// moves at once -- so a burst accumulates instead of every press starting from the same lagged
+/// position. Saturates at zero and clamps to the track's length.
+fn seek(model: &mut Model, by: i64) {
+    let target = match by.is_negative() {
+        true => model.pos.saturating_sub(Duration::from_secs(by.unsigned_abs())),
+        false => model.pos.saturating_add(Duration::from_secs(by.unsigned_abs())),
+    };
+    let target = model.len.map_or(target, |len| target.min(len));
+    model.pos = target;
+    model.pending_seek = Some(target);
+    model.send(player::Cmd::Seek(target));
+}
+
 fn player_event(model: &mut Model, event: player::Event) -> After {
     match event {
         player::Event::TrackStarted { ix, len } => {
             model.current = ix;
             model.len = len;
             model.pos = Duration::ZERO;
+            // A new track invalidates any seek still settling against the old one.
+            model.pending_seek = None;
             After::Redraw
         }
         player::Event::Progress(pos) => {
+            // While a seek settles, ignore reports until playback reaches (roughly) where it was
+            // asked to go: earlier ones, still in flight, would drag the bar back to where playback
+            // was before the seek. Slow decoding makes that window wide, which is why holding a seek
+            // key in a debug build made the bar rubberband.
+            if matches!(model.pending_seek, Some(target) if pos.abs_diff(target) > SEEK_SETTLE) {
+                return After::Idle;
+            }
+            model.pending_seek = None;
             model.pos = pos;
             After::Redraw
         }
@@ -171,6 +196,10 @@ fn player_event(model: &mut Model, event: player::Event) -> After {
         }
         player::Event::QueueEnded => {
             model.play_state = player::PlayState::Paused;
+            // The queue may have ended through a skip: rest the bar at the end rather than wherever
+            // the last track happened to have reached.
+            model.pos = model.len.unwrap_or(Duration::ZERO);
+            model.pending_seek = None;
             After::Redraw
         }
     }
@@ -335,5 +364,54 @@ mod test {
 
         send(&mut model, Msg::Seek(-600));
         assert_eq!(model.pos, Duration::ZERO, "seeking back past the start stops there");
+    }
+
+    /// Seeking forward stops at the end of the track rather than running past it.
+    #[test]
+    fn seeks_clamp_to_the_track_length() {
+        let mut model = browser(3);
+        send(&mut model, Msg::Player(player::Event::TrackStarted { ix: 0, len: Some(Duration::from_secs(100)) }));
+        send(&mut model, Msg::Seek(600));
+        assert_eq!(model.pos, Duration::from_secs(100));
+    }
+
+    /// The bar must not rubberband: reports the engine sent before a seek are still on their way
+    /// afterwards, and applying them would drag the bar back to where playback was.
+    #[test]
+    fn stale_progress_reports_do_not_drag_the_bar_back() {
+        let mut model = browser(3);
+        send(&mut model, Msg::Player(player::Event::TrackStarted { ix: 0, len: Some(Duration::from_secs(300)) }));
+        send(&mut model, Msg::Player(player::Event::Progress(Duration::from_secs(10))));
+
+        // Scrub forward a minute, as a held key does.
+        for _ in 0..12 {
+            send(&mut model, Msg::Seek(5));
+        }
+        assert_eq!(model.pos, Duration::from_secs(70), "the bar follows the keys immediately");
+
+        // Reports from before the seek, arriving late because decoding lagged behind.
+        for stale in [11, 12, 13] {
+            send(&mut model, Msg::Player(player::Event::Progress(Duration::from_secs(stale))));
+            assert_eq!(model.pos, Duration::from_secs(70), "a stale report must not move the bar");
+        }
+
+        // Once playback actually arrives, reports drive the bar again.
+        send(&mut model, Msg::Player(player::Event::Progress(Duration::from_secs(70))));
+        assert_eq!(model.pos, Duration::from_secs(70));
+        send(&mut model, Msg::Player(player::Event::Progress(Duration::from_secs(71))));
+        assert_eq!(model.pos, Duration::from_secs(71), "live reports drive the bar once the seek settled");
+    }
+
+    /// A track change abandons a seek that never settled, so the new track's reports are believed.
+    #[test]
+    fn a_new_track_abandons_an_unsettled_seek() {
+        let mut model = browser(3);
+        send(&mut model, Msg::Player(player::Event::TrackStarted { ix: 0, len: Some(Duration::from_secs(300)) }));
+        send(&mut model, Msg::Seek(120));
+        send(&mut model, Msg::Player(player::Event::TrackStarted { ix: 1, len: Some(Duration::from_secs(300)) }));
+        assert_eq!(model.pos, Duration::ZERO);
+
+        send(&mut model, Msg::Player(player::Event::Progress(Duration::from_secs(2))));
+        assert_eq!(model.pos, Duration::from_secs(2), "the new track's reports are not held off");
     }
 }
