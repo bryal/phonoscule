@@ -1,5 +1,8 @@
 //! Rendering the model: the library browser and the player (Cover Flow) views.
 
+use crate::album_grid::album_grid;
+use crate::background;
+use crate::coverflow::{FlowCover, cover_flow};
 use crate::model::{
     App, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, SEARCH_INPUT_ID, SORT_SCROLL_ID, ScanState, SortMenu,
     TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of,
@@ -13,9 +16,6 @@ use iced::{Border, Center, Color, Element, Fill, Padding, Theme, color};
 use phonoscule::library::Album;
 use phonoscule::player;
 use phonoscule::sort::SortOrder;
-use phonoscule_gui::album_grid::album_grid;
-use phonoscule_gui::background;
-use phonoscule_gui::coverflow::{FlowCover, cover_flow};
 use std::cmp::min;
 use std::time::Duration;
 

@@ -4,6 +4,9 @@
 //! play queue with a seekable playback bar. Follows the model/update/view architecture; this file
 //! only boots the application and wires up its event sources.
 
+mod album_grid;
+mod background;
+mod coverflow;
 mod model;
 mod update;
 mod view;
