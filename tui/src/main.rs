@@ -4,6 +4,7 @@
 //! with the playing album's cover art shown through whatever image protocol the terminal speaks.
 //! Follows the model/update/view architecture; this file boots it and runs the event loop.
 
+mod cache;
 mod covers;
 mod keys;
 mod logger;
@@ -103,7 +104,8 @@ fn run() -> anyhow::Result<()> {
         name: "phonoscule-tui".into(),
         description: "Terminal application based on the Phonoscule music player library".into(),
     });
-    let model = Model::new(conf, covers::picker(forced_protocol.as_deref()), engine, index);
+    let picker = covers::picker(forced_protocol.as_deref());
+    let model = Model::new(conf, covers::Covers::new(picker, paths::covers_dir()), engine, index);
     // The query's bytes went out behind ratatui's back, and a terminal that did not understand them
     // will have printed them; wipe the screen before the first frame. Through the backend, whose
     // clear is a plain escape sequence -- `Terminal::clear` snapshots the cursor position first, and
@@ -149,10 +151,27 @@ async fn event_loop(
         if redraw {
             update::reconcile(&mut model);
             terminal.draw(|frame| view::view(frame, &mut model))?;
+            // Drawing is what discovers which covers are wanted, and at what size, so the loads it
+            // asked for are started once the frame is out.
+            load_covers(&mut model, &tx);
         }
     }
     drop(sources);
     Ok(())
+}
+
+/// Starts the cover loads the last frame asked for. Each runs on the executor and lands back as a
+/// message, so the few milliseconds of resizing and encoding never hold up a keypress.
+fn load_covers(model: &mut Model, tx: &channel::Sender<Msg>) {
+    let Some(dir) = model.covers.dir() else { return };
+    for request in model.covers.take_wanted() {
+        let (picker, dir, tx) = (model.covers.picker.clone(), dir.clone(), tx.clone());
+        smol::spawn(async move {
+            let load = covers::load(picker, dir, request).await;
+            let _ = tx.send(Msg::Cover(load)).await;
+        })
+        .detach();
+    }
 }
 
 /// How long messages are absorbed before drawing. Enough to swallow a burst whole, short enough that

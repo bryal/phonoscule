@@ -847,6 +847,16 @@ async fn read_tags(path: &Path) -> Option<FileTags> {
 /// Number of bytes in a cached thumbnail: [`THUMB`]²  RGB.
 const THUMB_RGB_LEN: usize = (THUMB * THUMB * 3) as usize;
 
+/// Reads one cached thumbnail by cover id, as [`THUMB`]²  RGBA: a plain file read and a widening, no
+/// image decoding. `None` when it was never cached, or the file is not the size it should be.
+///
+/// For a consumer that would rather load thumbnails as it needs them than hold the whole library's
+/// worth at once -- [`scan`] hands them over as it goes, but nothing says they must be kept.
+pub async fn read_thumbnail(covers_dir: &Path, id: u64) -> Option<Arc<[u8]>> {
+    let rgb = smol::fs::read(covers_dir.join(format!("{id:016x}"))).await.ok()?;
+    (rgb.len() == THUMB_RGB_LEN).then(|| rgb_to_rgba(&rgb))
+}
+
 /// Loads a cover thumbnail as [`THUMB`]²  RGBA, plus its accent color and absolute path. Reads the
 /// raw cached thumbnail when present -- a plain file read, no image decoding, so this is fast even
 /// in debug builds. Otherwise decodes and downscales the source on the blocking pool (parallel
@@ -856,8 +866,8 @@ async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64) -> Option
     let file = smol::fs::canonicalize(path).await.ok()?;
     let cache_path = covers_dir.map(|dir| dir.join(format!("{id:016x}")));
 
-    if let Some(cache_path) = &cache_path
-        && let Ok(rgb) = smol::fs::read(cache_path).await
+    if let Some(dir) = covers_dir
+        && let Ok(rgb) = smol::fs::read(dir.join(format!("{id:016x}"))).await
         && rgb.len() == THUMB_RGB_LEN
     {
         let accent = accent_color(&rgb);

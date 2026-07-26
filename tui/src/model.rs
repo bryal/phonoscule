@@ -1,13 +1,12 @@
 //! The application state.
 
-use crate::covers::Cover;
+use crate::covers::Covers;
 use crate::logger;
 use phonoscule::config::Conf;
 use phonoscule::library::Album;
 use phonoscule::player;
 use phonoscule::sort::{Dir, SortField, SortOrder};
 use ratatui::widgets::ListState;
-use ratatui_image::picker::Picker;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -69,11 +68,8 @@ const LOG_CAPACITY: usize = 500;
 
 pub struct Model {
     pub conf: Conf,
-    /// What the terminal can draw images with (see the covers module).
-    pub picker: Picker,
-    /// The cover on screen, the only one held: the browser's selection, or the playing album once
-    /// there is one.
-    pub cover: Option<Cover>,
+    /// The covers held for display, and how the terminal draws them (see the covers module).
+    pub covers: Covers,
     pub scan: ScanState,
     /// Every album, ordered by artist then title -- the order scan events upsert into, not the
     /// order the browser shows. See [`shown`](Self::shown).
@@ -120,7 +116,7 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(conf: Conf, picker: Picker, engine: player::Engine, albums: Vec<Album>) -> Self {
+    pub fn new(conf: Conf, covers: Covers, engine: player::Engine, albums: Vec<Album>) -> Self {
         let mut model = Model {
             engine,
             queue: vec![],
@@ -131,8 +127,7 @@ impl Model {
             len: None,
             pending_seek: None,
             conf,
-            picker,
-            cover: None,
+            covers,
             scan: ScanState::Scanning,
             albums,
             index_dirty: false,
@@ -157,6 +152,11 @@ impl Model {
     /// The album the browser's selection sits on.
     pub fn selected_album(&self) -> Option<&Album> {
         self.albums.get(*self.shown.get(self.selected_row())?)
+    }
+
+    /// The album shown at `row`, if there is one.
+    pub fn album_at(&self, row: usize) -> Option<&Album> {
+        self.albums.get(*self.shown.get(row)?)
     }
 
     /// Puts the selection on the album at `row`, clamped to the list.
@@ -207,6 +207,7 @@ pub use testing::browser;
 #[cfg(test)]
 mod testing {
     use super::*;
+    use crate::covers::Covers;
     use phonoscule::library::TrackInfo;
     use ratatui_image::picker::Picker;
     /// A browser over `n` synthetic albums, sorted so their titles read in order.
@@ -226,6 +227,6 @@ mod testing {
             })
             .collect();
         let engine = player::start(player::Client { name: "phonoscule-tui-test".into(), description: String::new() });
-        Model::new(conf, Picker::halfblocks(), engine, albums)
+        Model::new(conf, Covers::new(Picker::halfblocks(), None), engine, albums)
     }
 }

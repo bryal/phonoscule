@@ -7,7 +7,6 @@ use phonoscule::player;
 use std::time::Duration;
 
 /// Everything the event loop reacts to, whatever source it came from.
-#[derive(Debug)]
 pub enum Msg {
     /// A key press, which the keys module resolves to whatever it is bound to in the current view.
     Key(crossterm::event::KeyEvent),
@@ -21,6 +20,8 @@ pub enum Msg {
     /// Move it to the first or last album.
     SelectEdge(Edge),
     Player(player::Event),
+    /// A cover finished loading and encoding (see the covers module).
+    Cover(covers::Load),
     /// Play the selected album, replacing the queue.
     PlaySelected,
     /// Append the selected album to the queue.
@@ -123,14 +124,21 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             model.send(player::Cmd::SetRepeat(model.repeat));
             After::Redraw
         }
+        Msg::Cover(load) => {
+            model.covers.absorb(load);
+            After::Redraw
+        }
         Msg::Player(event) => player_event(model, event),
         Msg::Library(library::ScanEvent::Album(album)) => absorb_album(model, *album),
         Msg::Library(library::ScanEvent::Cover { albums, art }) => {
             // Only albums whose current cover choice this art satisfies take it: an album can
             // outgrow a queued cover mid-scan, and the stale decode must not overwrite the winner.
+            // The pixels are not kept: a library's worth of them is hundreds of megabytes, and they
+            // are on disk in the thumbnail cache, to be read back a few at a time as covers are
+            // shown. What is worth keeping is the accent colour, which stands in for artwork that
+            // has not been loaded yet and costs twelve bytes.
             let mut applied = false;
             for album in model.albums.iter_mut().filter(|a| albums.contains(&a.id) && a.cover_id == Some(art.id)) {
-                album.cover = Some(art.clone());
                 model.index_dirty |= album.accent != Some(art.accent);
                 album.accent = Some(art.accent);
                 applied = true;
@@ -262,25 +270,22 @@ pub fn reconcile(model: &mut Model) {
     if model.shown_dirty {
         refresh(model);
     }
-    sync_cover(model);
+    pin_covers(model);
 }
 
-/// Points the one held cover at the selected album, building it if that album's art has arrived and
-/// dropping it if the selection has none. Cheap and idempotent, so callers fire it after anything
-/// that could have moved the selection or delivered art.
-fn sync_cover(model: &mut Model) {
-    let album = match model.view {
-        View::Library => model.selected_album(),
-        // The player is about the album playing, not the one the browser's cursor happens to rest on.
-        View::Player => model.playing().and_then(|item| model.album_of(item)),
+/// Names the covers that must stay cached: the browser's cursor and the albums a single keypress
+/// reaches either side of it, or the playing album in the player. Prefetching them is the view's
+/// business, which is where the size they must be encoded for is known.
+fn pin_covers(model: &mut Model) {
+    let ids: Vec<u64> = match model.view {
+        View::Library => {
+            let row = model.selected_row();
+            let first = row.saturating_sub(covers::PIN_RADIUS);
+            (first..=row + covers::PIN_RADIUS).filter_map(|row| model.album_at(row)?.cover_id).collect()
+        }
+        View::Player => model.playing().and_then(|item| model.album_of(item)).and_then(|a| a.cover_id).into_iter().collect(),
     };
-    let art = album.and_then(|album| album.cover.as_ref().map(|art| (album.id, art.clone())));
-    match art {
-        // Already the right one: leave it be, or its resize and encode would be thrown away.
-        Some((id, _)) if model.cover.as_ref().is_some_and(|cover| cover.album == id) => (),
-        Some((id, art)) => model.cover = covers::build(&model.picker, id, &art),
-        None => model.cover = None,
-    }
+    model.covers.pin(ids);
 }
 
 /// Options for the boot scan.
@@ -288,7 +293,9 @@ pub fn scan_options(model: &Model) -> library::ScanOptions {
     library::ScanOptions {
         root: model.conf.music_dir.clone(),
         priority: vec![],
-        known_covers: model.albums.iter().filter_map(|a| a.cover.as_ref().map(|c| c.id)).collect(),
+        // Nothing is claimed as known: the scan reads each thumbnail back from its own cache in a
+        // few tens of microseconds, and its accent is worth having even when the pixels are not.
+        known_covers: Default::default(),
         cache_file: paths::tag_cache_file(),
         covers_dir: paths::covers_dir(),
     }

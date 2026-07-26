@@ -98,17 +98,14 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
     let [_, area] = Layout::horizontal([Constraint::Length(2), Constraint::Min(0)]).areas(area);
     let Some(album) = model.selected_album() else { return };
 
-    // The cover takes what the pane can spare once the byline and a few tracks have their rows, as
-    // large as that allows.
+    // The cover takes what the pane can spare once the byline and a few tracks have their rows.
     let for_cover = Size::new(area.width, area.height.saturating_sub(DETAILS_ROWS));
-    let cover_size = match &model.cover {
-        Some(cover) => cover.size_in(for_cover),
-        None => covers::square(&model.picker, for_cover),
-    };
+    let cover_size = covers::square(&model.covers.picker, for_cover);
     let [cover_area, rest] = Layout::vertical([Constraint::Length(cover_size.height), Constraint::Min(0)]).areas(area);
     let [cover_area, _] = Layout::horizontal([Constraint::Length(cover_size.width), Constraint::Min(0)]).areas(cover_area);
 
     let accent = album.accent.map(|c| Color::Rgb(channel(c.r), channel(c.g), channel(c.b)));
+    let (cover_id, pinned) = (album.cover_id, pinned_covers(model));
     let mut lines =
         vec![Line::from(Span::raw(album.title.clone()).bold()), Line::from(Span::raw(album.artist.clone()).fg(Color::Cyan))];
     let year = album.year.map(|year| year.to_string());
@@ -122,20 +119,38 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
         lines.push(Line::from(vec![Span::raw(format!("{:02} ", n + 1)).fg(Color::DarkGray), Span::raw(track.title.clone())]));
     }
 
-    match &mut model.cover {
-        Some(cover) => {
-            let image = StatefulImage::default().resize(covers::resize());
-            frame.render_stateful_widget(image, cover_area, &mut cover.protocol);
+    draw_cover(frame, model, cover_area, cover_id, accent, &pinned);
+    frame.render_widget(Paragraph::new(lines), rest);
+}
+
+/// Draws the cover for `cover_id` in `area`, asking for it if it is not cached yet.
+///
+/// Until it arrives -- and for an album that has no artwork at all -- the area is filled with the
+/// album's accent colour, which the album index knows long before any pixels are read. So a cover
+/// never holds up a keypress; the colour is simply replaced when the artwork is ready.
+fn draw_cover(frame: &mut Frame, model: &mut Model, area: Rect, cover_id: Option<u64>, accent: Option<Color>, pinned: &[u64]) {
+    let size = Size::new(area.width, area.height);
+    if let Some(id) = cover_id {
+        // Everything worth having ready, at the size this pane draws them: encodings are per-size.
+        for &id in pinned {
+            model.covers.want(id, size);
         }
-        // No artwork loaded (still scanning, or the album has none): a block of the album's accent
-        // colour, which the index knows before any pixels are read. The same zeroth level of detail
-        // the GUI's grid shows.
-        None => {
-            let fill = accent.unwrap_or(Color::DarkGray);
-            frame.render_widget(Block::default().style(Style::default().bg(fill)), cover_area);
+        model.covers.want(id, size);
+        if let Some(protocol) = model.covers.get(id) {
+            let image = StatefulImage::default().resize(covers::resize());
+            frame.render_stateful_widget(image, area, protocol);
+            return;
         }
     }
-    frame.render_widget(Paragraph::new(lines), rest);
+    let fill = accent.unwrap_or(Color::DarkGray);
+    frame.render_widget(Block::default().style(Style::default().bg(fill)), area);
+}
+
+/// The covers around the browser's cursor, which are worth having before they are asked for.
+fn pinned_covers(model: &Model) -> Vec<u64> {
+    let row = model.selected_row();
+    let first = row.saturating_sub(covers::PIN_RADIUS);
+    (first..=row + covers::PIN_RADIUS).filter_map(|row| model.album_at(row)?.cover_id).collect()
 }
 
 /// An accent colour component as a terminal one.
@@ -192,20 +207,13 @@ fn now_playing(frame: &mut Frame, model: &mut Model, area: Rect) {
     let byline = model.album_of(item).map(|album| (album.artist.clone(), album.title.clone(), album.year));
 
     let for_cover = Size::new(area.width, area.height.saturating_sub(4));
-    let cover_size = match &model.cover {
-        Some(cover) => cover.size_in(for_cover),
-        None => covers::square(&model.picker, for_cover),
-    };
+    let cover_size = covers::square(&model.covers.picker, for_cover);
     let [cover_area, rest] = Layout::vertical([Constraint::Length(cover_size.height), Constraint::Min(0)]).areas(area);
     let [cover_area, _] = Layout::horizontal([Constraint::Length(cover_size.width), Constraint::Min(0)]).areas(cover_area);
 
-    match &mut model.cover {
-        Some(cover) => {
-            let image = StatefulImage::default().resize(covers::resize());
-            frame.render_stateful_widget(image, cover_area, &mut cover.protocol);
-        }
-        None => frame.render_widget(Block::default().style(Style::default().bg(Color::DarkGray)), cover_area),
-    }
+    let cover_id = model.playing().and_then(|item| model.album_of(item)).and_then(|album| album.cover_id);
+    let accent = Some(accent_of(model));
+    draw_cover(frame, model, cover_area, cover_id, accent, &[]);
 
     let mut lines = vec![Line::default(), Line::from(Span::raw(title).bold())];
     if let Some((artist, album, year)) = byline {
