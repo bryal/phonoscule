@@ -19,8 +19,15 @@ time, behind interfaces that were already platform-neutral.
   without taking the queue engine too.
   - A wall-clock-paced silent fallback, so a machine with no usable device
     advances its queue at playback speed instead of tearing through it.
-  - A write error reopens the stream, so unplugging a headset or switching the
-    default endpoint resumes on the new device within a chunk.
+  - Playback follows the output device. A WASAPI stream is bound for life to the
+    endpoint it was opened on, and there are two ways for that to become the
+    wrong one. If the endpoint disappears - unplugged, disabled - the write fails
+    and the stream is reopened on whatever is default now. If it merely stops
+    being the default, because a headset was plugged in or another output picked,
+    nothing fails at all and WASAPI says nothing: the device we hold is still
+    perfectly good, just not where anyone is listening. So the endpoint opened is
+    remembered and checked against the current default twice a second. PulseAudio
+    moves a stream itself, so this is Windows' half of the same behaviour.
 - **`volume`** - the mixerless fallback on Windows is now a real backend:
   `ISimpleAudioVolume` on the audio sessions `sink` opens for this process, which
   is the per-application slider the Windows volume mixer shows. Same process-id

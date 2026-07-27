@@ -65,21 +65,38 @@ impl Sink {
 
     /// Writes one chunk, blocking until the device has taken it - this is the engine's pacing.
     ///
-    /// A device lost mid-stream (unplugged, or the default endpoint changed under us) is reopened
-    /// once here rather than surfaced: the chunk that hit the error is dropped, and playback
-    /// continues on the new device within a chunk.
+    /// Two things reopen the stream on a new device rather than being surfaced, both costing the
+    /// chunk in hand and whatever the old device had buffered:
+    ///
+    /// - the device is gone (unplugged, disabled), which the write reports as an error;
+    /// - the device is still there but is no longer the one to be playing on, because the listener
+    ///   plugged in a headset or picked another output. Nothing fails in that case, so the backend
+    ///   is asked (see [`stale`](backend::Sink::stale)).
     pub fn write(&mut self, frames: &[Frame]) {
         if frames.is_empty() {
             return;
         }
-        match &mut self.out {
-            Out::Silent(silence) => silence.write(frames.len()),
-            Out::Device(sink) => {
-                if let Err(e) = sink.write(frames) {
-                    log::warn!("audio output failed ({e}); reopening");
-                    *self = Self::new(&self.client.clone(), self.rate);
-                }
+        let reopen = match &mut self.out {
+            Out::Silent(silence) => {
+                silence.write(frames.len());
+                false
             }
+            Out::Device(sink) => match sink.write(frames) {
+                Err(e) => {
+                    log::warn!("audio output failed ({e}); reopening");
+                    true
+                }
+                Ok(()) => {
+                    let stale = sink.stale();
+                    if stale {
+                        log::info!("the default output device changed; following it");
+                    }
+                    stale
+                }
+            },
+        };
+        if reopen {
+            *self = Self::new(&self.client.clone(), self.rate);
         }
     }
 }
@@ -133,6 +150,12 @@ mod backend {
             self.0.write(samples);
             Ok(())
         }
+
+        /// Never: PulseAudio moves a playing stream to the new default sink itself, so following the
+        /// listener's choice of output is already done by the time we could ask.
+        pub fn stale(&mut self) -> bool {
+            false
+        }
     }
 }
 
@@ -142,10 +165,19 @@ mod backend {
 /// in the Windows volume mixer, and what [`volume`](crate::volume) then attaches to. The stream is
 /// opened at the track's own rate with `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM`, so the audio engine
 /// resamples to the device's mix format for us.
+///
+/// A stream is bound for life to the endpoint it was opened on. WASAPI invalidates it when that
+/// endpoint disappears, but says nothing at all when the *default* merely moves elsewhere - the
+/// device we hold is still perfectly good, it is simply not where the listener is now listening. So
+/// which endpoint was opened is remembered, and [`Sink::stale`] watches for it ceasing to be the
+/// default. Polled rather than through `IMMNotificationClient`, for the reason
+/// [`volume`](crate::volume)'s backend gives: a callback would arrive on some other thread and have
+/// to be handed to this one anyway, and the check is a comparison of two strings on a timer.
 #[cfg(target_os = "windows")]
 mod backend {
     use super::{Client, Frame};
     use std::cell::Cell;
+    use std::time::{Duration, Instant};
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::Media::Audio::{
         AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -165,6 +197,11 @@ mod backend {
     /// generous next to [`BUFFER_DURATION`], but finite.
     const WAIT_TIMEOUT_MS: u32 = 2000;
 
+    /// How often to ask whether we are still on the default endpoint. Each check is an inter-process
+    /// call to the audio service, so not every chunk; short enough that plugging in a headset moves
+    /// the music within about the time the switch itself takes to settle.
+    const DEFAULT_CHECK: Duration = Duration::from_millis(500);
+
     pub struct Sink {
         client: IAudioClient,
         render: IAudioRenderClient,
@@ -173,6 +210,13 @@ mod backend {
         /// The render buffer's size in frames, against which `GetCurrentPadding` says how much of
         /// it is still unplayed.
         capacity: u32,
+        /// Kept for the stream's life so [`Sink::stale`] can ask what the default endpoint is now
+        /// without paying to create one every time.
+        devices: IMMDeviceEnumerator,
+        /// The endpoint this stream was opened on, by its stable id, and when it was last confirmed
+        /// to still be the default.
+        endpoint: String,
+        checked: Instant,
     }
 
     // The COM interfaces are apartment-bound, but the sink never leaves the audio thread that
@@ -186,6 +230,41 @@ mod backend {
 
         pub fn write(&mut self, frames: &[Frame]) -> Result<(), String> {
             unsafe { self.write_all(frames) }.map_err(|e| e.message())
+        }
+
+        /// Brings the next [`stale`](Sink::stale) forward past its timer, so a test need not wait it
+        /// out to exercise the comparison.
+        #[cfg(test)]
+        pub fn force_check(&mut self) {
+            self.checked = Instant::now() - DEFAULT_CHECK;
+        }
+
+        /// Pretends the stream was opened on some other endpoint, which is what a default moving
+        /// away looks like from in here.
+        #[cfg(test)]
+        pub fn pretend_endpoint(&mut self, id: &str) {
+            self.endpoint = id.to_string();
+        }
+
+        /// Whether the endpoint this stream is on has stopped being the default one, which is how
+        /// plugging in a headset, or picking another output, reaches us: nothing about the stream
+        /// fails, so there is nothing to notice but this.
+        ///
+        /// Checked on a timer rather than per chunk, and a failure to ask counts as "no" - the audio
+        /// service being briefly unreachable is not a reason to tear a working stream down, and an
+        /// endpoint that has really gone will fail the next write instead.
+        pub fn stale(&mut self) -> bool {
+            if self.checked.elapsed() < DEFAULT_CHECK {
+                return false;
+            }
+            self.checked = Instant::now();
+            match unsafe { default_endpoint(&self.devices) } {
+                Ok(current) => current != self.endpoint,
+                Err(e) => {
+                    log::debug!("could not read the default output device: {}", e.message());
+                    false
+                }
+            }
         }
 
         /// Feeds the whole chunk to the device, waiting for room whenever the buffer is full.
@@ -240,10 +319,11 @@ mod backend {
             cbSize: 0,
         };
 
-        let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }?;
-        // The default endpoint for ordinary playback, and whatever the user later makes default:
-        // reopening on `AUDCLNT_E_DEVICE_INVALIDATED` (see `Sink::write`) is what follows them.
-        let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }?;
+        let devices: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }?;
+        // The default endpoint for ordinary playback. Its id is kept so `Sink::stale` can tell when
+        // the default has moved on: the stream itself will not say, having nothing wrong with it.
+        let device = unsafe { devices.GetDefaultAudioEndpoint(eRender, eConsole) }?;
+        let endpoint = unsafe { endpoint_id(&device) }?;
         let audio: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }?;
         unsafe {
             audio.Initialize(
@@ -273,7 +353,25 @@ mod backend {
         if let Err(e) = unsafe { name_session(&audio, client) } {
             log::debug!("could not name the audio session: {e}");
         }
-        Ok(Sink { client: audio, render, ready, capacity })
+        log::debug!("playing at {rate} Hz on endpoint {endpoint}");
+        Ok(Sink { client: audio, render, ready, capacity, devices, endpoint, checked: Instant::now() })
+    }
+
+    /// An endpoint's stable id, as [`Sink::stale`] compares them.
+    ///
+    /// `GetId` hands back a string allocated with the COM task allocator, which is ours to release -
+    /// this runs on every reopen, so leaking it would be a slow leak rather than no leak.
+    unsafe fn endpoint_id(device: &windows::Win32::Media::Audio::IMMDevice) -> windows::core::Result<String> {
+        let id = unsafe { device.GetId() }?;
+        let owned = unsafe { id.to_string() };
+        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(id.0 as *const std::ffi::c_void)) };
+        owned.map_err(Into::into)
+    }
+
+    /// The id of the endpoint playback should be going to now.
+    unsafe fn default_endpoint(devices: &IMMDeviceEnumerator) -> windows::core::Result<String> {
+        let device = unsafe { devices.GetDefaultAudioEndpoint(eRender, eConsole) }?;
+        unsafe { endpoint_id(&device) }
     }
 
     /// Labels our audio session, so the Windows volume mixer lists the player under the name it
@@ -318,6 +416,10 @@ mod backend {
         pub fn write(&mut self, _frames: &[Frame]) -> Result<(), String> {
             Ok(())
         }
+
+        pub fn stale(&mut self) -> bool {
+            false
+        }
     }
 }
 
@@ -337,6 +439,52 @@ mod test {
         let elapsed = start.elapsed();
         assert!(elapsed >= Duration::from_millis(950), "a second of frames took only {elapsed:?}");
         assert!(elapsed < Duration::from_millis(2000), "a second of frames took {elapsed:?}");
+    }
+
+    /// Following the listener's chosen output rests on reading the endpoint's id back and comparing
+    /// it, so both answers are worth pinning: the endpoint we opened is the default, and one that is
+    /// not, is not. Physically plugging a headset in is the case this stands in for.
+    ///
+    /// Skips where there is no device to open, since then there is no endpoint to have an id.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_stream_notices_when_it_is_no_longer_on_the_default_device() {
+        let client = Client { name: "phonoscule-endpoint-test".into(), description: "Endpoint test".into() };
+        let Ok(mut sink) = backend::Sink::open(&client, 48000) else {
+            eprintln!("skipping: no audio device in this environment");
+            return;
+        };
+        // Freshly opened on the default, so nothing to follow. Reaching past the timer, since the
+        // point here is the comparison and not how often it is made.
+        sink.force_check();
+        assert!(!sink.stale(), "just opened on the default endpoint, yet reported stale");
+
+        // What a headset being plugged in amounts to: the default is somewhere our stream is not.
+        sink.pretend_endpoint("{not-the-endpoint-we-are-on}");
+        sink.force_check();
+        assert!(sink.stale(), "the default endpoint moved and the stream did not notice");
+    }
+
+    /// Noticing is half of it: the write that notices must also put playback on the endpoint that is
+    /// now the default, and leave a stream that is not itself stale.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_stale_stream_is_reopened_on_the_current_default() {
+        let client = Client { name: "phonoscule-reopen-test".into(), description: "Reopen test".into() };
+        let mut sink = Sink::new(&client, 48000);
+        let Out::Device(device) = &mut sink.out else {
+            eprintln!("skipping: no audio device in this environment");
+            return;
+        };
+        device.pretend_endpoint("{not-the-endpoint-we-are-on}");
+        device.force_check();
+
+        // A chunk of silence: inaudible, and enough to take the write path that reopens.
+        sink.write(&[Frame::default(); 64]);
+
+        let Out::Device(device) = &mut sink.out else { panic!("reopening left no device") };
+        device.force_check();
+        assert!(!device.stale(), "reopened onto something that is still not the default endpoint");
     }
 
     /// Chunks are due at absolute offsets from the start, so a chunk that ran late is not paid for
