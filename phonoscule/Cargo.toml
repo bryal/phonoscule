@@ -26,10 +26,13 @@ search = []
 # Persisting a player's queue and the state around it across runs (see `session`). Wants std and a
 # filesystem.
 session = ["player", "sort", "dep:smol", "dep:serde", "dep:serde_json", "log/std"]
-# The play-queue engine (see `player`). Wants std, a filesystem, and PulseAudio.
-player = ["dep:smol", "dep:pulse-simple", "dep:embedded-io-adapters", "dep:serde", "log/std"]
+# Audio output (see `sink`). Wants std and an audio backend -- PulseAudio on Linux, WASAPI on
+# Windows. Split from `player` so a program that drives the decoders itself can still just play.
+sink = ["dep:pulse-simple", "dep:windows", "log/std"]
+# The play-queue engine (see `player`). Wants std, a filesystem, and audio output.
+player = ["sink", "dep:smol", "dep:embedded-io-adapters", "dep:serde", "log/std"]
 # Per-application volume through the OS mixer (see `volume`). Wants std.
-volume = ["dep:smol", "dep:libpulse-binding", "log/std"]
+volume = ["dep:smol", "dep:libpulse-binding", "dep:windows", "log/std"]
 # Watching the music directory for changes (see `watcher`). Wants std and a filesystem.
 watcher = ["dep:smol", "dep:futures", "dep:notify", "log/std"]
 # An MPRIS server for media keys and desktop now-playing (see `mpris`). Wants a D-Bus session bus.
@@ -47,7 +50,6 @@ log               = { workspace = true }
 # Optional, for the features above.
 smol                 = { workspace = true, optional = true }
 embedded-io-adapters = { workspace = true, optional = true }
-pulse-simple         = { version = "1.0.1", optional = true }
 serde                = { version = "1.0.228", features = ["derive"], optional = true }
 serde_json           = { version = "1.0.150", optional = true }
 image                = { version = "0.25.10", optional = true }
@@ -58,10 +60,23 @@ futures              = { version = "0.3.32", optional = true }
 notify               = { version = "8.2", optional = true }
 zbus                 = { version = "5.17", optional = true }
 
-# The Linux volume-mixer backend; other platforms build the module's mixerless fallback instead.
-# Speaks to PipeWire via pipewire-pulse.
+# The Linux audio backends: playback and the volume mixer, both speaking PulseAudio (PipeWire
+# included, via pipewire-pulse). Other platforms build their own, or the fallbacks.
 [target.'cfg(target_os = "linux")'.dependencies]
+pulse-simple     = { version = "1.0.1", optional = true }
 libpulse-binding = { version = "2.30.1", optional = true }
+
+# The Windows audio backends: WASAPI playback, and the volume mixer on our own audio session.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Security",                    # SECURITY_ATTRIBUTES, for CreateEventW
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage", # PROPVARIANT, in IMMDevice::Activate's signature
+    "Win32_System_Threading",
+    "Win32_System_Variant",               # ditto
+] }
 
 [dev-dependencies]
 embedded-io-adapters = { workspace = true }

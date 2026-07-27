@@ -23,6 +23,8 @@ pub mod queue;
 pub mod search;
 #[cfg(feature = "session")]
 pub mod session;
+#[cfg(feature = "sink")]
+pub mod sink;
 #[cfg(feature = "sort")]
 pub mod sort;
 #[cfg(feature = "volume")]

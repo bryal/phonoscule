@@ -13,6 +13,7 @@ use phonoscule::{
     opus::{OggOpus, OpusReader},
     plumbing::*,
     sample::*,
+    sink::{self, Client},
     wav::*,
 };
 use smol::{
@@ -152,43 +153,31 @@ impl Track {
 // If trying to seek uncached chunk, call seek on underlying source.
 // If that seek returns None, just propagate that. UI will simply fail to seek beyond cache limits. That should be fine and handled.
 
-struct PulseSink {
-    out: pulse_simple::Playback<[i16; 2]>,
-    /// The rate the stream was opened at, so the player loop can tell when a track needs a new one.
-    rate: u32,
-}
-impl PulseSink {
+/// Adapts the framework's blocking audio output to the async [`Sink`] the plumbing pushes into.
+/// The write blocks the task rather than yielding, which is the point: it is what paces playback.
+struct AudioSink(sink::Sink);
+impl AudioSink {
     fn new(rate: u32) -> Self {
-        let out = pulse_simple::Playback::<[i16; 2]>::new(
-            "phonoscule-cli",
-            "CLI-based application based on the Phonoscule music player library",
-            None,
-            rate,
-        );
-        Self { out, rate }
+        let client = Client {
+            name: "phonoscule-cli".into(),
+            description: "CLI-based application based on the Phonoscule music player library".into(),
+        };
+        AudioSink(sink::Sink::new(&client, rate))
     }
 
     /// Reopens the stream at `rate` if it differs from the current one. The samples are always
     /// 16-bit stereo, so only the rate varies between tracks; the audio server converts to the
     /// device rate, so we never resample ourselves. Mirrors the GUI engine's sink.
     fn ensure_rate(&mut self, rate: u32) {
-        if self.rate != rate {
-            *self = Self::new(rate);
-        }
+        self.0.ensure_rate(rate);
     }
 }
-impl Sink<Stereo<PcmS16Le>> for PulseSink {
+impl Sink<Stereo<PcmS16Le>> for AudioSink {
     async fn write_samples(&mut self, samples: &[Stereo<PcmS16Le>]) -> Option<usize> {
-        if samples.is_empty() {
-            return Some(0);
-        }
-        let pulse_samples = unsafe { core::mem::transmute::<&[Stereo<PcmS16Le>], &[[i16; 2]]>(samples) };
-        assert_eq!(core::mem::size_of_val(samples), core::mem::size_of_val(pulse_samples));
-        self.out.write(pulse_samples);
+        self.0.write(samples);
         Some(samples.len())
     }
 }
-unsafe impl Send for PulseSink {}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -220,7 +209,7 @@ async fn main_() {
     // one loop (like the GUI engine): the sink's blocking writes pace playback, and the sink is
     // reopened only when a track's sample rate differs from the stream's (see `ensure_rate`).
     let _join_player = smol::spawn(async move {
-        let mut sink = PulseSink::new(PLAYBACK_SAMPLE_RATE);
+        let mut sink = AudioSink::new(PLAYBACK_SAMPLE_RATE);
         let mut buf = [OutSample::default(); 512];
         let mut pls_ix = 0usize;
         let mut start_at = 0;
