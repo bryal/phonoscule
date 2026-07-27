@@ -20,7 +20,8 @@ meant as a lightweight, native alternative to cover-grid MPD clients.
   A play queue with album runs, shuffle (by album or track), four repeat modes, seeking,
   and per-application volume driven through the OS mixer.
 - **Desktop integration.**
-  An MPRIS server (media keys and now-playing), and the session -
+  Media keys and now-playing, through an MPRIS server on Linux and the
+  System Media Transport Controls on Windows; and the session -
   queue, position, sort order - restored across runs.
 - **Keyboard-driven.**
   Nearly everything is reachable from the keyboard (see below).
@@ -29,14 +30,21 @@ meant as a lightweight, native alternative to cover-grid MPD clients.
 
 - **Audio:** WAV (8/16/24/32-bit integer and 32-bit float, mono or stereo) and Ogg Opus.
 - **Cover art:** folder images (`{cover,folder,front,albumart}.{jpg,jpeg,png,webp}`).
-- **Output:** PulseAudio, and PipeWire via pipewire-pulse, on Linux.
+- **Output:** PulseAudio, and PipeWire via pipewire-pulse, on Linux; WASAPI on Windows.
+- **Platform:** Linux and Windows 10 or later.
 
-Not yet: FLAC and Ogg Vorbis and other formats as well as audio output beyond Linux/PulseAudio.
+Not yet: FLAC and Ogg Vorbis and other formats, and macOS.
 
 ## Configure
 
-Settings are read from `~/.config/phonoscule.toml`
-(or `$XDG_CONFIG_HOME/phonoscule.toml`):
+Settings are read from a TOML file the framework's players share:
+
+| | |
+|---|---|
+| Linux | `$XDG_CONFIG_HOME/phonoscule.toml`, or `~/.config/phonoscule.toml` |
+| Windows | `%APPDATA%\phonoscule\phonoscule.toml` |
+
+Run with `--help` to see the path on your machine.
 
 ```toml
 music-dir = "~/Music"
@@ -51,13 +59,21 @@ so another player reading the same file can keep its own under `[app.<name>]`.
 Pass a path as the first argument, or set `$PHONOSCULE_GUI_CONF`,
 to read a different file instead.
 
-Without a config file the music directory defaults to `~/Music`.
+Without a config file the music directory defaults to the `Music` folder in your home directory.
 Relative paths resolve against the config file's location.
 `~` and environment variables are expanded.
 
 - **`music-dir`** - path to the music library.
 - **`[app.gui] scaling`** - UI scale factor for high-DPI displays;
   1.0 is unscaled, larger is bigger. Optional, clamped to 0.5 - 3.0.
+
+The session (queue, position, sort order) and the caches (cover thumbnails, tag cache, album index)
+are kept separately, so the caches can be deleted on their own and only cost a rescan:
+
+| | session | caches |
+|---|---|---|
+| Linux | `$XDG_STATE_HOME/phonoscule` | `$XDG_CACHE_HOME/phonoscule` |
+| Windows | `%LOCALAPPDATA%\phonoscule\state` | `%LOCALAPPDATA%\phonoscule\cache` |
 
 ## Run
 
@@ -74,10 +90,23 @@ cargo install --path .
 cargo install --path gui
 ```
 
-If `~/.cargo/bin` is in your `$PATH`, you should now be able to launch `phonoscule-gui` from the terminal.
+If cargo's `bin` directory is on your `PATH`, you should now be able to launch `phonoscule-gui` from
+the terminal.
 
-In addition, if you prefer to launch desktop applications through a graphical launcher,
-there's a `Phonoscule.desktop` file in this directory which you can copy to e.g. `~/.local/share/applications/`.
+On **Windows** the installed `phonoscule-gui.exe` carries the application icon: it is compiled in as
+a resource, so a shortcut to it, or pinning it to the taskbar, looks like it should with nothing else
+to copy. Launching it that way opens no console window; run it from a shell and it prints there as
+usual, though the prompt returns straight away rather than waiting for the player to exit.
+
+On **Linux**, if you prefer to launch desktop applications through a graphical launcher, there's a
+`Phonoscule.desktop` file in this directory which you can copy to e.g. `~/.local/share/applications/`.
+It names `phonoscule` as its icon, so install the artwork into an icon theme alongside it:
+
+```sh
+install -Dm644 Phonoscule.desktop ~/.local/share/applications/Phonoscule.desktop
+install -Dm644 assets/icon/phonoscule.svg ~/.local/share/icons/hicolor/scalable/apps/phonoscule.svg
+```
+
 The application should then show up in your desktop environment's application launcher.
 
 ## Controls

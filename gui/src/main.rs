@@ -4,8 +4,15 @@
 //! play queue with a seekable playback bar. Follows the model/update/view architecture; this file
 //! only boots the application and wires up its event sources.
 
+// A graphical program, so on Windows it is linked as a subsystem application: starting it from
+// Explorer, a shortcut or the Start menu must not conjure a console window alongside the player.
+// That costs the standard handles, which [`console::prepare`] sorts out before anything is printed -
+// including adopting the console of a shell that did start it, so a terminal run is unchanged.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod album_grid;
 mod background;
+mod console;
 mod coverflow;
 mod model;
 mod paths;
@@ -42,6 +49,31 @@ static FONTS_DATA: &[&[u8]] = &[
 /// The name this player goes by: its `[app.gui]` config table and its `$PHONOSCULE_GUI_CONF`.
 const APP: &str = "gui";
 
+/// The window icon: the same mark the executable itself carries as a resource (see `build.rs`).
+///
+/// Both are needed, and they cover different surfaces. This one is what the window system asks the
+/// running process for - the title bar on Windows (winit sets only `ICON_SMALL` from it) and the
+/// window on X11 and Wayland. The executable's resource is what Windows reads off disk for the file
+/// in Explorer, and what the taskbar and Alt-Tab fall back to, `ICON_BIG` being left unset. Between
+/// them there is nowhere the icon is missing.
+///
+/// Only the largest form is embedded, and the window system scales it: it is a couple of hundred
+/// times smaller than the fonts already in here, and one image beats keeping several in step.
+/// Rendered from the artwork at build time, hence `OUT_DIR` rather than a path into `assets`.
+static ICON_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/window-icon.png"));
+
+/// The decoded icon, or `None` if it will not decode - which costs a generic window icon and
+/// nothing else, so it is not worth refusing to start over.
+fn window_icon() -> Option<iced::window::Icon> {
+    match iced::window::icon::from_file_data(ICON_DATA, Some(image::ImageFormat::Png)) {
+        Ok(icon) => Some(icon),
+        Err(e) => {
+            log::warn!("could not decode the window icon: {e}");
+            None
+        }
+    }
+}
+
 /// Range the UI scale factor is clamped to -- both the configured `scaling` and the live Ctrl +/-
 /// zoom (see [`Zoom`](update::Zoom)). Wide enough to be useful, narrow enough to stay usable.
 pub const SCALE_MIN: f32 = 0.5;
@@ -76,12 +108,27 @@ fn help() -> String {
 }
 
 fn main() {
+    // Before anything is printed, the first log line included: settles whether there is anywhere for
+    // output to go at all (see the `console` module).
+    let output = console::prepare();
+
     // Any startup failure -- a bad argument, an unreadable config, a failed window init -- prints
     // the help after it, so a misuse points the user at how to run the program and where its
     // config lives.
     if let Err(e) = run() {
-        eprintln!("Error: {e:?}\n");
-        eprint!("{}", help());
+        match output {
+            console::Output::Live => {
+                eprintln!("Error: {e:?}\n");
+                eprint!("{}", help());
+            }
+            // Started from a graphical shell, where that help would go to NUL and the window would
+            // simply never appear. Say what went wrong in the one place it can be seen, and point at
+            // a terminal for the rest rather than fitting a page of help into a dialog.
+            console::Output::Discarded => console::alert(
+                "Phonoscule",
+                &format!("{e:?}\n\nRun `phonoscule-gui --help` in a terminal for usage, and for where the config file lives."),
+            ),
+        }
         std::process::exit(1);
     }
 }
@@ -117,6 +164,7 @@ fn run() -> anyhow::Result<()> {
 
     let app = iced::application(boot(conf, scaling, restored, index), update, view)
         .title("Phonoscule")
+        .window(iced::window::Settings { icon: window_icon(), ..Default::default() })
         .subscription(subscription)
         .scale_factor(|app| app.scale)
         .theme(theme)

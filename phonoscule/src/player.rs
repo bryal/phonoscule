@@ -1,11 +1,11 @@
 //! The play-queue engine: a background thread that owns the queue, decodes tracks, and writes
-//! samples to a PulseAudio sink.
+//! frames to the platform's audio [`sink`](crate::sink).
 //!
 //! Driven entirely over channels -- [`Cmd`]s in, [`Event`]s out (see [`start`]) -- so it suits any
 //! event loop. It owns the queue because auto-advance happens here, hence [`Repeat`] and the album
 //! grouping key on each [`Entry`].
 //!
-//! Wants std, a filesystem, and PulseAudio. A player without those drives the decoders in
+//! Wants std, a filesystem, and an audio device. A player without those drives the decoders in
 //! [`plumbing`](crate::plumbing) directly instead.
 
 use crate::{
@@ -13,6 +13,7 @@ use crate::{
     opus::{OggOpus, OpusReader},
     plumbing::*,
     sample::{MultiReader, PcmS16Le, Stereo},
+    sink::Sink,
     wav::Wav,
 };
 use embedded_io_adapters::futures_03::FromFutures;
@@ -31,7 +32,7 @@ pub const PLAYBACK_SAMPLE_RATE: u32 = 48000;
 
 type OutSample = Stereo<PcmS16Le>;
 
-/// Frames decoded and written to PulseAudio per loop iteration.
+/// Frames decoded and written to the sink per loop iteration.
 const CHUNK: usize = 512;
 
 /// A queue entry: the track, and the album it belongs to as an opaque grouping key (equal keys on
@@ -125,7 +126,7 @@ impl PlayState {
 }
 
 /// Handle to the running engine. Dropping it stops the audio thread (which exits on its own once
-/// its channels close); the OS reclaims the PulseAudio connection on exit.
+/// its channels close); the OS reclaims the audio device on exit.
 pub struct Engine {
     pub cmd: channel::Sender<Cmd>,
     pub events: channel::Receiver<Event>,
@@ -137,18 +138,15 @@ impl Drop for Engine {
         // Close both channels so the loop returns whether it is parked on the next command or on
         // sending an event. We deliberately do not join: the thread exits within a frame, and
         // blocking the GUI's own teardown on it risks stalling shutdown for no real gain (the OS
-        // tears the PulseAudio connection down on exit regardless).
+        // tears the audio connection down on exit regardless).
         self.cmd.close();
         self.events.close();
     }
 }
 
-/// How the audio server identifies this application, e.g. in a volume mixer.
-#[derive(Debug, Clone)]
-pub struct Client {
-    pub name: String,
-    pub description: String,
-}
+/// How the audio server identifies this application, e.g. in a volume mixer. Re-exported from
+/// [`sink`](crate::sink), where the backends that use it live.
+pub use crate::sink::Client;
 
 pub fn start(client: Client) -> Engine {
     // Commands come from the (synchronous) application, so the channel is unbounded to make
@@ -156,7 +154,7 @@ pub fn start(client: Client) -> Engine {
     let (cmd_tx, cmd_rx) = channel::unbounded::<Cmd>();
     let (event_tx, event_rx) = channel::bounded::<Event>(256);
     // The engine owns a dedicated thread running a thread-local `block_on`. Decoding is async but
-    // the PulseAudio writes block; a dedicated thread keeps that blocking off the application's
+    // the sink's writes block; a dedicated thread keeps that blocking off the application's
     // shared executor (which would also force these futures to be `Send`), and lets the loop park
     // when idle. Communication stays on the (`Send`) channels.
     let audio = std::thread::Builder::new()
@@ -169,7 +167,7 @@ pub fn start(client: Client) -> Engine {
 async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: channel::Sender<Event>) {
     // Reused across tracks (its blocking writes pace playback to real time), reopened only when a
     // track's sample rate differs from the stream's -- see `ensure_rate` before each track.
-    let mut sink = PulseSink::new(&client, PLAYBACK_SAMPLE_RATE);
+    let mut sink = Sink::new(&client, PLAYBACK_SAMPLE_RATE);
     let mut buf = [OutSample::default(); CHUNK];
 
     let mut queue: Vec<Entry> = vec![];
@@ -393,7 +391,7 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
                 ix = next_track_ix(&queue, ix, repeat);
                 continue 'next_track;
             }
-            sink.write(&buf[..n]); // blocks until PulseAudio takes the chunk -- this is our pacing
+            sink.write(&buf[..n]); // blocks until the device takes the chunk - this is our pacing
             pos += n as u64;
 
             let progress_updates_per_sec = 16;
@@ -509,39 +507,6 @@ impl Track {
                 None
             }
         }
-    }
-}
-
-struct PulseSink {
-    out: pulse_simple::Playback<[i16; 2]>,
-    client: Client,
-    /// The rate the stream was opened at, so the loop can tell when a track needs a new one.
-    rate: u32,
-}
-
-impl PulseSink {
-    fn new(client: &Client, rate: u32) -> Self {
-        let out = pulse_simple::Playback::<[i16; 2]>::new(&client.name, &client.description, None, rate);
-        Self { out, client: client.clone(), rate }
-    }
-
-    /// Reopens the stream at `rate` if it differs from the current one. The samples we output are
-    /// always 16-bit stereo, so only the rate can change between tracks; the audio server handles
-    /// converting it to the device's rate, so we never resample ourselves.
-    fn ensure_rate(&mut self, rate: u32) {
-        if self.rate != rate {
-            *self = Self::new(&self.client.clone(), rate);
-        }
-    }
-
-    /// Writes one chunk, blocking until PulseAudio accepts it (its buffer paces us to real time).
-    fn write(&mut self, samples: &[OutSample]) {
-        if samples.is_empty() {
-            return;
-        }
-        let pulse_samples = unsafe { core::mem::transmute::<&[OutSample], &[[i16; 2]]>(samples) };
-        assert_eq!(core::mem::size_of_val(samples), core::mem::size_of_val(pulse_samples));
-        self.out.write(pulse_samples);
     }
 }
 

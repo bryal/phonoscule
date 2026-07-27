@@ -34,7 +34,8 @@ pub struct Conf {
 }
 
 /// Loads the config for the player named `app` (lowercase, e.g. `"gui"`), from the first of:
-/// `path`, `$PHONOSCULE_<APP>_CONF`, `$XDG_CONFIG_HOME/phonoscule.toml`, `~/.config/phonoscule.toml`.
+/// `path`, `$PHONOSCULE_<APP>_CONF`, or `phonoscule.toml` in the platform's config directory (see
+/// [`dirs::config_dir`](crate::dirs::config_dir)).
 ///
 /// A file asked for explicitly -- by `path` or the environment -- must exist; the default location
 /// may be absent, which just means default settings.
@@ -69,8 +70,7 @@ fn locate(app: &str, arg: Option<PathBuf>) -> (PathBuf, Required) {
     if let Some(path) = env(&env_var(app)) {
         return (PathBuf::from(path), Required::Yes);
     }
-    let config_home =
-        env("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| std::env::home_dir().unwrap_or_default().join(".config"));
+    let config_home = crate::dirs::config_dir().unwrap_or_default();
     (config_home.join("phonoscule.toml"), Required::No)
 }
 
@@ -143,19 +143,28 @@ fn is_not_found(e: &anyhow::Error) -> bool {
 
 /// Help describing the config file for the player named `app`, for its `--help`: where the file is
 /// looked for, and the settings understood here. The player appends its own `[app.<name>]` ones.
+///
+/// The search path is named as this platform actually spells it, since a `--help` that talks about
+/// `$XDG_CONFIG_HOME` to a Windows user has told them nothing.
 pub fn config_help(app: &str) -> String {
+    let default = crate::dirs::config_dir()
+        .map(|dir| dir.join("phonoscule.toml").display().to_string())
+        .unwrap_or_else(|| "phonoscule.toml".into());
+    let music = default_music_dir().display().to_string();
     format!(
         "\
 Configuration file:
   A TOML file, looked for in this order: the CONFIG path above, then
-  ${var}, then $XDG_CONFIG_HOME/phonoscule.toml, then
-  ~/.config/phonoscule.toml. If no file is found, default values are used.
+  ${var}, then
+    {default}
+  If no file is found, default values are used.
 
   Settings:
-    music-dir  Path to the music library. Required once a config file exists
-               (without one it defaults to ~/Music). `~` and environment
-               variables are expanded; a relative path resolves against the
-               config file's own directory.
+    music-dir  Path to the music library. Required once a config file exists;
+               without one it defaults to
+                 {music}
+               `~` and environment variables are expanded; a relative path
+               resolves against the config file's own directory.
 
   Settings under [app.{app}] are this player's own. Another player that reads
   this file reads its own [app.<name>] table, so one file can serve several.
@@ -179,19 +188,31 @@ mod test {
         smol::block_on(Conf::open("gui", &path))
     }
 
+    /// An absolute path, spelled the way this platform spells one. A leading slash is not absolute
+    /// on Windows - it names the current drive's root, so `is_relative` holds and the path would be
+    /// resolved against the config file like any other relative one.
+    fn absolute(tail: &str) -> PathBuf {
+        if cfg!(windows) { PathBuf::from(format!("C:\\{tail}")) } else { PathBuf::from(format!("/{tail}")) }
+    }
+
+    /// The environment variable naming the home directory here, for the expansion test below. Both
+    /// are set as a matter of course on their platform, which `HOME` alone is not on Windows (a
+    /// Unix-ish shell may export it, but nothing else does).
+    const HOME_VAR: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+
     #[test]
     fn parse_music_dir() {
-        assert_eq!(
-            parse("music-dir", "music-dir = \"/somewhere/else\"\n").unwrap().music_dir,
-            PathBuf::from("/somewhere/else")
-        );
+        let dir = absolute("somewhere/else");
+        let src = format!("music-dir = {:?}\n", dir.to_str().unwrap());
+        assert_eq!(parse("music-dir", &src).unwrap().music_dir, dir);
     }
 
     #[test]
     fn parse_expands_tilde_and_env() {
         let home = std::env::home_dir().unwrap();
         assert_eq!(parse("tilde", "music-dir = \"~/Transcoded\"").unwrap().music_dir, home.join("Transcoded"));
-        assert_eq!(parse("env", "music-dir = \"$HOME/Transcoded\"").unwrap().music_dir, home.join("Transcoded"));
+        let src = format!("music-dir = \"${HOME_VAR}/Transcoded\"");
+        assert_eq!(parse("env", &src).unwrap().music_dir, home.join("Transcoded"));
     }
 
     #[test]

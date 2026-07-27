@@ -1,6 +1,59 @@
 # Changelog
 
 
+v0.4.0 (unreleased)
+------------------------------------------------------------
+
+**Windows support.** The framework was portable in its core and Linux-only the
+moment a player wanted to hear anything: the play engine wrote straight to
+PulseAudio, so every player in the workspace needed libpulse to link at all. The
+three platform-facing modules now each have two backends, chosen at compile
+time, behind interfaces that were already platform-neutral.
+
+- **`sink`** (new) - audio output, extracted from `player`. One blocking `write`,
+  because that blocking is what paces the engine. PulseAudio on Linux (PipeWire
+  included, via pipewire-pulse); WASAPI in shared mode on Windows, opened at the
+  track's own rate with `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM` so the audio engine
+  resamples to the device's - the same division of labour we relied on Pulse for.
+  Behind its own feature, so a program that drives the decoders itself can play
+  without taking the queue engine too.
+  - A wall-clock-paced silent fallback, so a machine with no usable device
+    advances its queue at playback speed instead of tearing through it.
+  - Playback follows the output device. A WASAPI stream is bound for life to the
+    endpoint it was opened on, and there are two ways for that to become the
+    wrong one. If the endpoint disappears - unplugged, disabled - the write fails
+    and the stream is reopened on whatever is default now. If it merely stops
+    being the default, because a headset was plugged in or another output picked,
+    nothing fails at all and WASAPI says nothing: the device we hold is still
+    perfectly good, just not where anyone is listening. So an
+    `IMMNotificationClient` is registered on the enumerator, which is what the
+    Core Audio API offers for precisely this, and the next write moves playback.
+    PulseAudio moves a stream itself, so this is Windows' half of the same
+    behaviour.
+- **`volume`** - the mixerless fallback on Windows is now a real backend:
+  `ISimpleAudioVolume` on the audio sessions `sink` opens for this process, which
+  is the per-application slider the Windows volume mixer shows. Same process-id
+  test as the PulseAudio side.
+- **`media`** (new) - what `mpris` was to an application: the snapshot types, the
+  handle, and the worker that coalesces published snapshots. It dispatches to
+  `mpris`, unchanged in substance and still public, or to `smtc` on Windows - the
+  now-playing flyout, the lock-screen card, and the media keys with them.
+  Backends are told which half of a snapshot moved, so neither a properties
+  signal nor a display-updater commit fires on a position tick.
+  - The `mpris` feature becomes `media`. Applications that named the module
+    directly want `media` now; the module remains for reaching at an MPRIS server
+    on purpose.
+  - zbus is no longer built on Windows, where it was reaching for a bus that
+    cannot be there.
+- **`dirs`** (new) - the platform's roots for settings, state and caches, so the
+  players stop spelling them in XDG terms and landing dotfiles in a Windows user
+  profile. XDG on Linux, `%APPDATA%` and `%LOCALAPPDATA%` on Windows. What goes
+  in them is still the player's own business: it passes its name and decides its
+  files.
+- **`config`** - the default config path comes from `dirs`, and `config_help`
+  names it as the platform spells it.
+
+
 v0.3.0 (2026-07-26)
 ------------------------------------------------------------
 

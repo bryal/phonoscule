@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-phonoscule = { path = "../phonoscule", features = ["config", "library", "mpris", "player", "queue", "search", "session", "sort", "volume", "watcher"] }
+phonoscule = { path = "../phonoscule", features = ["config", "dirs", "library", "media", "player", "queue", "search", "session", "sort", "volume", "watcher"] }
 iced = { version = "0.14.0", features = ["image", "smol", "advanced", "lazy"] }
 image = "0.25.10"
 glam = "0.33.2"
@@ -24,3 +24,24 @@ embedded-io-async    = { workspace = true }
 log                  = { workspace = true, features = ["std"] }
 simple_logger        = { workspace = true }
 url = "2.5.8"
+
+# Keeping the console out of the way (see src/console.rs): adopting the one we were launched from,
+# pointing the standard handles at NUL when there was none, and a dialog for a startup failure a
+# graphical launch would otherwise show nowhere.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",       # CreateFileW, to open NUL
+    "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging",   # MessageBoxW
+] }
+
+# Renders the icon from its SVG and embeds it (see build.rs). resvg carries its own rasteriser, so
+# there is no tool to install and nothing generated to keep in step with the artwork; its default
+# features are the text stack, which an icon with no text in it does not need.
+#
+# winresource is not gated on the host being Windows, so a Windows binary cross-compiled from
+# elsewhere gets its resources too; build.rs checks the target rather than the host.
+[build-dependencies]
+resvg = { version = "0.47", default-features = false }
+winresource = "0.1"

@@ -12,8 +12,10 @@ repository.workspace = true
 # default. See each module's docs for what it needs.
 [features]
 default = []
+# The platform's directories for settings, state and caches (see `dirs`). Wants std.
+dirs = []
 # The shared TOML config file (see `config`). Wants std and a filesystem.
-config = ["dep:smol", "dep:toml_edit", "dep:shellexpand", "dep:anyhow", "log/std"]
+config = ["dirs", "dep:smol", "dep:toml_edit", "dep:shellexpand", "dep:anyhow", "log/std"]
 # Scanning a music directory into albums, with cover thumbnails (see `library`). Wants std and a
 # filesystem.
 library = ["dep:smol", "dep:futures", "dep:serde", "dep:serde_json", "dep:image", "dep:embedded-io-adapters", "log/std"]
@@ -26,14 +28,18 @@ search = []
 # Persisting a player's queue and the state around it across runs (see `session`). Wants std and a
 # filesystem.
 session = ["player", "sort", "dep:smol", "dep:serde", "dep:serde_json", "log/std"]
-# The play-queue engine (see `player`). Wants std, a filesystem, and PulseAudio.
-player = ["dep:smol", "dep:pulse-simple", "dep:embedded-io-adapters", "dep:serde", "log/std"]
+# Audio output (see `sink`). Wants std and an audio backend - PulseAudio on Linux, WASAPI on
+# Windows. Split from `player` so a program that drives the decoders itself can still just play.
+sink = ["dep:pulse-simple", "dep:windows", "dep:windows-core", "log/std"]
+# The play-queue engine (see `player`). Wants std, a filesystem, and audio output.
+player = ["sink", "dep:smol", "dep:embedded-io-adapters", "dep:serde", "log/std"]
 # Per-application volume through the OS mixer (see `volume`). Wants std.
-volume = ["dep:smol", "dep:libpulse-binding", "log/std"]
+volume = ["dep:smol", "dep:libpulse-binding", "dep:windows", "log/std"]
 # Watching the music directory for changes (see `watcher`). Wants std and a filesystem.
 watcher = ["dep:smol", "dep:futures", "dep:notify", "log/std"]
-# An MPRIS server for media keys and desktop now-playing (see `mpris`). Wants a D-Bus session bus.
-mpris = ["dep:smol", "dep:zbus", "log/std"]
+# Media keys and desktop now-playing (see `media`): an MPRIS server on Linux (see `mpris`, wanting a
+# D-Bus session bus), the System Media Transport Controls on Windows (see `smtc`).
+media = ["dep:smol", "dep:zbus", "dep:windows", "log/std"]
 
 [dependencies]
 # rev is latest as of its commit date 2026-07-05
@@ -47,7 +53,6 @@ log               = { workspace = true }
 # Optional, for the features above.
 smol                 = { workspace = true, optional = true }
 embedded-io-adapters = { workspace = true, optional = true }
-pulse-simple         = { version = "1.0.1", optional = true }
 serde                = { version = "1.0.228", features = ["derive"], optional = true }
 serde_json           = { version = "1.0.150", optional = true }
 image                = { version = "0.25.10", optional = true }
@@ -56,12 +61,40 @@ shellexpand          = { version = "3.1", optional = true }
 anyhow               = { version = "1.0", optional = true }
 futures              = { version = "0.3.32", optional = true }
 notify               = { version = "8.2", optional = true }
-zbus                 = { version = "5.17", optional = true }
 
-# The Linux volume-mixer backend; other platforms build the module's mixerless fallback instead.
-# Speaks to PipeWire via pipewire-pulse.
+# The Linux platform backends: playback and the volume mixer, both speaking PulseAudio (PipeWire
+# included, via pipewire-pulse), and the MPRIS server on the D-Bus session bus. Other platforms
+# build their own, or the fallbacks.
 [target.'cfg(target_os = "linux")'.dependencies]
+pulse-simple     = { version = "1.0.1", optional = true }
 libpulse-binding = { version = "2.30.1", optional = true }
+zbus             = { version = "5.17", optional = true }
+
+# The Windows platform backends: WASAPI playback, the volume mixer on our own audio session, and the
+# System Media Transport Controls.
+[target.'cfg(target_os = "windows")'.dependencies]
+# The `implement` macro, for the endpoint-change notification client in `sink`, expands to paths
+# rooted at `::windows_core`, so that crate has to be nameable here and not only through `windows`.
+# Same version, so it is the one `windows` itself uses rather than a second copy.
+windows-core = { version = "0.62", optional = true }
+windows = { version = "0.62", optional = true, features = [
+    "Foundation",                         # TimeSpan, Uri, TypedEventHandler
+    "Media",                              # SystemMediaTransportControls
+    "Media_Playback",                     # MediaPlayer, which the controls hang off
+    "Storage_Streams",                    # RandomAccessStreamReference, for the cover
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Security",                     # SECURITY_ATTRIBUTES, for CreateEventW
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage", # PROPVARIANT, in IMMDevice::Activate's signature
+    "Win32_System_Threading",
+    "Win32_System_Variant",               # ditto
+] }
+
+# Reading back what the OS made of our media session, which only a test wants - dev-only, so a
+# release build does not generate the projection for it.
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows = { version = "0.62", features = ["Media_Control"] }
 
 [dev-dependencies]
 embedded-io-adapters = { workspace = true }

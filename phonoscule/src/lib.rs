@@ -11,9 +11,13 @@ pub mod wav;
 
 #[cfg(feature = "config")]
 pub mod config;
+#[cfg(feature = "dirs")]
+pub mod dirs;
 #[cfg(feature = "library")]
 pub mod library;
-#[cfg(feature = "mpris")]
+#[cfg(feature = "media")]
+pub mod media;
+#[cfg(all(feature = "media", target_os = "linux"))]
 pub mod mpris;
 #[cfg(feature = "player")]
 pub mod player;
@@ -23,6 +27,10 @@ pub mod queue;
 pub mod search;
 #[cfg(feature = "session")]
 pub mod session;
+#[cfg(feature = "sink")]
+pub mod sink;
+#[cfg(all(feature = "media", target_os = "windows"))]
+pub mod smtc;
 #[cfg(feature = "sort")]
 pub mod sort;
 #[cfg(feature = "volume")]

@@ -1,6 +1,46 @@
 # Changelog
 
 
+v1.2.0 (unreleased)
+------------------------------------------------------------
+
+- **Windows.** The player runs on Windows 10 and later, with everything it does
+  on Linux: playback out through WASAPI, its own volume in the Windows mixer, and
+  media keys and now-playing through the System Media Transport Controls. Most of
+  the work is in the framework (see [its changelog](../phonoscule/CHANGELOG.md));
+  what changed here is that the player's files now go where Windows keeps such
+  things - the config under `%APPDATA%`, the session and the cover cache under
+  `%LOCALAPPDATA%` - rather than into `~/.config` and `~/.cache`. Linux is
+  untouched, XDG variables and all.
+
+  Still Linux-only: nothing. Still missing on both: FLAC and Ogg Vorbis.
+
+- **No console window on Windows.** Starting the player from Explorer, a
+  shortcut or the Start menu no longer opens a terminal beside it: the binary is
+  linked as a Windows subsystem application. Started from a shell it is
+  unchanged - it adopts that console, so the help, the version and the log still
+  print where they always did, and a `> log.txt` redirect still goes to the file.
+  Where there is no console at all, a startup failure that would have printed to
+  one is shown in a dialog instead of the player just never appearing.
+
+  One consequence to know about: cmd and PowerShell do not wait for a subsystem
+  application, so the prompt returns immediately and the log then prints over it.
+
+- **An icon.** The *Player* view reduced to a mark: the playing album lit up
+  front, its neighbours receding either side, on the reflective floor under the
+  backdrop glow. Compiled into the `.exe` as a resource, so `cargo install`
+  produces a binary that already carries it, and set as the window icon, which
+  covers the title bar (and X11/Wayland) as the resource covers Explorer, the
+  taskbar and Alt-Tab. Small sizes get a simplified form, since at 16px the
+  receding covers are a few grey pixels.
+
+  The artwork is SVG in `assets/icon/` and is the only copy of it: `build.rs`
+  renders the sizes with resvg and packs the `.ico` itself, so nothing generated
+  is committed, no tool is needed on the machine, and changing the icon is
+  changing the artwork. Linux desktops can use the SVG directly, and
+  `Phonoscule.desktop` now names it rather than borrowing a themed stand-in.
+
+
 v1.1.0 (2026-07-21)
 ------------------------------------------------------------
 
