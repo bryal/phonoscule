@@ -21,9 +21,13 @@ v1.2.0 (unreleased)
   produces a binary that already carries it, and set as the window icon, which
   covers the title bar (and X11/Wayland) as the resource covers Explorer, the
   taskbar and Alt-Tab. Small sizes get a simplified form, since at 16px the
-  receding covers are a few grey pixels. The artwork is SVG in
-  `assets/icon/`; Linux desktops can use it directly, and `Phonoscule.desktop`
-  now names it rather than borrowing a themed stand-in.
+  receding covers are a few grey pixels.
+
+  The artwork is SVG in `assets/icon/` and is the only copy of it: `build.rs`
+  renders the sizes with resvg and packs the `.ico` itself, so nothing generated
+  is committed, no tool is needed on the machine, and changing the icon is
+  changing the artwork. Linux desktops can use the SVG directly, and
+  `Phonoscule.desktop` now names it rather than borrowing a themed stand-in.
 
 
 v1.1.0 (2026-07-21)

@@ -31,8 +31,7 @@
 
     <!-- The neighbours, turned away from the light: cool and dimmer than the middle, but still
          plainly covers rather than shadows, since they carry the whole idea of a queue to flip
-         through. (An XML comment may not contain a double hyphen, so the dashes elsewhere in this
-         file are single ones, unlike the rest of the tree.) -->
+         through. -->
     <linearGradient id="side-left" x1="1" y1="0" x2="0" y2="0">
       <stop offset="0" stop-color="#7a6dbe"/>
       <stop offset="1" stop-color="#332d4d"/>

@@ -25,8 +25,12 @@ log                  = { workspace = true, features = ["std"] }
 simple_logger        = { workspace = true }
 url = "2.5.8"
 
-# Embeds the icon and version info into the .exe (see build.rs). Not gated on the host being
-# Windows, so that a Windows binary cross-compiled from elsewhere gets them too; build.rs checks the
-# target and does nothing when it is not Windows.
+# Renders the icon from its SVG and embeds it (see build.rs). resvg carries its own rasteriser, so
+# there is no tool to install and nothing generated to keep in step with the artwork; its default
+# features are the text stack, which an icon with no text in it does not need.
+#
+# winresource is not gated on the host being Windows, so a Windows binary cross-compiled from
+# elsewhere gets its resources too; build.rs checks the target rather than the host.
 [build-dependencies]
+resvg = { version = "0.47", default-features = false }
 winresource = "0.1"

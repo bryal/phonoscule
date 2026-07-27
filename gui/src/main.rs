@@ -45,16 +45,17 @@ const APP: &str = "gui";
 /// The window icon: the same mark the executable itself carries as a resource (see `build.rs`).
 ///
 /// Both are needed, and they cover different surfaces. This one is what the window system asks the
-/// running process for -- the title bar on Windows (winit sets only `ICON_SMALL` from it) and the
+/// running process for - the title bar on Windows (winit sets only `ICON_SMALL` from it) and the
 /// window on X11 and Wayland. The executable's resource is what Windows reads off disk for the file
 /// in Explorer, and what the taskbar and Alt-Tab fall back to, `ICON_BIG` being left unset. Between
 /// them there is nowhere the icon is missing.
 ///
 /// Only the largest form is embedded, and the window system scales it: it is a couple of hundred
 /// times smaller than the fonts already in here, and one image beats keeping several in step.
-static ICON_DATA: &[u8] = include_bytes!("../assets/icon/phonoscule-256.png");
+/// Rendered from the artwork at build time, hence `OUT_DIR` rather than a path into `assets`.
+static ICON_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/window-icon.png"));
 
-/// The decoded icon, or `None` if it will not decode -- which costs a generic window icon and
+/// The decoded icon, or `None` if it will not decode - which costs a generic window icon and
 /// nothing else, so it is not worth refusing to start over.
 fn window_icon() -> Option<iced::window::Icon> {
     match iced::window::icon::from_file_data(ICON_DATA, Some(image::ImageFormat::Png)) {
