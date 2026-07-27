@@ -20,6 +20,10 @@ pub enum Output {
     Live,
     /// Nothing was attached, so printing goes to `NUL`. A message meant for a person has to reach
     /// them some other way - see [`alert`].
+    ///
+    /// Only Windows can end up here; the variant stays unconditional so the code that acts on this
+    /// reads the same everywhere rather than growing a `cfg` of its own.
+    #[cfg_attr(not(windows), expect(dead_code, reason = "only the Windows `prepare` constructs it"))]
     Discarded,
 }
 
