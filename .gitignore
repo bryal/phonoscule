@@ -4,3 +4,8 @@ TestLibrary
 .dir-locals.el
 /doc/resampler-en.pdf
 /NOTES.org
+
+# Editor leftovers. The leading hash of a pattern needs escaping, or git reads the line as a comment.
+\#*#
+.\#*
+*~
