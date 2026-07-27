@@ -179,19 +179,31 @@ mod test {
         smol::block_on(Conf::open("gui", &path))
     }
 
+    /// An absolute path, spelled the way this platform spells one. A leading slash is not absolute
+    /// on Windows -- it names the current drive's root, so `is_relative` holds and the path would be
+    /// resolved against the config file like any other relative one.
+    fn absolute(tail: &str) -> PathBuf {
+        if cfg!(windows) { PathBuf::from(format!("C:\\{tail}")) } else { PathBuf::from(format!("/{tail}")) }
+    }
+
+    /// The environment variable naming the home directory here, for the expansion test below. Both
+    /// are set as a matter of course on their platform, which `HOME` alone is not on Windows (a
+    /// Unix-ish shell may export it, but nothing else does).
+    const HOME_VAR: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+
     #[test]
     fn parse_music_dir() {
-        assert_eq!(
-            parse("music-dir", "music-dir = \"/somewhere/else\"\n").unwrap().music_dir,
-            PathBuf::from("/somewhere/else")
-        );
+        let dir = absolute("somewhere/else");
+        let src = format!("music-dir = {:?}\n", dir.to_str().unwrap());
+        assert_eq!(parse("music-dir", &src).unwrap().music_dir, dir);
     }
 
     #[test]
     fn parse_expands_tilde_and_env() {
         let home = std::env::home_dir().unwrap();
         assert_eq!(parse("tilde", "music-dir = \"~/Transcoded\"").unwrap().music_dir, home.join("Transcoded"));
-        assert_eq!(parse("env", "music-dir = \"$HOME/Transcoded\"").unwrap().music_dir, home.join("Transcoded"));
+        let src = format!("music-dir = \"${HOME_VAR}/Transcoded\"");
+        assert_eq!(parse("env", &src).unwrap().music_dir, home.join("Transcoded"));
     }
 
     #[test]
