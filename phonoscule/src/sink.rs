@@ -136,6 +136,12 @@ mod backend {
 
     pub struct Sink(pulse_simple::Playback<[i16; 2]>);
 
+    // The binding holds a raw `pa_simple`, so it is not `Send` of its own accord. What it points at
+    // is a connection to the sound server rather than anything bound to the thread that opened it,
+    // and `&mut` keeps one caller in a write at a time, so moving it between threads is safe - which
+    // a caller that drives the sink from a task on a work-stealing executor needs (see the CLI).
+    unsafe impl Send for Sink {}
+
     impl Sink {
         pub fn open(client: &Client, rate: u32) -> Result<Self, String> {
             Ok(Sink(pulse_simple::Playback::new(&client.name, &client.description, None, rate)))
