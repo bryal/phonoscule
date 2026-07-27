@@ -1,4 +1,4 @@
-//! The Windows [`media`](crate::media) backend: the System Media Transport Controls -- the
+//! The Windows [`media`](crate::media) backend: the System Media Transport Controls - the
 //! now-playing flyout above the volume OSD, the lock-screen card, and the media keys that go with
 //! them.
 //!
@@ -6,7 +6,7 @@
 //!
 //! The controls are taken from a `MediaPlayer` we create and never play anything through, rather
 //! than from a window (`ISystemMediaTransportControlsInterop::GetForWindow`). Two reasons: a player
-//! built on this framework need not have a window at all -- the terminal one does not -- and the
+//! built on this framework need not have a window at all - the terminal one does not - and the
 //! window route would only hand the controls over once the window exists, where
 //! [`media::start`](crate::media::start) wants to know at boot whether there is any integration to
 //! be had. Its own command manager is switched off, so the idle player contributes no session of its
@@ -44,8 +44,8 @@ pub fn start(identity: &str, _name: &str, events: channel::Sender<Control>) -> R
 
 fn build(identity: &str, events: channel::Sender<Control>) -> windows::core::Result<Server> {
     let player = MediaPlayer::new()?;
-    // Without this the player publishes a session of its own -- an idle one, since we never play
-    // through it -- which would show up alongside the controls we are about to configure.
+    // Without this the player publishes a session of its own - an idle one, since we never play
+    // through it - which would show up alongside the controls we are about to configure.
     let manager: MediaPlaybackCommandManager = player.CommandManager()?;
     manager.SetIsEnabled(false)?;
 
@@ -79,7 +79,7 @@ fn build(identity: &str, events: channel::Sender<Control>) -> windows::core::Res
         }
     }))?;
 
-    // The flyout's scrubber. MPRIS calls this SetPosition; the shape is the same -- an absolute
+    // The flyout's scrubber. MPRIS calls this SetPosition; the shape is the same - an absolute
     // target within the current track.
     controls.PlaybackPositionChangeRequested(&TypedEventHandler::new(
         move |_, args: Ref<PlaybackPositionChangeRequestedEventArgs>| {
@@ -99,7 +99,7 @@ fn build(identity: &str, events: channel::Sender<Control>) -> windows::core::Res
 }
 
 /// The transport button as a [`Control`], or `None` for the ones we do not offer (record, channel
-/// up/down and friends -- reachable on some remotes even when the flyout does not show them).
+/// up/down and friends - reachable on some remotes even when the flyout does not show them).
 fn as_control(button: SystemMediaTransportControlsButton) -> Option<Control> {
     match button {
         SystemMediaTransportControlsButton::Play => Some(Control::Play),
@@ -108,7 +108,7 @@ fn as_control(button: SystemMediaTransportControlsButton) -> Option<Control> {
         SystemMediaTransportControlsButton::Next => Some(Control::Next),
         SystemMediaTransportControlsButton::Previous => Some(Control::Prev),
         // The single play/pause key on most keyboards arrives as Play or Pause depending on the
-        // status we last published, so there is no Toggle to map -- which is why publishing the
+        // status we last published, so there is no Toggle to map - which is why publishing the
         // playback status promptly matters here.
         _ => None,
     }
@@ -141,7 +141,7 @@ impl Server {
         Ok(())
     }
 
-    /// Title, artist, album and cover -- the card the desktop draws. `Update` commits the lot in
+    /// Title, artist, album and cover - the card the desktop draws. `Update` commits the lot in
     /// one go, so it is called once at the end rather than per field.
     fn update_display(&mut self, meta: Option<&Meta>) -> windows::core::Result<()> {
         let updater = self.controls.DisplayUpdater()?;
@@ -160,7 +160,7 @@ impl Server {
         music.SetAlbumTitle(&HSTRING::from(&meta.album))?;
 
         // The cover is read from the file by the shell, asynchronously, so handing it the same
-        // reference twice is wasted work on both sides -- hence tracking what it already has.
+        // reference twice is wasted work on both sides - hence tracking what it already has.
         if self.shown_cover.as_deref() != meta.cover_url.as_deref() {
             let thumbnail = meta.cover_url.as_deref().and_then(|url| stream_from_url(url).ok());
             match &thumbnail {
@@ -207,7 +207,7 @@ mod test {
     use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
 
     /// Publishes a snapshot and then reads it back the way any other program on the machine would --
-    /// through the session manager the OS offers -- since what matters is not that the calls
+    /// through the session manager the OS offers - since what matters is not that the calls
     /// returned `Ok` but that Windows made a now-playing session out of them.
     ///
     /// Skips (rather than fails) where there is no session manager to ask.

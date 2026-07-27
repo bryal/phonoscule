@@ -4,7 +4,7 @@
 //! another phonoscule player on the same machine has its own state and caches and cannot overwrite
 //! ours. (Pointing two of them at one directory is then a deliberate act, not the default.) Which
 //! roots those directories sit under is the platform's business, and
-//! [`dirs`](phonoscule::dirs)' -- all we bring is the name.
+//! [`dirs`](phonoscule::dirs)' - all we bring is the name.
 
 use phonoscule::{dirs, library};
 use std::path::PathBuf;

@@ -1,6 +1,6 @@
 //! Where the platform keeps a program's files.
 //!
-//! The roots and their layout, which is a fact about the OS -- not what a player puts in them, which
+//! The roots and their layout, which is a fact about the OS - not what a player puts in them, which
 //! stays the player's own business: it passes its name, gets its directories, and decides the files
 //! inside (see the players' own `paths` modules). The framework itself still takes paths rather than
 //! deciding them; this is only here so each player does not carry its own copy of the same
@@ -10,7 +10,7 @@
 //! under `~`. On Windows the two AppData roots: `%APPDATA%` for settings, which is the one that
 //! roams with a user, and `%LOCALAPPDATA%` for state and caches, which should not. Windows draws no
 //! distinction of its own between state and cache, so they become subdirectories of the player's
-//! own -- keeping a cache still something you can delete on its own, as on Linux.
+//! own - keeping a cache still something you can delete on its own, as on Linux.
 //!
 //! Every function returns `None` when the directory cannot be determined at all (no home, no
 //! AppData), which callers take as "then we do not persist this".
@@ -19,7 +19,7 @@
 
 use std::path::PathBuf;
 
-/// State that must survive a cache wipe -- a saved session, say -- for the player named `app`:
+/// State that must survive a cache wipe - a saved session, say - for the player named `app`:
 /// `$XDG_STATE_HOME/<app>`, or `%LOCALAPPDATA%\<app>\state`.
 pub fn state_dir(app: &str) -> Option<PathBuf> {
     if cfg!(windows) {
@@ -29,7 +29,7 @@ pub fn state_dir(app: &str) -> Option<PathBuf> {
     }
 }
 
-/// Regenerable caches -- thumbnails, a tag cache -- for the player named `app`:
+/// Regenerable caches - thumbnails, a tag cache - for the player named `app`:
 /// `$XDG_CACHE_HOME/<app>`, or `%LOCALAPPDATA%\<app>\cache`.
 pub fn cache_dir(app: &str) -> Option<PathBuf> {
     if cfg!(windows) {
@@ -42,8 +42,8 @@ pub fn cache_dir(app: &str) -> Option<PathBuf> {
 /// The directory holding the framework's shared `phonoscule.toml` (see [`config`](crate::config)):
 /// `$XDG_CONFIG_HOME`, or `%APPDATA%\phonoscule`.
 ///
-/// Shared, not per-player -- one file serves every player on the machine, each reading its own
-/// `[app.<name>]` table -- so unlike the two above this takes no name. On Windows it is a directory
+/// Shared, not per-player - one file serves every player on the machine, each reading its own
+/// `[app.<name>]` table - so unlike the two above this takes no name. On Windows it is a directory
 /// of our own rather than the root of `%APPDATA%`, where a loose file has no business being.
 pub fn config_dir() -> Option<PathBuf> {
     if cfg!(windows) { Some(app_data()?.join("phonoscule")) } else { xdg("XDG_CONFIG_HOME", ".config") }
@@ -92,7 +92,7 @@ mod test {
     }
 
     /// The layout is the platform's, and getting it wrong is the whole failure mode this module
-    /// exists to avoid -- a Windows player scattering dotfiles through the user's profile.
+    /// exists to avoid - a Windows player scattering dotfiles through the user's profile.
     #[test]
     fn the_layout_is_the_platforms_own() {
         let cache = cache_dir("phonoscule").unwrap();

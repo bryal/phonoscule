@@ -57,8 +57,8 @@ mod backend {
 ///
 /// Polled rather than event-driven, unlike the PulseAudio backend. Following a session with
 /// `IAudioSessionEvents` would report external changes a little sooner, but the sessions
-/// themselves come and go -- [`sink`](crate::sink) opens a fresh stream whenever a track's sample
-/// rate differs from the last one's, and again if the default endpoint changes -- so a backend that
+/// themselves come and go - [`sink`](crate::sink) opens a fresh stream whenever a track's sample
+/// rate differs from the last one's, and again if the default endpoint changes - so a backend that
 /// registered callbacks would spend its time re-registering them. Re-enumerating on a timer
 /// handles all of that in one path, and at this interval it is far below noticeable either way.
 #[cfg(target_os = "windows")]
@@ -74,7 +74,7 @@ mod backend {
     use windows::core::Interface;
 
     /// How long a round waits for a [`super::VolumeControl::set`] before going back to reading the
-    /// mixer. Sets do not wait for it -- the wait ends the moment one arrives -- so this is only
+    /// mixer. Sets do not wait for it - the wait ends the moment one arrives - so this is only
     /// how promptly an *external* change (the mixer applet, another tool) is noticed.
     const POLL: Duration = Duration::from_millis(200);
 
@@ -117,7 +117,7 @@ mod backend {
                 match sessions(&enumerator) {
                     Ok(found) => ours = found,
                     // A transient failure (the endpoint being switched under us) must not end the
-                    // thread -- the next round looks again.
+                    // thread - the next round looks again.
                     Err(e) => log::debug!("could not enumerate audio sessions: {e}"),
                 }
                 scanned = Some(Instant::now());
@@ -331,7 +331,7 @@ mod backend {
 }
 
 /// Exercises whichever backend the platform has against the real mixer. Both find the application's
-/// streams by process id, so there is nothing to read until something is actually playing -- hence
+/// streams by process id, so there is nothing to read until something is actually playing - hence
 /// the sink, and hence the `sink` feature.
 #[cfg(all(test, feature = "sink"))]
 mod test {
@@ -348,7 +348,7 @@ mod test {
     }
 
     /// The mixer must find this process's own playback and report its volume, and a set must come
-    /// back as a reading -- which together is the whole contract an application mirrors.
+    /// back as a reading - which together is the whole contract an application mirrors.
     ///
     /// Skips (rather than fails) where there is no mixer or no audio device: a headless CI box has
     /// neither, and this test is about the wiring, not about the machine having a sound card.
@@ -376,7 +376,7 @@ mod test {
         // Loose: mixers quantize (PulseAudio to 1/65536, Windows to its own curve).
         assert!((reading - target).abs() < 0.01, "set {target} but the mixer reported {reading}");
 
-        // Leave the machine as we found it -- both mixers remember a per-application volume.
+        // Leave the machine as we found it - both mixers remember a per-application volume.
         control.set(initial);
         let _ = next_reading(&control, Duration::from_secs(5));
     }

@@ -25,8 +25,8 @@ pub struct Server {
 }
 
 /// Registers the two MPRIS interfaces on the session bus under `org.mpris.MediaPlayer2.<name>`, so
-/// `name` must be a valid D-Bus *bus* name element -- letters, digits, underscores and hyphens, not
-/// starting with a digit -- and unique among running players. Hyphens are allowed here, unlike in
+/// `name` must be a valid D-Bus *bus* name element - letters, digits, underscores and hyphens, not
+/// starting with a digit - and unique among running players. Hyphens are allowed here, unlike in
 /// interface and member names.
 pub fn start(identity: &str, name: &str, events: channel::Sender<Control>) -> Result<Server, String> {
     // A session-bus socket is cheap to open, so this is done up front rather than in the worker:
@@ -232,7 +232,7 @@ mod test {
     /// or no busctl, e.g. headless environments.
     ///
     /// Driven through [`media`](crate::media) rather than this module's own `start`, since that is
-    /// how a player reaches it -- which puts the coalescing worker in the loop too.
+    /// how a player reaches it - which puts the coalescing worker in the loop too.
     #[test]
     fn mpris_roundtrip() {
         const PATH: &str = "/org/mpris/MediaPlayer2";

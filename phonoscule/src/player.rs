@@ -391,7 +391,7 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
                 ix = next_track_ix(&queue, ix, repeat);
                 continue 'next_track;
             }
-            sink.write(&buf[..n]); // blocks until the device takes the chunk -- this is our pacing
+            sink.write(&buf[..n]); // blocks until the device takes the chunk - this is our pacing
             pos += n as u64;
 
             let progress_updates_per_sec = 16;

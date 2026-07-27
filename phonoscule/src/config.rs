@@ -189,7 +189,7 @@ mod test {
     }
 
     /// An absolute path, spelled the way this platform spells one. A leading slash is not absolute
-    /// on Windows -- it names the current drive's root, so `is_relative` holds and the path would be
+    /// on Windows - it names the current drive's root, so `is_relative` holds and the path would be
     /// resolved against the config file like any other relative one.
     fn absolute(tail: &str) -> PathBuf {
         if cfg!(windows) { PathBuf::from(format!("C:\\{tail}")) } else { PathBuf::from(format!("/{tail}")) }

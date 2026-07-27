@@ -1,6 +1,6 @@
 //! The audio output: where the [`player`](crate::player) engine's decoded frames go.
 //!
-//! One blocking interface -- [`Sink::write`] returns once the device has taken the chunk -- because
+//! One blocking interface - [`Sink::write`] returns once the device has taken the chunk - because
 //! that blocking *is* the engine's pacing: it decodes exactly as fast as the audio clock drains.
 //! Only the rate can change between tracks (everything is reduced to 16-bit stereo before it gets
 //! here), which [`Sink::ensure_rate`] handles by reopening the stream and letting the audio server
@@ -8,8 +8,8 @@
 //!
 //! Two backends, picked at compile time. Linux speaks PulseAudio through `pulse-simple` (PipeWire
 //! included, via pipewire-pulse). Windows speaks WASAPI in shared mode, letting the audio engine
-//! convert our rate to the device's (`AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM`) -- the same division of
-//! labour. Anywhere else -- and on either platform when no device can be opened -- playback falls
+//! convert our rate to the device's (`AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM`) - the same division of
+//! labour. Anywhere else - and on either platform when no device can be opened - playback falls
 //! back to [`Silence`], which paces off the wall clock so the queue still advances in real time.
 //!
 //! Wants std and an audio device.
@@ -63,7 +63,7 @@ impl Sink {
         }
     }
 
-    /// Writes one chunk, blocking until the device has taken it -- this is the engine's pacing.
+    /// Writes one chunk, blocking until the device has taken it - this is the engine's pacing.
     ///
     /// A device lost mid-stream (unplugged, or the default endpoint changed under us) is reopened
     /// once here rather than surfaced: the chunk that hit the error is dropped, and playback
@@ -89,7 +89,7 @@ impl Sink {
 /// decodes.
 struct Silence {
     rate: u32,
-    /// When the stream started, and how many frames have been "played" since -- the two together
+    /// When the stream started, and how many frames have been "played" since - the two together
     /// give the instant the next chunk is due, without drift accumulating per chunk.
     started: Instant,
     frames: u64,
@@ -138,7 +138,7 @@ mod backend {
 
 /// The WASAPI backend (see the module docs).
 ///
-/// A shared-mode render stream in our own audio session -- which is what makes the process show up
+/// A shared-mode render stream in our own audio session - which is what makes the process show up
 /// in the Windows volume mixer, and what [`volume`](crate::volume) then attaches to. The stream is
 /// opened at the track's own rate with `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM`, so the audio engine
 /// resamples to the device's mix format for us.
@@ -156,7 +156,7 @@ mod backend {
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
     /// How much audio the device buffers, in 100-nanosecond units (WASAPI's `REFERENCE_TIME`).
-    /// 200 ms is roomy enough that a slow decode -- a debug build opening a cold file -- does not
+    /// 200 ms is roomy enough that a slow decode - a debug build opening a cold file - does not
     /// underrun, and short enough that a pause or a skip is not heard trailing off.
     const BUFFER_DURATION: i64 = 200 * 10_000;
 
@@ -176,7 +176,7 @@ mod backend {
     }
 
     // The COM interfaces are apartment-bound, but the sink never leaves the audio thread that
-    // opened it -- the engine owns it start to finish -- so this is only about moving it there.
+    // opened it - the engine owns it start to finish - so this is only about moving it there.
     unsafe impl Send for Sink {}
 
     impl Sink {
@@ -189,7 +189,7 @@ mod backend {
         }
 
         /// Feeds the whole chunk to the device, waiting for room whenever the buffer is full.
-        /// Returns once the last frame has been handed over -- not once it has been heard.
+        /// Returns once the last frame has been handed over - not once it has been heard.
         unsafe fn write_all(&mut self, frames: &[Frame]) -> windows::core::Result<()> {
             let mut rest = frames;
             while !rest.is_empty() {
@@ -197,7 +197,7 @@ mod backend {
                 let room = self.capacity.saturating_sub(padding) as usize;
                 if room == 0 {
                     // The buffer is full: nothing to do until the device has played some of it.
-                    // A timeout is not an error -- we just look at the padding again.
+                    // A timeout is not an error - we just look at the padding again.
                     unsafe { WaitForSingleObject(self.ready, WAIT_TIMEOUT_MS) };
                     continue;
                 }
@@ -293,8 +293,8 @@ mod backend {
         thread_local! { static DONE: Cell<bool> = const { Cell::new(false) } }
         DONE.with(|done| {
             if !done.replace(true) {
-                // A failure here is `RPC_E_CHANGED_MODE` -- the thread is already in an apartment,
-                // which is fine for us -- or genuinely fatal, in which case the very next COM call
+                // A failure here is `RPC_E_CHANGED_MODE` - the thread is already in an apartment,
+                // which is fine for us - or genuinely fatal, in which case the very next COM call
                 // says so with a better message.
                 let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
             }
@@ -340,7 +340,7 @@ mod test {
     }
 
     /// Chunks are due at absolute offsets from the start, so a chunk that ran late is not paid for
-    /// twice -- an early stall must not push the whole stream back.
+    /// twice - an early stall must not push the whole stream back.
     #[test]
     fn silence_does_not_accumulate_drift() {
         let mut silence = Silence::new(48000);

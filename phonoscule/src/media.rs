@@ -3,14 +3,14 @@
 //! The application [`publish`](Media::publish)es a [`Snapshot`] of its now-playing state on every
 //! change; the [`MediaWorker`] coalesces bursts of them down to the latest before applying them to
 //! the OS, so scrubbing the queue with a held key reaches the desktop as a handful of updates
-//! rather than one per track. Requests coming back the other way -- a media key, a button on a
-//! desktop widget -- arrive as [`Control`] events on [`Media::events`].
+//! rather than one per track. Requests coming back the other way - a media key, a button on a
+//! desktop widget - arrive as [`Control`] events on [`Media::events`].
 //!
 //! Two backends, picked at compile time, both of which the coalescing loop drives the same way:
 //! [`mpris`](crate::mpris) on Linux (a small MPRIS server on the D-Bus session bus, which also
 //! gives `playerctl -p <name>`), and the System Media Transport Controls on Windows (the flyout
-//! above the volume OSD, and the now-playing card on the lock screen). Where there is neither -- a
-//! platform with no backend, or a Linux session with no bus -- [`Media::active`] reports false and
+//! above the volume OSD, and the now-playing card on the lock screen). Where there is neither - a
+//! platform with no backend, or a Linux session with no bus - [`Media::active`] reports false and
 //! the player simply runs without media integration.
 //!
 //! Wants std, and whatever the platform's backend does.
@@ -60,8 +60,8 @@ pub enum Control {
 }
 
 /// Which parts of a [`Snapshot`] differ from the one last applied, so a backend can skip the
-/// expensive half of an update. Metadata is comparatively heavy on both platforms -- a properties
-/// signal with a full dictionary, or a display-updater commit -- and clients that redraw on it do
+/// expensive half of an update. Metadata is comparatively heavy on both platforms - a properties
+/// signal with a full dictionary, or a display-updater commit - and clients that redraw on it do
 /// not want one per position tick.
 #[derive(Debug, Clone, Copy)]
 pub struct Changed {
@@ -102,7 +102,7 @@ impl MediaWorker {
     /// idle; ends when the update channel closes (the app is shutting down).
     pub async fn run(mut self) {
         /// Minimum spacing between applied updates. Neither backend needs the throttling to keep
-        /// up -- it just collapses the fastest scrub through the queue into a couple of updates
+        /// up - it just collapses the fastest scrub through the queue into a couple of updates
         /// rather than one per track, while staying prompt.
         const MIN_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -110,7 +110,7 @@ impl MediaWorker {
         let mut shown_meta: Option<Meta> = None;
         let mut shown_state: Option<Playback> = None;
         loop {
-            // Park until something changes, then take everything already queued behind it -- only
+            // Park until something changes, then take everything already queued behind it - only
             // the last snapshot of a burst matters.
             let Ok(mut snapshot) = self.updates.recv().await else { return };
             while let Ok(next) = self.updates.try_recv() {
@@ -133,7 +133,7 @@ impl MediaWorker {
 }
 
 /// Brings the media service up. `identity` is the name desktops display. `name` identifies the
-/// player among running ones where the platform needs that -- on Linux it is the last element of
+/// player among running ones where the platform needs that - on Linux it is the last element of
 /// the `org.mpris.MediaPlayer2.<name>` bus name, so it must be a valid D-Bus bus-name element:
 /// letters, digits, underscores and hyphens, not starting with a digit.
 ///

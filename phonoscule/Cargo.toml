@@ -28,7 +28,7 @@ search = []
 # Persisting a player's queue and the state around it across runs (see `session`). Wants std and a
 # filesystem.
 session = ["player", "sort", "dep:smol", "dep:serde", "dep:serde_json", "log/std"]
-# Audio output (see `sink`). Wants std and an audio backend -- PulseAudio on Linux, WASAPI on
+# Audio output (see `sink`). Wants std and an audio backend - PulseAudio on Linux, WASAPI on
 # Windows. Split from `player` so a program that drives the decoders itself can still just play.
 sink = ["dep:pulse-simple", "dep:windows", "log/std"]
 # The play-queue engine (see `player`). Wants std, a filesystem, and audio output.
@@ -87,7 +87,7 @@ windows = { version = "0.62", optional = true, features = [
     "Win32_System_Variant",               # ditto
 ] }
 
-# Reading back what the OS made of our media session, which only a test wants -- dev-only, so a
+# Reading back what the OS made of our media session, which only a test wants - dev-only, so a
 # release build does not generate the projection for it.
 [target.'cfg(target_os = "windows")'.dev-dependencies]
 windows = { version = "0.62", features = ["Media_Control"] }
