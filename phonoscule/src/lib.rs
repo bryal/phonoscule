@@ -11,6 +11,8 @@ pub mod wav;
 
 #[cfg(feature = "config")]
 pub mod config;
+#[cfg(feature = "dirs")]
+pub mod dirs;
 #[cfg(feature = "library")]
 pub mod library;
 #[cfg(feature = "media")]

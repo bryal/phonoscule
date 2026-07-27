@@ -12,8 +12,10 @@ repository.workspace = true
 # default. See each module's docs for what it needs.
 [features]
 default = []
+# The platform's directories for settings, state and caches (see `dirs`). Wants std.
+dirs = []
 # The shared TOML config file (see `config`). Wants std and a filesystem.
-config = ["dep:smol", "dep:toml_edit", "dep:shellexpand", "dep:anyhow", "log/std"]
+config = ["dirs", "dep:smol", "dep:toml_edit", "dep:shellexpand", "dep:anyhow", "log/std"]
 # Scanning a music directory into albums, with cover thumbnails (see `library`). Wants std and a
 # filesystem.
 library = ["dep:smol", "dep:futures", "dep:serde", "dep:serde_json", "dep:image", "dep:embedded-io-adapters", "log/std"]

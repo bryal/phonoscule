@@ -1,26 +1,22 @@
 //! Where this player keeps its files: its own directories, not shared with any other phonoscule
-//! player. Point two of them at one directory deliberately if you want that.
+//! player. Point two of them at one directory deliberately if you want that. Which roots they sit
+//! under is [`dirs`](phonoscule::dirs)' business; all we bring is the name.
 
-use phonoscule::library;
+use phonoscule::{dirs, library};
 use std::path::PathBuf;
 
-/// The name our directories go by, under the XDG roots.
+/// The name our directories go by under the platform's roots.
 const DIR: &str = "phonoscule-tui";
 
-/// State survives a cache wipe: `$XDG_STATE_HOME/phonoscule-tui`, falling back to
-/// `~/.local/state/phonoscule-tui`. `None` when neither is determinable, which means the session is
-/// simply not kept.
+/// State survives a cache wipe. `None` when there is no such directory to be found, which means the
+/// session is simply not kept.
 fn state_dir() -> Option<PathBuf> {
-    Some(xdg_dir("XDG_STATE_HOME", ".local/state")?.join(DIR))
+    dirs::state_dir(DIR)
 }
 
-/// Regenerable caches: `$XDG_CACHE_HOME/phonoscule-tui`, falling back to `~/.cache/phonoscule-tui`.
+/// Regenerable caches: the tag cache, the album index, and the cover thumbnails.
 fn cache_dir() -> Option<PathBuf> {
-    Some(xdg_dir("XDG_CACHE_HOME", ".cache")?.join(DIR))
-}
-
-fn xdg_dir(var: &str, fallback: &str) -> Option<PathBuf> {
-    std::env::var(var).ok().filter(|s| !s.is_empty()).map(PathBuf::from).or_else(|| Some(std::env::home_dir()?.join(fallback)))
+    dirs::cache_dir(DIR)
 }
 
 /// The play queue: just its list of tracks.
