@@ -95,7 +95,8 @@ the terminal.
 
 On **Windows** the installed `phonoscule-gui.exe` carries the application icon: it is compiled in as
 a resource, so a shortcut to it, or pinning it to the taskbar, looks like it should with nothing else
-to copy.
+to copy. Launching it that way opens no console window; run it from a shell and it prints there as
+usual, though the prompt returns straight away rather than waiting for the player to exit.
 
 On **Linux**, if you prefer to launch desktop applications through a graphical launcher, there's a
 `Phonoscule.desktop` file in this directory which you can copy to e.g. `~/.local/share/applications/`.

@@ -3942,6 +3942,7 @@ dependencies = [
  "simple_logger",
  "smol",
  "url",
+ "windows 0.62.2",
  "winresource",
 ]
 

@@ -4,8 +4,15 @@
 //! play queue with a seekable playback bar. Follows the model/update/view architecture; this file
 //! only boots the application and wires up its event sources.
 
+// A graphical program, so on Windows it is linked as a subsystem application: starting it from
+// Explorer, a shortcut or the Start menu must not conjure a console window alongside the player.
+// That costs the standard handles, which [`console::prepare`] sorts out before anything is printed -
+// including adopting the console of a shell that did start it, so a terminal run is unchanged.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod album_grid;
 mod background;
+mod console;
 mod coverflow;
 mod model;
 mod paths;
@@ -101,12 +108,27 @@ fn help() -> String {
 }
 
 fn main() {
+    // Before anything is printed, the first log line included: settles whether there is anywhere for
+    // output to go at all (see the `console` module).
+    let output = console::prepare();
+
     // Any startup failure -- a bad argument, an unreadable config, a failed window init -- prints
     // the help after it, so a misuse points the user at how to run the program and where its
     // config lives.
     if let Err(e) = run() {
-        eprintln!("Error: {e:?}\n");
-        eprint!("{}", help());
+        match output {
+            console::Output::Live => {
+                eprintln!("Error: {e:?}\n");
+                eprint!("{}", help());
+            }
+            // Started from a graphical shell, where that help would go to NUL and the window would
+            // simply never appear. Say what went wrong in the one place it can be seen, and point at
+            // a terminal for the rest rather than fitting a page of help into a dialog.
+            console::Output::Discarded => console::alert(
+                "Phonoscule",
+                &format!("{e:?}\n\nRun `phonoscule-gui --help` in a terminal for usage, and for where the config file lives."),
+            ),
+        }
         std::process::exit(1);
     }
 }

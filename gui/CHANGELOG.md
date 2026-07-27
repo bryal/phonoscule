@@ -15,6 +15,17 @@ v1.2.0 (unreleased)
 
   Still Linux-only: nothing. Still missing on both: FLAC and Ogg Vorbis.
 
+- **No console window on Windows.** Starting the player from Explorer, a
+  shortcut or the Start menu no longer opens a terminal beside it: the binary is
+  linked as a Windows subsystem application. Started from a shell it is
+  unchanged - it adopts that console, so the help, the version and the log still
+  print where they always did, and a `> log.txt` redirect still goes to the file.
+  Where there is no console at all, a startup failure that would have printed to
+  one is shown in a dialog instead of the player just never appearing.
+
+  One consequence to know about: cmd and PowerShell do not wait for a subsystem
+  application, so the prompt returns immediately and the log then prints over it.
+
 - **An icon.** The *Player* view reduced to a mark: the playing album lit up
   front, its neighbours receding either side, on the reflective floor under the
   backdrop glow. Compiled into the `.exe` as a resource, so `cargo install`
