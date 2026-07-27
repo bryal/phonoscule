@@ -200,3 +200,75 @@ fn stream_from_url(url: &str) -> windows::core::Result<RandomAccessStreamReferen
     let uri = windows::Foundation::Uri::CreateUri(&HSTRING::from(url))?;
     RandomAccessStreamReference::CreateFromUri(&uri)
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
+
+    /// Publishes a snapshot and then reads it back the way any other program on the machine would --
+    /// through the session manager the OS offers -- since what matters is not that the calls
+    /// returned `Ok` but that Windows made a now-playing session out of them.
+    ///
+    /// Skips (rather than fails) where there is no session manager to ask.
+    #[test]
+    fn windows_sees_what_we_publish() {
+        // Unique, so a really running phonoscule (or anything else) cannot be mistaken for us.
+        let title = format!("Phonoscule roundtrip {}", std::process::id());
+        let (media, worker) = crate::media::start("Phonoscule roundtrip test", "phonoscule-test");
+        if !media.active() {
+            eprintln!("skipping: no media integration in this environment");
+            return;
+        }
+        // Drive the worker for the test; it stops when `media` (holding the sender) is dropped.
+        std::thread::spawn(move || smol::block_on(worker.run()));
+        media.publish(Snapshot {
+            meta: Some(Meta {
+                title: title.clone(),
+                album: "Roundtrip Album".into(),
+                artist: "Roundtrip Artist".into(),
+                cover_url: None,
+                duration: Some(Duration::from_secs(200)),
+            }),
+            // Paused, not Playing: a test has no business taking the media keys off whatever the
+            // person at the keyboard is actually listening to. The session is published either way.
+            state: Playback::Paused,
+            position: Duration::from_secs(20),
+        });
+
+        // The publish goes through the worker and then through the OS, neither on our schedule.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut seen = None;
+        while std::time::Instant::now() < deadline && seen.is_none() {
+            std::thread::sleep(Duration::from_millis(100));
+            seen = match smol::block_on(ours(&title)) {
+                Ok(found) => found,
+                Err(e) => {
+                    eprintln!("skipping: no media session manager here ({})", e.message());
+                    return;
+                }
+            };
+        }
+        let (album, artist) = seen.unwrap_or_else(|| panic!("Windows never published a session titled {title:?}"));
+        assert_eq!(album, "Roundtrip Album");
+        assert_eq!(artist, "Roundtrip Artist");
+    }
+
+    /// The album and artist of the published session whose title is `title`, or `None` while no
+    /// session has it. Errors mean the manager itself could not be reached.
+    async fn ours(title: &str) -> windows::core::Result<Option<(String, String)>> {
+        let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.await?;
+        for session in manager.GetSessions()? {
+            // A session that will not describe itself is somebody else's problem, not a failure
+            // here: another player may be mid-teardown.
+            let Ok(properties) = session.TryGetMediaPropertiesAsync()?.await else { continue };
+            if properties.Title().map(|t| t.to_string()).as_deref() != Ok(title) {
+                continue;
+            }
+            let album = properties.AlbumTitle()?.to_string();
+            let artist = properties.Artist()?.to_string();
+            return Ok(Some((album, artist)));
+        }
+        Ok(None)
+    }
+}

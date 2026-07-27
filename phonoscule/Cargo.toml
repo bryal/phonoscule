@@ -87,6 +87,11 @@ windows = { version = "0.62", optional = true, features = [
     "Win32_System_Variant",               # ditto
 ] }
 
+# Reading back what the OS made of our media session, which only a test wants -- dev-only, so a
+# release build does not generate the projection for it.
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows = { version = "0.62", features = ["Media_Control"] }
+
 [dev-dependencies]
 embedded-io-adapters = { workspace = true }
 smol                 = { workspace = true }
