@@ -1,6 +1,21 @@
 # Changelog
 
 
+v1.2.0 (unreleased)
+------------------------------------------------------------
+
+- **Windows.** The player runs on Windows 10 and later, with everything it does
+  on Linux: playback out through WASAPI, its own volume in the Windows mixer, and
+  media keys and now-playing through the System Media Transport Controls. Most of
+  the work is in the framework (see [its changelog](../phonoscule/CHANGELOG.md));
+  what changed here is that the player's files now go where Windows keeps such
+  things - the config under `%APPDATA%`, the session and the cover cache under
+  `%LOCALAPPDATA%` - rather than into `~/.config` and `~/.cache`. Linux is
+  untouched, XDG variables and all.
+
+  Still Linux-only: nothing. Still missing on both: FLAC and Ogg Vorbis.
+
+
 v1.1.0 (2026-07-21)
 ------------------------------------------------------------
 

@@ -30,8 +30,9 @@ and for people who simple like having all their stuff in the terminal.
   A play queue grouped into album runs, shuffle (by album or track, all or all-but-playing),
   four repeat modes, seeking, and per-application volume through the OS mixer.
 - **Desktop integration.**
-  An MPRIS server, so media keys, `playerctl` and desktop now-playing widgets work,
-  and the session - queue, position, repeat mode, order - restored across runs.
+  Media keys and now-playing: an MPRIS server on Linux, so `playerctl` and desktop
+  widgets work, and the System Media Transport Controls on Windows.
+  And the session - queue, position, repeat mode, order - restored across runs.
 - **Bounded cover art.**
   Artwork is loaded as it is shown, into caches of fixed size,
   and decoded and encoded off the drawing thread so scrolling never waits for it.
@@ -43,16 +44,23 @@ and for people who simple like having all their stuff in the terminal.
 
 - **Audio:** WAV (8/16/24/32-bit integer and 32-bit float, mono or stereo) and Ogg Opus.
 - **Cover art:** folder images (`{cover,folder,front,albumart}.{jpg,jpeg,png,webp}`).
-- **Output:** PulseAudio, and PipeWire via pipewire-pulse, on Linux.
+- **Output:** PulseAudio, and PipeWire via pipewire-pulse, on Linux; WASAPI on Windows.
+- **Platform:** Linux and Windows 10 or later.
 - **Terminal:** any; cover art is sharper on one that speaks an image protocol.
   Detection is `ratatui-image`'s; the half-block fallback needs nothing of the terminal.
 
-Not yet: FLAC and Ogg Vorbis and other formats as well as audio output beyond Linux/PulseAudio.
+Not yet: FLAC and Ogg Vorbis and other formats, and macOS.
 
 ## Configure
 
-Settings are read from `~/.config/phonoscule.toml`
-(or `$XDG_CONFIG_HOME/phonoscule.toml`):
+Settings are read from a TOML file the framework's players share:
+
+| | |
+|---|---|
+| Linux | `$XDG_CONFIG_HOME/phonoscule.toml`, or `~/.config/phonoscule.toml` |
+| Windows | `%APPDATA%\phonoscule\phonoscule.toml` |
+
+Run with `--help` to see the path on your machine.
 
 ```toml
 music-dir = "~/Music"

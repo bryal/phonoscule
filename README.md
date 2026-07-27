@@ -54,7 +54,7 @@ with desktop media integration and keyboard-driven controls.
 cargo run --release -p phonoscule-gui
 ```
 
-It plays through PulseAudio (and PipeWire) on Linux.
+It plays through PulseAudio (and PipeWire) on Linux, and WASAPI on Windows.
 See [`gui/README.md`](gui/README.md) for its features, configuration, and controls.
 
 ## The terminal player (`phonoscule-tui`)
