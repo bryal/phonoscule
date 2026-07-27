@@ -25,9 +25,11 @@ time, behind interfaces that were already platform-neutral.
     and the stream is reopened on whatever is default now. If it merely stops
     being the default, because a headset was plugged in or another output picked,
     nothing fails at all and WASAPI says nothing: the device we hold is still
-    perfectly good, just not where anyone is listening. So the endpoint opened is
-    remembered and checked against the current default twice a second. PulseAudio
-    moves a stream itself, so this is Windows' half of the same behaviour.
+    perfectly good, just not where anyone is listening. So an
+    `IMMNotificationClient` is registered on the enumerator, which is what the
+    Core Audio API offers for precisely this, and the next write moves playback.
+    PulseAudio moves a stream itself, so this is Windows' half of the same
+    behaviour.
 - **`volume`** - the mixerless fallback on Windows is now a real backend:
   `ISimpleAudioVolume` on the audio sessions `sink` opens for this process, which
   is the per-application slider the Windows volume mixer shows. Same process-id

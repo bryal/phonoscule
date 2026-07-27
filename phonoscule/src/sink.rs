@@ -169,23 +169,26 @@ mod backend {
 /// A stream is bound for life to the endpoint it was opened on. WASAPI invalidates it when that
 /// endpoint disappears, but says nothing at all when the *default* merely moves elsewhere - the
 /// device we hold is still perfectly good, it is simply not where the listener is now listening. So
-/// which endpoint was opened is remembered, and [`Sink::stale`] watches for it ceasing to be the
-/// default. Polled rather than through `IMMNotificationClient`, for the reason
-/// [`volume`](crate::volume)'s backend gives: a callback would arrive on some other thread and have
-/// to be handed to this one anyway, and the check is a comparison of two strings on a timer.
+/// an [`IMMNotificationClient`] is registered on the enumerator, which is what the Core Audio API
+/// offers for exactly this, and [`Sink::stale`] reports what it has seen. The callback arrives on one
+/// of COM's own threads and does nothing but set a flag, since the reopening has to happen on the
+/// thread that owns the stream.
 #[cfg(target_os = "windows")]
 mod backend {
     use super::{Client, Frame};
     use std::cell::Cell;
-    use std::time::{Duration, Instant};
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, PROPERTYKEY};
     use windows::Win32::Media::Audio::{
         AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioClient, IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-        WAVE_FORMAT_PCM, WAVEFORMATEX, eConsole, eRender,
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, DEVICE_STATE, EDataFlow, ERole, IAudioClient, IAudioRenderClient,
+        IMMDeviceEnumerator, IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator, WAVE_FORMAT_PCM,
+        WAVEFORMATEX, eConsole, eRender,
     };
     use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
     use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows::core::{PCWSTR, implement};
 
     /// How much audio the device buffers, in 100-nanosecond units (WASAPI's `REFERENCE_TIME`).
     /// 200 ms is roomy enough that a slow decode - a debug build opening a cold file - does not
@@ -197,10 +200,41 @@ mod backend {
     /// generous next to [`BUFFER_DURATION`], but finite.
     const WAIT_TIMEOUT_MS: u32 = 2000;
 
-    /// How often to ask whether we are still on the default endpoint. Each check is an inter-process
-    /// call to the audio service, so not every chunk; short enough that plugging in a headset moves
-    /// the music within about the time the switch itself takes to settle.
-    const DEFAULT_CHECK: Duration = Duration::from_millis(500);
+    /// Told by the audio service when the endpoints change. Only one of the five notifications
+    /// concerns us; the rest are required by the interface and deliberately do nothing.
+    ///
+    /// These arrive on a thread of COM's choosing, so this sets a flag and returns rather than
+    /// touching the stream: reopening it belongs to the thread that owns it.
+    #[implement(IMMNotificationClient)]
+    struct DefaultWatch {
+        moved: Arc<AtomicBool>,
+    }
+
+    impl IMMNotificationClient_Impl for DefaultWatch_Impl {
+        fn OnDefaultDeviceChanged(&self, flow: EDataFlow, role: ERole, _id: &PCWSTR) -> windows::core::Result<()> {
+            // Playback, in the role the stream was opened for. Windows keeps a separate default for
+            // communications, and a call starting is no reason to move the music.
+            if flow == eRender && role == eConsole {
+                self.moved.store(true, Ordering::Relaxed);
+            }
+            Ok(())
+        }
+
+        fn OnDeviceStateChanged(&self, _id: &PCWSTR, _state: DEVICE_STATE) -> windows::core::Result<()> {
+            // A device going away takes the stream with it, which the next write reports.
+            Ok(())
+        }
+        fn OnDeviceAdded(&self, _id: &PCWSTR) -> windows::core::Result<()> {
+            // Interesting only if it becomes the default, which arrives as its own notification.
+            Ok(())
+        }
+        fn OnDeviceRemoved(&self, _id: &PCWSTR) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn OnPropertyValueChanged(&self, _id: &PCWSTR, _key: &PROPERTYKEY) -> windows::core::Result<()> {
+            Ok(())
+        }
+    }
 
     pub struct Sink {
         client: IAudioClient,
@@ -210,13 +244,15 @@ mod backend {
         /// The render buffer's size in frames, against which `GetCurrentPadding` says how much of
         /// it is still unplayed.
         capacity: u32,
-        /// Kept for the stream's life so [`Sink::stale`] can ask what the default endpoint is now
-        /// without paying to create one every time.
+        /// Kept for the stream's life, because the registration below belongs to it and has to be
+        /// taken back off the same enumerator.
         devices: IMMDeviceEnumerator,
-        /// The endpoint this stream was opened on, by its stable id, and when it was last confirmed
-        /// to still be the default.
+        /// The registered notification client, and the flag it sets.
+        watch: IMMNotificationClient,
+        moved: Arc<AtomicBool>,
+        /// Which endpoint this stream was opened on. Not needed to notice a change any more, but
+        /// worth having in the log, and it is what says the reopen landed where it should.
         endpoint: String,
-        checked: Instant,
     }
 
     // The COM interfaces are apartment-bound, but the sink never leaves the audio thread that
@@ -232,39 +268,24 @@ mod backend {
             unsafe { self.write_all(frames) }.map_err(|e| e.message())
         }
 
-        /// Brings the next [`stale`](Sink::stale) forward past its timer, so a test need not wait it
-        /// out to exercise the comparison.
+        /// Stands in for the notification, which a test cannot provoke without moving the machine's
+        /// default output from under whoever is using it.
         #[cfg(test)]
-        pub fn force_check(&mut self) {
-            self.checked = Instant::now() - DEFAULT_CHECK;
+        pub fn pretend_default_moved(&self) {
+            self.moved.store(true, Ordering::Relaxed);
         }
 
-        /// Pretends the stream was opened on some other endpoint, which is what a default moving
-        /// away looks like from in here.
+        /// The endpoint this stream is playing on.
         #[cfg(test)]
-        pub fn pretend_endpoint(&mut self, id: &str) {
-            self.endpoint = id.to_string();
+        pub fn endpoint(&self) -> &str {
+            &self.endpoint
         }
 
-        /// Whether the endpoint this stream is on has stopped being the default one, which is how
-        /// plugging in a headset, or picking another output, reaches us: nothing about the stream
-        /// fails, so there is nothing to notice but this.
-        ///
-        /// Checked on a timer rather than per chunk, and a failure to ask counts as "no" - the audio
-        /// service being briefly unreachable is not a reason to tear a working stream down, and an
-        /// endpoint that has really gone will fail the next write instead.
+        /// Whether the default output has moved away from the endpoint this stream is on, which is
+        /// how plugging in a headset, or picking another output, reaches us: nothing about the stream
+        /// itself fails, so there is nothing to notice but the notification.
         pub fn stale(&mut self) -> bool {
-            if self.checked.elapsed() < DEFAULT_CHECK {
-                return false;
-            }
-            self.checked = Instant::now();
-            match unsafe { default_endpoint(&self.devices) } {
-                Ok(current) => current != self.endpoint,
-                Err(e) => {
-                    log::debug!("could not read the default output device: {}", e.message());
-                    false
-                }
-            }
+            self.moved.load(Ordering::Relaxed)
         }
 
         /// Feeds the whole chunk to the device, waiting for room whenever the buffer is full.
@@ -296,6 +317,11 @@ mod backend {
 
     impl Drop for Sink {
         fn drop(&mut self) {
+            // Registering handed the enumerator a reference to our notification client, and it keeps
+            // calling until that is taken back. A stream is reopened on every device change and every
+            // change of sample rate, so leaving them registered would pile up callbacks into objects
+            // nothing else refers to.
+            let _ = unsafe { self.devices.UnregisterEndpointNotificationCallback(&self.watch) };
             // Stop before the event handle goes: WASAPI must not be left holding a closed handle.
             let _ = unsafe { self.client.Stop() };
             let _ = unsafe { CloseHandle(self.ready) };
@@ -320,8 +346,14 @@ mod backend {
         };
 
         let devices: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }?;
-        // The default endpoint for ordinary playback. Its id is kept so `Sink::stale` can tell when
-        // the default has moved on: the stream itself will not say, having nothing wrong with it.
+
+        // Ask to be told when the default moves, before opening anything on it: registered after,
+        // there is a gap in which the change would go unseen and the music stay where it was.
+        let moved = Arc::new(AtomicBool::new(false));
+        let watch = IMMNotificationClient::from(DefaultWatch { moved: Arc::clone(&moved) });
+        unsafe { devices.RegisterEndpointNotificationCallback(&watch) }?;
+
+        // The default endpoint for ordinary playback.
         let device = unsafe { devices.GetDefaultAudioEndpoint(eRender, eConsole) }?;
         let endpoint = unsafe { endpoint_id(&device) }?;
         let audio: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }?;
@@ -353,11 +385,12 @@ mod backend {
         if let Err(e) = unsafe { name_session(&audio, client) } {
             log::debug!("could not name the audio session: {e}");
         }
-        log::debug!("playing at {rate} Hz on endpoint {endpoint}");
-        Ok(Sink { client: audio, render, ready, capacity, devices, endpoint, checked: Instant::now() })
+        let sink = Sink { client: audio, render, ready, capacity, devices, watch, moved, endpoint };
+        log::debug!("playing at {rate} Hz on endpoint {}", sink.endpoint);
+        Ok(sink)
     }
 
-    /// An endpoint's stable id, as [`Sink::stale`] compares them.
+    /// An endpoint's stable id, for the log and for saying which one a stream landed on.
     ///
     /// `GetId` hands back a string allocated with the COM task allocator, which is ours to release -
     /// this runs on every reopen, so leaking it would be a slow leak rather than no leak.
@@ -366,12 +399,6 @@ mod backend {
         let owned = unsafe { id.to_string() };
         unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(id.0 as *const std::ffi::c_void)) };
         owned.map_err(Into::into)
-    }
-
-    /// The id of the endpoint playback should be going to now.
-    unsafe fn default_endpoint(devices: &IMMDeviceEnumerator) -> windows::core::Result<String> {
-        let device = unsafe { devices.GetDefaultAudioEndpoint(eRender, eConsole) }?;
-        unsafe { endpoint_id(&device) }
     }
 
     /// Labels our audio session, so the Windows volume mixer lists the player under the name it
@@ -441,11 +468,12 @@ mod test {
         assert!(elapsed < Duration::from_millis(2000), "a second of frames took {elapsed:?}");
     }
 
-    /// Following the listener's chosen output rests on reading the endpoint's id back and comparing
-    /// it, so both answers are worth pinning: the endpoint we opened is the default, and one that is
-    /// not, is not. Physically plugging a headset in is the case this stands in for.
+    /// A freshly opened stream is on the default by construction and must not claim otherwise, and a
+    /// stream told the default has moved must say so. Provoking the real notification would mean
+    /// moving the machine's default output from under whoever is using it, so the notification is
+    /// stood in for; that it arrives at all is what the log line is for.
     ///
-    /// Skips where there is no device to open, since then there is no endpoint to have an id.
+    /// Skips where there is no device to open.
     #[cfg(target_os = "windows")]
     #[test]
     fn a_stream_notices_when_it_is_no_longer_on_the_default_device() {
@@ -454,14 +482,10 @@ mod test {
             eprintln!("skipping: no audio device in this environment");
             return;
         };
-        // Freshly opened on the default, so nothing to follow. Reaching past the timer, since the
-        // point here is the comparison and not how often it is made.
-        sink.force_check();
         assert!(!sink.stale(), "just opened on the default endpoint, yet reported stale");
+        assert!(!sink.endpoint().is_empty(), "opened without recording which endpoint");
 
-        // What a headset being plugged in amounts to: the default is somewhere our stream is not.
-        sink.pretend_endpoint("{not-the-endpoint-we-are-on}");
-        sink.force_check();
+        sink.pretend_default_moved();
         assert!(sink.stale(), "the default endpoint moved and the stream did not notice");
     }
 
@@ -476,15 +500,17 @@ mod test {
             eprintln!("skipping: no audio device in this environment");
             return;
         };
-        device.pretend_endpoint("{not-the-endpoint-we-are-on}");
-        device.force_check();
+        let before = device.endpoint().to_string();
+        device.pretend_default_moved();
 
         // A chunk of silence: inaudible, and enough to take the write path that reopens.
         sink.write(&[Frame::default(); 64]);
 
         let Out::Device(device) = &mut sink.out else { panic!("reopening left no device") };
-        device.force_check();
-        assert!(!device.stale(), "reopened onto something that is still not the default endpoint");
+        assert!(!device.stale(), "the reopened stream still reports the default as elsewhere");
+        // Nothing really moved during the test, so the reopen should have landed back on the same
+        // endpoint. What this pins is that it went and asked, rather than reusing the old stream.
+        assert_eq!(device.endpoint(), before, "reopened onto an endpoint that is not the default");
     }
 
     /// Chunks are due at absolute offsets from the start, so a chunk that ran late is not paid for

@@ -30,7 +30,7 @@ search = []
 session = ["player", "sort", "dep:smol", "dep:serde", "dep:serde_json", "log/std"]
 # Audio output (see `sink`). Wants std and an audio backend - PulseAudio on Linux, WASAPI on
 # Windows. Split from `player` so a program that drives the decoders itself can still just play.
-sink = ["dep:pulse-simple", "dep:windows", "log/std"]
+sink = ["dep:pulse-simple", "dep:windows", "dep:windows-core", "log/std"]
 # The play-queue engine (see `player`). Wants std, a filesystem, and audio output.
 player = ["sink", "dep:smol", "dep:embedded-io-adapters", "dep:serde", "log/std"]
 # Per-application volume through the OS mixer (see `volume`). Wants std.
@@ -73,6 +73,10 @@ zbus             = { version = "5.17", optional = true }
 # The Windows platform backends: WASAPI playback, the volume mixer on our own audio session, and the
 # System Media Transport Controls.
 [target.'cfg(target_os = "windows")'.dependencies]
+# The `implement` macro, for the endpoint-change notification client in `sink`, expands to paths
+# rooted at `::windows_core`, so that crate has to be nameable here and not only through `windows`.
+# Same version, so it is the one `windows` itself uses rather than a second copy.
+windows-core = { version = "0.62", optional = true }
 windows = { version = "0.62", optional = true, features = [
     "Foundation",                         # TimeSpan, Uri, TypedEventHandler
     "Media",                              # SystemMediaTransportControls

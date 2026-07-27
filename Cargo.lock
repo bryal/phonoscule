@@ -3904,6 +3904,7 @@ dependencies = [
  "toml_edit",
  "utf8-decode",
  "windows 0.62.2",
+ "windows-core 0.62.2",
  "zbus",
 ]
 
