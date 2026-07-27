@@ -15,7 +15,7 @@ mod view;
 
 use futures::StreamExt;
 use model::Model;
-use phonoscule::{config, library, mpris, player, session, watcher};
+use phonoscule::{config, library, media, player, session, watcher};
 use smol::channel;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -128,7 +128,7 @@ async fn event_loop(
     // in the order they arrived.
     let (tx, rx) = channel::unbounded::<Msg>();
     read_terminal_events(tx.clone());
-    let (media, media_worker) = mpris::start("Phonoscule TUI", "phonoscule-tui");
+    let (media, media_worker) = media::start("Phonoscule TUI", "phonoscule-tui");
     let watcher = watcher::start(&model.conf.music_dir);
     let (changes, quiet) = watcher.change_source();
     let sources = [

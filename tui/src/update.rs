@@ -3,7 +3,7 @@
 use crate::model::{Focus, Model, QueueItem, ScanState, Subject, TrackMenu, View, open_picker, refresh};
 use crate::{covers, keys, logger, paths};
 use phonoscule::library::{self, Album};
-use phonoscule::mpris;
+use phonoscule::media;
 use phonoscule::player;
 use phonoscule::queue::{self, Grouping, Scope};
 use phonoscule::session;
@@ -31,7 +31,7 @@ pub enum Msg {
     /// Step the volume by this much, 1.0 being the whole range.
     BumpVolume(f32),
     /// A control request from the OS: a media key, `playerctl`, a desktop widget.
-    Media(mpris::Control),
+    Media(media::Control),
     /// Time to look over the music directory again.
     Rescan,
     /// A cover finished loading and encoding (see the covers module).
@@ -356,22 +356,22 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             }
         }
         Msg::Media(control) => match control {
-            mpris::Control::Play | mpris::Control::Pause | mpris::Control::Toggle | mpris::Control::Stop => {
+            media::Control::Play | media::Control::Pause | media::Control::Toggle | media::Control::Stop => {
                 // Play, pause and stop all mean the same thing here, since the engine has one toggle
                 // and the desktop only ever asks for the state we are not in.
                 let wanted = match control {
-                    mpris::Control::Play => player::PlayState::Playing,
+                    media::Control::Play => player::PlayState::Playing,
                     _ => player::PlayState::Paused,
                 };
-                if control == mpris::Control::Toggle || wanted != model.play_state {
+                if control == media::Control::Toggle || wanted != model.play_state {
                     model.send(player::Cmd::TogglePlayPause);
                 }
                 After::Idle
             }
-            mpris::Control::Next => update(model, Msg::Next),
-            mpris::Control::Prev => update(model, Msg::Prev),
-            mpris::Control::Seek(micros) => update(model, Msg::Seek(micros / 1_000_000)),
-            mpris::Control::SetPosition(pos) => {
+            media::Control::Next => update(model, Msg::Next),
+            media::Control::Prev => update(model, Msg::Prev),
+            media::Control::Seek(micros) => update(model, Msg::Seek(micros / 1_000_000)),
+            media::Control::SetPosition(pos) => {
                 model.pos = pos;
                 model.pending_seek = Some(pos);
                 model.send(player::Cmd::Seek(pos));
@@ -649,10 +649,10 @@ pub fn full_window(model: &Model) -> Vec<u64> {
 
 /// Tells the OS what is playing. Fire and forget: the media worker coalesces a burst of these down
 /// to the latest, so this can be called after every round of messages without thought.
-pub fn publish_media(model: &Model, media: &mpris::Media) {
+pub fn publish_media(model: &Model, media: &media::Media) {
     let meta = model.playing().map(|item| {
         let album = model.album_of(item);
-        mpris::Meta {
+        media::Meta {
             title: item.title.clone(),
             album: album.map(|a| a.title.clone()).unwrap_or_default(),
             artist: album.map(|a| a.artist.clone()).unwrap_or_default(),
@@ -665,11 +665,11 @@ pub fn publish_media(model: &Model, media: &mpris::Media) {
         }
     });
     let state = match (model.playing().is_some(), model.play_state) {
-        (false, _) => mpris::Playback::Stopped,
-        (true, player::PlayState::Playing) => mpris::Playback::Playing,
-        (true, player::PlayState::Paused) => mpris::Playback::Paused,
+        (false, _) => media::Playback::Stopped,
+        (true, player::PlayState::Playing) => media::Playback::Playing,
+        (true, player::PlayState::Paused) => media::Playback::Paused,
     };
-    media.publish(mpris::Snapshot { meta, state, position: model.pos });
+    media.publish(media::Snapshot { meta, state, position: model.pos });
 }
 
 /// A `file://` URL for a path, which is what MPRIS wants of cover art.

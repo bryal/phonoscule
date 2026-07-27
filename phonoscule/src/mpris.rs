@@ -1,176 +1,67 @@
-//! OS media integration: a small bespoke MPRIS server on the D-Bus session bus, giving a player
-//! media keys, `playerctl -p <name>`, and desktop media widgets. Built directly on zbus rather than
-//! via a wrapper crate, so updates reach the bus the instant they are pushed (no polling loop) and
-//! only the subset of MPRIS actually used is implemented.
+//! The Linux [`media`](crate::media) backend: a small bespoke MPRIS server on the D-Bus session
+//! bus, giving a player media keys, `playerctl -p <name>`, and desktop media widgets. Built
+//! directly on zbus rather than via a wrapper crate, so updates reach the bus the instant they are
+//! pushed (no polling loop) and only the subset of MPRIS actually used is implemented.
 //!
-//! The application [`publish`](Media::publish)es a [`Snapshot`] of the now-playing state on every
-//! change; the [`MediaWorker`] coalesces bursts of them down to the latest before applying them to
-//! the served interface, so scrubbing the queue with a held key emits a handful of `properties
-//! changed` signals rather than one per track. Control requests from the bus (play/pause/next/...)
-//! arrive back as [`Control`] events on [`Media::events`].
+//! Applications talk to [`media`](crate::media), not to this module; it is public because an MPRIS
+//! server is a worthwhile thing to reach for on purpose.
 //!
-//! Wants std and a D-Bus session bus, so Linux in practice.
+//! Wants std and a D-Bus session bus.
 
+use crate::media::{Changed, Control, Playback, Snapshot};
 use smol::channel;
 use std::collections::HashMap;
 use std::time::Duration;
 use zbus::zvariant::{ObjectPath, Value};
 
-/// A snapshot of the now-playing state to reflect on the bus.
-#[derive(Clone, PartialEq)]
-pub struct Snapshot {
-    /// The track's metadata, or `None` when nothing is loaded.
-    pub meta: Option<Meta>,
-    pub state: Playback,
-    pub position: Duration,
-}
-
-#[derive(Clone, PartialEq)]
-pub struct Meta {
-    pub title: String,
-    pub album: String,
-    pub artist: String,
-    /// A `file://` URL to the cover image, for the desktop to display.
-    pub cover_url: Option<String>,
-    pub duration: Option<Duration>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum Playback {
-    Playing,
-    Paused,
-    Stopped,
-}
-
-/// A control request from the bus (a media key, `playerctl`, or a widget button).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Control {
-    Play,
-    Pause,
-    Toggle,
-    Stop,
-    Next,
-    Prev,
-    /// Relative seek by this signed microsecond offset (MPRIS `Seek`).
-    Seek(i64),
-    /// Absolute seek to this position (MPRIS `SetPosition`).
-    SetPosition(Duration),
-}
-
-/// Handle the application keeps: publishes state changes and receives control events.
-pub struct Media {
-    updates: channel::Sender<Snapshot>,
-    pub events: channel::Receiver<Control>,
-    active: bool,
-}
-
-impl Media {
-    /// Whether the MPRIS service actually came up (a session bus was reachable).
-    pub fn active(&self) -> bool {
-        self.active
-    }
-
-    /// Publish the latest now-playing state. Never blocks (the channel is unbounded); the worker
-    /// coalesces a burst of these down to the latest before applying it (see [`MediaWorker::run`]).
-    pub fn publish(&self, snapshot: Snapshot) {
-        // Fails only once the worker is gone (app shutting down).
-        let _ = self.updates.try_send(snapshot);
-    }
-}
-
-/// Owns the served MPRIS connection and applies coalesced updates to it; [`run`](MediaWorker::run)
-/// is a long-running task. Kept separate from [`Media`] so it can move onto the executor.
-pub struct MediaWorker {
-    connection: Option<zbus::Connection>,
-    updates: channel::Receiver<Snapshot>,
-}
-
-impl MediaWorker {
-    /// Coalesce bursts of published snapshots down to the latest and apply it to the served
-    /// interface, emitting the change signals. Parks when idle; ends when the update channel
-    /// closes (the app is shutting down).
-    pub async fn run(self) {
-        /// Minimum spacing between applied updates. zbus emits in real time, so this isn't about
-        /// keeping up -- it just collapses the fastest scrub through the queue into a couple of
-        /// signals rather than one per track, while staying prompt.
-        const MIN_INTERVAL: Duration = Duration::from_millis(50);
-
-        let Some(connection) = self.connection else { return };
-        let iface = match connection.object_server().interface::<_, PlayerInterface>(OBJECT_PATH).await {
-            Ok(iface) => iface,
-            Err(e) => {
-                log::warn!("MPRIS player interface missing: {e}");
-                return;
-            }
-        };
-
-        let mut shown_meta: Option<Meta> = None;
-        let mut shown_state: Option<Playback> = None;
-        loop {
-            // Park until something changes, then take everything already queued behind it -- only
-            // the last snapshot of a burst matters.
-            let Ok(mut snapshot) = self.updates.recv().await else { return };
-            while let Ok(next) = self.updates.try_recv() {
-                snapshot = next;
-            }
-
-            let mut player = iface.get_mut().await;
-            player.state = snapshot.clone();
-            let emitter = iface.signal_emitter();
-            // Metadata and status are signalled only when they actually change (Metadata is
-            // comparatively heavy, and clients that redraw on it don't want a signal per position
-            // tick). Position is read on demand, not signalled, per the MPRIS spec.
-            if snapshot.meta != shown_meta {
-                let _ = player.metadata_changed(emitter).await;
-                shown_meta = snapshot.meta.clone();
-            }
-            if Some(snapshot.state) != shown_state {
-                let _ = player.playback_status_changed(emitter).await;
-                shown_state = Some(snapshot.state);
-            }
-            drop(player);
-
-            // Hold off before the next apply; anything arriving during the wait coalesces into it.
-            smol::Timer::after(MIN_INTERVAL).await;
-        }
-    }
-}
-
 /// The single object every MPRIS player exposes its two interfaces at.
 const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
-/// Brings the server up. `identity` is the name desktops display; `bus_name` is the last element of
-/// `org.mpris.MediaPlayer2.<bus_name>` it registers as, so it must be a valid D-Bus *bus* name
-/// element -- letters, digits, underscores and hyphens, not starting with a digit -- and unique among
-/// running players. Hyphens are allowed here, unlike in interface and member names.
-/// An unreachable session bus is not an error: [`Media::active`] then reports false and the player
-/// simply runs without media integration.
-pub fn start(identity: &str, bus_name: &str) -> (Media, MediaWorker) {
-    let (update_tx, update_rx) = channel::unbounded();
-    let (event_tx, event_rx) = channel::unbounded();
-    // Build the connection now (a session-bus socket is cheap to open) so `active` is known and
-    // the worker just has to push updates.
-    let connection = match smol::block_on(serve(identity, bus_name, event_tx)) {
-        Ok(connection) => Some(connection),
-        Err(e) => {
-            log::warn!("no OS media integration: {e}");
-            None
-        }
-    };
-    let active = connection.is_some();
-    (Media { updates: update_tx, events: event_rx, active }, MediaWorker { connection, updates: update_rx })
+/// The registered service, and the interface updates are applied to.
+pub struct Server {
+    iface: zbus::object_server::InterfaceRef<PlayerInterface>,
+    /// Held for the session: dropping the connection unregisters the name and the objects on it.
+    _connection: zbus::Connection,
 }
 
-/// Registers the two MPRIS interfaces on the session bus under `org.mpris.MediaPlayer2.<bus_name>`.
-async fn serve(identity: &str, bus_name: &str, events: channel::Sender<Control>) -> zbus::Result<zbus::Connection> {
-    let root = RootInterface { identity: identity.to_string() };
-    let player = PlayerInterface { events, state: Snapshot { meta: None, state: Playback::Stopped, position: Duration::ZERO } };
-    zbus::connection::Builder::session()?
-        .name(format!("org.mpris.MediaPlayer2.{bus_name}"))?
-        .serve_at(OBJECT_PATH, root)?
-        .serve_at(OBJECT_PATH, player)?
-        .build()
-        .await
+/// Registers the two MPRIS interfaces on the session bus under `org.mpris.MediaPlayer2.<name>`, so
+/// `name` must be a valid D-Bus *bus* name element -- letters, digits, underscores and hyphens, not
+/// starting with a digit -- and unique among running players. Hyphens are allowed here, unlike in
+/// interface and member names.
+pub fn start(identity: &str, name: &str, events: channel::Sender<Control>) -> Result<Server, String> {
+    // A session-bus socket is cheap to open, so this is done up front rather than in the worker:
+    // whether there is any media integration at all is known before the first frame.
+    smol::block_on(async {
+        let root = RootInterface { identity: identity.to_string() };
+        let state = Snapshot { meta: None, state: Playback::Stopped, position: Duration::ZERO };
+        let player = PlayerInterface { events, state };
+        let connection = zbus::connection::Builder::session()?
+            .name(format!("org.mpris.MediaPlayer2.{name}"))?
+            .serve_at(OBJECT_PATH, root)?
+            .serve_at(OBJECT_PATH, player)?
+            .build()
+            .await?;
+        let iface = connection.object_server().interface::<_, PlayerInterface>(OBJECT_PATH).await?;
+        Ok(Server { iface, _connection: connection })
+    })
+    .map_err(|e: zbus::Error| e.to_string())
+}
+
+impl Server {
+    /// Stores the snapshot on the served interface and emits the change signals for whatever
+    /// actually changed. Position is deliberately not among them: MPRIS has clients read it on
+    /// demand rather than have it signalled.
+    pub async fn apply(&mut self, snapshot: &Snapshot, changed: Changed) {
+        let mut player = self.iface.get_mut().await;
+        player.state = snapshot.clone();
+        let emitter = self.iface.signal_emitter();
+        if changed.meta {
+            let _ = player.metadata_changed(emitter).await;
+        }
+        if changed.state {
+            let _ = player.playback_status_changed(emitter).await;
+        }
+    }
 }
 
 /// The `org.mpris.MediaPlayer2` root interface: identity and the (unsupported) app-level actions.
@@ -333,11 +224,15 @@ impl PlayerInterface {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::media::Meta;
     use std::process::Command;
 
     /// Registers the real MPRIS service, then controls & inspects it from the outside like a
     /// `playerctl`/`busctl` user would. Skips (rather than fails) where there is no session bus
     /// or no busctl, e.g. headless environments.
+    ///
+    /// Driven through [`media`](crate::media) rather than this module's own `start`, since that is
+    /// how a player reaches it -- which puts the coalescing worker in the loop too.
     #[test]
     fn mpris_roundtrip() {
         const PATH: &str = "/org/mpris/MediaPlayer2";
@@ -348,7 +243,7 @@ mod test {
         let dbus_name = format!("phonoscule-test-{}", std::process::id());
         let mpris = format!("org.mpris.MediaPlayer2.{dbus_name}");
 
-        let (media, worker) = start("Phonoscule roundtrip test", &dbus_name);
+        let (media, worker) = crate::media::start("Phonoscule roundtrip test", &dbus_name);
         if !media.active() {
             eprintln!("skipping: no media integration in this environment");
             return;

@@ -35,8 +35,9 @@ player = ["sink", "dep:smol", "dep:embedded-io-adapters", "dep:serde", "log/std"
 volume = ["dep:smol", "dep:libpulse-binding", "dep:windows", "log/std"]
 # Watching the music directory for changes (see `watcher`). Wants std and a filesystem.
 watcher = ["dep:smol", "dep:futures", "dep:notify", "log/std"]
-# An MPRIS server for media keys and desktop now-playing (see `mpris`). Wants a D-Bus session bus.
-mpris = ["dep:smol", "dep:zbus", "log/std"]
+# Media keys and desktop now-playing (see `media`): an MPRIS server on Linux (see `mpris`, wanting a
+# D-Bus session bus), the System Media Transport Controls on Windows (see `smtc`).
+media = ["dep:smol", "dep:zbus", "dep:windows", "log/std"]
 
 [dependencies]
 # rev is latest as of its commit date 2026-07-05
@@ -58,20 +59,26 @@ shellexpand          = { version = "3.1", optional = true }
 anyhow               = { version = "1.0", optional = true }
 futures              = { version = "0.3.32", optional = true }
 notify               = { version = "8.2", optional = true }
-zbus                 = { version = "5.17", optional = true }
 
-# The Linux audio backends: playback and the volume mixer, both speaking PulseAudio (PipeWire
-# included, via pipewire-pulse). Other platforms build their own, or the fallbacks.
+# The Linux platform backends: playback and the volume mixer, both speaking PulseAudio (PipeWire
+# included, via pipewire-pulse), and the MPRIS server on the D-Bus session bus. Other platforms
+# build their own, or the fallbacks.
 [target.'cfg(target_os = "linux")'.dependencies]
 pulse-simple     = { version = "1.0.1", optional = true }
 libpulse-binding = { version = "2.30.1", optional = true }
+zbus             = { version = "5.17", optional = true }
 
-# The Windows audio backends: WASAPI playback, and the volume mixer on our own audio session.
+# The Windows platform backends: WASAPI playback, the volume mixer on our own audio session, and the
+# System Media Transport Controls.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", optional = true, features = [
+    "Foundation",                         # TimeSpan, Uri, TypedEventHandler
+    "Media",                              # SystemMediaTransportControls
+    "Media_Playback",                     # MediaPlayer, which the controls hang off
+    "Storage_Streams",                    # RandomAccessStreamReference, for the cover
     "Win32_Foundation",
     "Win32_Media_Audio",
-    "Win32_Security",                    # SECURITY_ATTRIBUTES, for CreateEventW
+    "Win32_Security",                     # SECURITY_ATTRIBUTES, for CreateEventW
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage", # PROPVARIANT, in IMMDevice::Activate's signature
     "Win32_System_Threading",
