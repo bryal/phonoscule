@@ -15,6 +15,16 @@ v1.2.0 (unreleased)
 
   Still Linux-only: nothing. Still missing on both: FLAC and Ogg Vorbis.
 
+- **An icon.** The *Player* view reduced to a mark: the playing album lit up
+  front, its neighbours receding either side, on the reflective floor under the
+  backdrop glow. Compiled into the `.exe` as a resource, so `cargo install`
+  produces a binary that already carries it, and set as the window icon, which
+  covers the title bar (and X11/Wayland) as the resource covers Explorer, the
+  taskbar and Alt-Tab. Small sizes get a simplified form, since at 16px the
+  receding covers are a few grey pixels. The artwork is SVG in
+  `assets/icon/`; Linux desktops can use it directly, and `Phonoscule.desktop`
+  now names it rather than borrowing a themed stand-in.
+
 
 v1.1.0 (2026-07-21)
 ------------------------------------------------------------

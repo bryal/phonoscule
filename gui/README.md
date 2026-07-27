@@ -93,10 +93,20 @@ cargo install --path gui
 If cargo's `bin` directory is on your `PATH`, you should now be able to launch `phonoscule-gui` from
 the terminal.
 
-In addition, if you prefer to launch desktop applications through a graphical launcher, there's a
+On **Windows** the installed `phonoscule-gui.exe` carries the application icon: it is compiled in as
+a resource, so a shortcut to it, or pinning it to the taskbar, looks like it should with nothing else
+to copy.
+
+On **Linux**, if you prefer to launch desktop applications through a graphical launcher, there's a
 `Phonoscule.desktop` file in this directory which you can copy to e.g. `~/.local/share/applications/`.
+It names `phonoscule` as its icon, so install the artwork into an icon theme alongside it:
+
+```sh
+install -Dm644 Phonoscule.desktop ~/.local/share/applications/Phonoscule.desktop
+install -Dm644 assets/icon/phonoscule.svg ~/.local/share/icons/hicolor/scalable/apps/phonoscule.svg
+```
+
 The application should then show up in your desktop environment's application launcher.
-(On Windows, make a shortcut to the installed `phonoscule-gui.exe` instead.)
 
 ## Controls
 

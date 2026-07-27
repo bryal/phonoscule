@@ -24,3 +24,9 @@ embedded-io-async    = { workspace = true }
 log                  = { workspace = true, features = ["std"] }
 simple_logger        = { workspace = true }
 url = "2.5.8"
+
+# Embeds the icon and version info into the .exe (see build.rs). Not gated on the host being
+# Windows, so that a Windows binary cross-compiled from elsewhere gets them too; build.rs checks the
+# target and does nothing when it is not Windows.
+[build-dependencies]
+winresource = "0.1"

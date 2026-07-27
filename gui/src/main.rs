@@ -42,6 +42,30 @@ static FONTS_DATA: &[&[u8]] = &[
 /// The name this player goes by: its `[app.gui]` config table and its `$PHONOSCULE_GUI_CONF`.
 const APP: &str = "gui";
 
+/// The window icon: the same mark the executable itself carries as a resource (see `build.rs`).
+///
+/// Both are needed, and they cover different surfaces. This one is what the window system asks the
+/// running process for -- the title bar on Windows (winit sets only `ICON_SMALL` from it) and the
+/// window on X11 and Wayland. The executable's resource is what Windows reads off disk for the file
+/// in Explorer, and what the taskbar and Alt-Tab fall back to, `ICON_BIG` being left unset. Between
+/// them there is nowhere the icon is missing.
+///
+/// Only the largest form is embedded, and the window system scales it: it is a couple of hundred
+/// times smaller than the fonts already in here, and one image beats keeping several in step.
+static ICON_DATA: &[u8] = include_bytes!("../assets/icon/phonoscule-256.png");
+
+/// The decoded icon, or `None` if it will not decode -- which costs a generic window icon and
+/// nothing else, so it is not worth refusing to start over.
+fn window_icon() -> Option<iced::window::Icon> {
+    match iced::window::icon::from_file_data(ICON_DATA, Some(image::ImageFormat::Png)) {
+        Ok(icon) => Some(icon),
+        Err(e) => {
+            log::warn!("could not decode the window icon: {e}");
+            None
+        }
+    }
+}
+
 /// Range the UI scale factor is clamped to -- both the configured `scaling` and the live Ctrl +/-
 /// zoom (see [`Zoom`](update::Zoom)). Wide enough to be useful, narrow enough to stay usable.
 pub const SCALE_MIN: f32 = 0.5;
@@ -117,6 +141,7 @@ fn run() -> anyhow::Result<()> {
 
     let app = iced::application(boot(conf, scaling, restored, index), update, view)
         .title("Phonoscule")
+        .window(iced::window::Settings { icon: window_icon(), ..Default::default() })
         .subscription(subscription)
         .scale_factor(|app| app.scale)
         .theme(theme)

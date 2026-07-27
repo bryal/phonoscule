@@ -7,8 +7,11 @@ Exec=phonoscule-gui
 Terminal=false
 Categories=AudioVideo;Audio;Player;Music;
 Keywords=music;player;album;library;opus;
-# No bundled icon yet; a themed stand-in keeps launchers from showing a blank tile.
-Icon=multimedia-player
+# Bare name, so a launcher finds whichever size it wants from the icon theme. Install the artwork in
+# assets/icon/ as `phonoscule` under a theme directory, e.g.
+#   install -Dm644 assets/icon/phonoscule.svg ~/.local/share/icons/hicolor/scalable/apps/phonoscule.svg
+# Launchers fall back to a generic tile until you do.
+Icon=phonoscule
 # winit derives the window class from the binary name; this ties the launcher entry to the window.
 StartupWMClass=phonoscule-gui
 StartupNotify=false

@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <title>Phonoscule</title>
+  <!--
+    The Cover Flow, abstracted: the playing album lit up front, its neighbours receding either side,
+    all of it standing on the reflective black floor under the backdrop glow. See ./README.md for
+    how the raster forms are generated, and phonoscule-small.svg for the one small sizes use.
+
+    The floor is y=150. Every reflection is its shape mirrored about that line, faded out by the
+    `floor` mask.
+  -->
+  <defs>
+    <linearGradient id="backdrop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#15131d"/>
+      <stop offset="1" stop-color="#06060a"/>
+    </linearGradient>
+
+    <!-- The accent glow. Off-centre and above the floor, where the player puts it. -->
+    <radialGradient id="glow" cx="0.5" cy="0.40" r="0.46">
+      <stop offset="0" stop-color="#b49bff" stop-opacity="0.55"/>
+      <stop offset="0.5" stop-color="#7c3aed" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- The playing cover: no real album art, so the warm-to-magenta sweep the glow screenshots
+         run through, which also keeps the mark legible on a light or a dark taskbar. -->
+    <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd76a"/>
+      <stop offset="0.52" stop-color="#f6603c"/>
+      <stop offset="1" stop-color="#d92b7a"/>
+    </linearGradient>
+
+    <!-- The neighbours, turned away from the light: cool and dimmer than the middle, but still
+         plainly covers rather than shadows, since they carry the whole idea of a queue to flip
+         through. (An XML comment may not contain a double hyphen, so the dashes elsewhere in this
+         file are single ones, unlike the rest of the tree.) -->
+    <linearGradient id="side-left" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0" stop-color="#7a6dbe"/>
+      <stop offset="1" stop-color="#332d4d"/>
+    </linearGradient>
+    <linearGradient id="side-right" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7a6dbe"/>
+      <stop offset="1" stop-color="#332d4d"/>
+    </linearGradient>
+
+    <!-- Luminance fade for the reflections: full at the floor, gone well before the lower edge. -->
+    <linearGradient id="fade" x1="0" y1="150" x2="0" y2="205" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#000000"/>
+    </linearGradient>
+    <mask id="floor">
+      <rect x="0" y="150" width="256" height="72" fill="url(#fade)"/>
+    </mask>
+
+    <!-- Everything stays inside the tile. -->
+    <clipPath id="tile">
+      <rect x="0" y="0" width="256" height="256" rx="56" ry="56"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#tile)">
+    <rect x="0" y="0" width="256" height="256" fill="url(#backdrop)"/>
+    <rect x="0" y="0" width="256" height="256" fill="url(#glow)"/>
+
+    <!-- Reflections first, so the covers sit on top of their own. -->
+    <g mask="url(#floor)" opacity="0.55">
+      <polygon points="79,150 79,220 40,200 40,162" fill="url(#side-left)"/>
+      <polygon points="177,150 177,220 216,200 216,162" fill="url(#side-right)"/>
+      <rect x="87" y="150" width="82" height="82" fill="url(#cover)"/>
+    </g>
+
+    <!-- The neighbours: inner edge tall and near, outer edge short and far. They stop short of the
+         playing cover rather than tucking behind it, so the dark gap between reads as the depth
+         between them; run together, the pair looks like one band with a square on top. -->
+    <polygon points="79,80 79,150 40,138 40,100" fill="url(#side-left)"/>
+    <polygon points="177,80 177,150 216,138 216,100" fill="url(#side-right)"/>
+
+    <!-- The playing cover, square on to us. -->
+    <rect x="87" y="68" width="82" height="82" fill="url(#cover)"/>
+    <!-- A hairline of the glow catching its top edge; lost at small sizes, which is what the
+         small variant is for. -->
+    <rect x="87" y="68" width="82" height="82" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="2"/>
+  </g>
+</svg>
