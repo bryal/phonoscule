@@ -33,7 +33,12 @@ pub const PLAYBACK_SAMPLE_RATE: u32 = 48000;
 type OutSample = Stereo<PcmS16Le>;
 
 /// Frames decoded and written to the sink per loop iteration.
-const CHUNK: usize = 512;
+///
+/// Also how often the loop looks at its command channel, so this is the ceiling on how long a pause or
+/// a seek waits to be noticed: 2048 frames is 43 ms at [`PLAYBACK_SAMPLE_RATE`], comfortably below
+/// what a hand on a key can tell. Spending that latency buys a quarter of the writes, and a write is
+/// not cheap -- see the fill loop in `player_loop`.
+const CHUNK: usize = 2048;
 
 /// How often [`Event::Progress`] reports where playback has reached.
 ///
@@ -392,13 +397,28 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
                 PlayState::Paused => continue,
                 PlayState::Playing => (),
             }
-            let Some(n) = source.read_samples(&mut buf).await else {
-                // Plain +1 regardless of the repeat mode: repeating a broken track would loop the
-                // error forever.
-                log::error!("error while decoding {path:?}, skipping to next track");
-                ix += 1;
-                continue 'next_track;
-            };
+            // Fill the buffer before writing rather than writing whatever a single read returned. A
+            // decoder hands back at most what is left of its current frame -- Opus decodes 960 samples
+            // at a time, so a 512-frame buffer was being served 512 and then 448 -- and each write
+            // costs a round trip to the audio server, which on PulseAudio also wakes its client thread
+            // about three times. That thread was measured at 0.40% of a core for 94 writes a second,
+            // against 0.59% for all of the decoding, so what it costs is the writing and not the
+            // audio.
+            let mut n = 0;
+            while n < buf.len() {
+                let Some(read) = source.read_samples(&mut buf[n..]).await else {
+                    // Plain +1 regardless of the repeat mode: repeating a broken track would loop the
+                    // error forever.
+                    log::error!("error while decoding {path:?}, skipping to next track");
+                    ix += 1;
+                    continue 'next_track;
+                };
+                // A short read is a frame boundary; only nothing at all is the end of the track.
+                if read == 0 {
+                    break;
+                }
+                n += read;
+            }
             if n == 0 {
                 // The track ended on its own: the repeat mode decides what plays next.
                 ix = next_track_ix(&queue, ix, repeat);
