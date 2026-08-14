@@ -157,6 +157,12 @@ impl Covers {
         self.files.insert(cover_id, file);
     }
 
+    /// The covers whose artwork file is already known, so a rescan need not read and re-digest their
+    /// thumbnails to tell us a path we are holding (see `library::ScanOptions::known_covers`).
+    pub fn known(&self) -> std::collections::HashSet<u64> {
+        self.files.keys().copied().collect()
+    }
+
     /// The best encoded cover held for `id` at `size`, preferring the high-resolution one. `None`
     /// when neither is there yet, or neither was encoded for this size.
     pub fn best(&mut self, id: u64, size: Size) -> Option<&Protocol> {

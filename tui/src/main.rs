@@ -136,7 +136,7 @@ async fn event_loop(
         forward(model.engine.events.clone().map(Msg::Player), tx.clone()),
         forward(media.events.clone().map(Msg::Media), tx.clone()),
         forward(model.mixer.events.clone().map(Msg::VolumeChanged), tx.clone()),
-        forward(library::scan(update::scan_options(&model)).map(Msg::Library), tx.clone()),
+        forward(library::scan(update::scan_options(&model, update::Scan::Boot)).map(Msg::Library), tx.clone()),
         // The music directory noticed changing, and a slow poll behind it in case it never is.
         forward(watcher::debounce(changes, quiet).map(|()| Msg::Rescan), tx.clone()),
         forward(every(RESCAN_INTERVAL).map(|()| Msg::Rescan), tx.clone()),
@@ -233,7 +233,7 @@ fn apply(model: &mut Model, msg: Msg, tx: &channel::Sender<Msg>) -> bool {
         After::Rescan => {
             // Detached rather than held: a rescan ends on its own, and there is nothing to cancel it
             // for -- the next one is only started once this has reported it is done.
-            let scan = library::scan(update::scan_options(model)).map(Msg::Library);
+            let scan = library::scan(update::scan_options(model, update::Scan::Rescan)).map(Msg::Library);
             forward(scan, tx.clone()).detach();
             true
         }

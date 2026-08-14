@@ -709,14 +709,31 @@ pub fn save_session(model: &mut Model) -> Vec<Pin<Box<dyn Future<Output = ()> + 
     writes
 }
 
-/// Options for the boot scan.
-pub fn scan_options(model: &Model) -> library::ScanOptions {
+/// Which scan this is, which decides what it is worth asking for again.
+pub enum Scan {
+    /// The one at startup. Claims no cover, because learning where each album's artwork lives is what
+    /// it is for: nothing else populates [`covers::Covers::learn_file`].
+    Boot,
+    /// The watcher's, or the periodic one. Claims every cover whose file it already knows.
+    Rescan,
+}
+
+/// Options for a scan.
+pub fn scan_options(model: &Model, phase: Scan) -> library::ScanOptions {
     library::ScanOptions {
         root: model.conf.music_dir.clone(),
         priority: vec![],
-        // Nothing is claimed as known: the scan reads each thumbnail back from its own cache in a
-        // few tens of microseconds, and its accent is worth having even when the pixels are not.
-        known_covers: Default::default(),
+        // A rescan claims what it already has. Re-reading a cover it knows about costs a 307,200-byte
+        // file read, an expansion of every pixel into RGBA, and an accent histogram over the result --
+        // measured at 319 us a cover, so 233 ms of CPU across a library this size, every five minutes.
+        // All of it to hand back a path we are holding and an accent the album index already persisted;
+        // `ScanEvent::Cover` keeps only those two and drops the pixels on arrival.
+        //
+        // The boot scan does want all of it, because it is where the paths come from.
+        known_covers: match phase {
+            Scan::Boot => Default::default(),
+            Scan::Rescan => model.covers.known(),
+        },
         cache_file: paths::tag_cache_file(),
         covers_dir: paths::covers_dir(),
     }
