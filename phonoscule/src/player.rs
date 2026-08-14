@@ -35,6 +35,19 @@ type OutSample = Stereo<PcmS16Le>;
 /// Frames decoded and written to the sink per loop iteration.
 const CHUNK: usize = 512;
 
+/// How often [`Event::Progress`] reports where playback has reached.
+///
+/// This bounds how late a change of second can turn up in a UI, and that is all it is for. Every
+/// consumer we have renders the position as whole seconds, so reporting faster than the eye can see a
+/// digit change buys nothing and costs a frame each time: the front ends redraw on the events they are
+/// given, and a redraw is not cheap -- on the terminal player it was measured at around a third of the
+/// process's CPU, all of it drawing the same pixels over again.
+///
+/// Four a second keeps a clock honest to 250 ms, which is also close enough for a seek taken relative
+/// to "where the bar is now". A front end that wants motion smoother than this runs its own timer for
+/// it (the graphical one already does, for the cover flow), rather than everyone paying for it here.
+pub const PROGRESS_HZ: u64 = 4;
+
 /// A queue entry: the track, and the album it belongs to as an opaque grouping key (equal keys on
 /// adjacent entries form an album run) -- what repeat-album advancement walks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,8 +407,7 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
             sink.write(&buf[..n]); // blocks until the device takes the chunk - this is our pacing
             pos += n as u64;
 
-            let progress_updates_per_sec = 16;
-            let progress_interval = sample_rate as u64 / progress_updates_per_sec;
+            let progress_interval = sample_rate as u64 / PROGRESS_HZ;
             if pos < prev_status_pos || pos - prev_status_pos > progress_interval {
                 if events.send(Event::Progress(t_of(pos))).await.is_err() {
                     return;
