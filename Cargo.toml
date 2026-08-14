@@ -15,3 +15,18 @@ embedded-io-async = "0.7.0"
 embedded-io-adapters = { version = "0.7.0", features = ["futures-03"] }
 smol = "2.0"
 simple_logger = "5.2"
+
+# Release codegen plus the debug info a sampling profiler needs, so `perf` can name the frames it
+# lands in. Kept apart from `release` so the binary a user builds stays exactly what it was: debug
+# info does not change codegen, so this is the same program with symbols attached. "limited" rather
+# than "full" because line tables plus function and scope info is what resolves a stack (inlined
+# frames included), while the local-variable info "full" adds describes locals that opt-level 3 has
+# mostly optimised away.
+#
+# Sample with `RUSTFLAGS="-C force-frame-pointers=yes"`: `perf record --call-graph fp` needs them and
+# rustc omits them on x86-64. That does change codegen, by a register and a couple of instructions
+# per non-leaf call, so it inflates absolute CPU readings by a percent or two -- equally in every
+# measurement, which leaves before/after comparisons intact.
+[profile.profiling]
+inherits = "release"
+debug = "limited"
