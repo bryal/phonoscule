@@ -23,6 +23,7 @@ import argparse
 import fcntl
 import os
 import pty
+import select
 import signal
 import struct
 import sys
@@ -41,6 +42,9 @@ def main():
                     help="seconds to wait before sending keys, so the boot scan has settled")
     ap.add_argument("--key-delay", type=float, default=0.4,
                     help="seconds between keystrokes")
+    ap.add_argument("--tee", default=None,
+                    help="also write everything the player draws to this file, for checking that a "
+                         "configuration is the one it was meant to be")
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
     args = ap.parse_args()
 
@@ -77,6 +81,7 @@ def main():
     signal.signal(signal.SIGTERM, handle)
     signal.signal(signal.SIGINT, handle)
 
+    tee = open(args.tee, "wb") if args.tee else None
     keys = args.keys.encode().decode("unicode_escape").encode() if args.keys else b""
     keys_at = time.monotonic() + args.keys_after
     sent = 0
@@ -91,12 +96,18 @@ def main():
         try:
             # Blocking would stall the keystroke schedule, so this is a short-timeout poll. The read
             # is large because a halfblocks cover repaint is tens of kilobytes a frame.
-            import select
             ready, _, _ = select.select([master], [], [], 0.1)
-            if ready and not os.read(master, 1 << 16):
-                break
+            if ready:
+                chunk = os.read(master, 1 << 16)
+                if not chunk:
+                    break
+                if tee is not None:
+                    tee.write(chunk)
         except OSError:
             break
+
+    if tee is not None:
+        tee.close()
 
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:

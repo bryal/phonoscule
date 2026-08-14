@@ -55,14 +55,19 @@ row() {
     rows=$3
     keys=$4
     play=$5
+    # How long to let the player run before typing at it. Anything that acts on the album list (a
+    # "queue everything shown" say) has to wait for the boot scan to have shown it something, or it
+    # acts on an empty list and the row measures nothing.
+    keys_after=${6:-3}
 
     echo "##############################################################################"
-    echo "# $label   (${cols}x${rows}, keys='$keys', play=$play)"
+    echo "# $label   (${cols}x${rows}, keys='$keys' after ${keys_after}s, play=$play)"
     echo "##############################################################################"
 
     log=$(mktemp)
     if [ -n "$keys" ]; then
-        scripts/tui-harness.py --cols "$cols" --rows "$rows" --keys "$keys" -- "$player" "$conf" > "$log" 2>&1 &
+        scripts/tui-harness.py --cols "$cols" --rows "$rows" --keys "$keys" --keys-after "$keys_after" \
+            -- "$player" "$conf" > "$log" 2>&1 &
     else
         scripts/tui-harness.py --cols "$cols" --rows "$rows" -- "$player" "$conf" > "$log" 2>&1 &
     fi
@@ -105,12 +110,14 @@ echo "TUI census, window=${window}s repeats=$repeats, halfblocks on a pty (no te
 echo "started $(date -Is)"
 echo
 
-#   label                     cols rows keys    play
+#   label                     cols rows keys    play keys_after
 row "T1-library-paused"        200   50 ""      no
 row "T2-library-playing"       200   50 ""      yes
 row "T3-player-paused"         200   50 '\t'    no
 row "T4-player-playing"        200   50 '\t'    yes
-row "T5-player-playing-fullq"  200   50 '\x01'  no
+# Ctrl+A queues every album shown and starts playing, which also switches to the player view. It has
+# to land after the scan, hence the wait; MPRIS then plays as a backstop in case the key went astray.
+row "T5-player-playing-fullq"  200   50 '\x01'  yes  20
 row "T6-library-playing-80x24"  80   24 ""      yes
 
 echo "finished $(date -Is)"
