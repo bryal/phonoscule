@@ -4,65 +4,62 @@ Written because both players were costing 10-20% of a core on a weak machine (an
 while sitting in the background playing music, which is too much for something meant to be left
 running.
 
-Everything below was measured, not reasoned about. Where a measurement contradicts what the code
-looked like it would do, the measurement wins and the note says so.
+Everything below was measured. Where a measurement contradicted what the code looked like it would
+do, the measurement won and the note says so - about half of what follows is that.
 
-## How to reproduce
+## Result
+
+Percentages are of **one core**, which is the unit the complaint was in.
+
+Terminal player, half blocks at 200x50, a 759-album library, warm caches:
+
+| configuration | before | after |
+| --- | --- | --- |
+| Library, paused | 0.03% | 0.03% |
+| Library, playing | **1.83%** | **0.91%** |
+| Player, playing | **1.84%** | **0.90%** |
+
+Graphical player:
+
+| configuration | before | after |
+| --- | --- | --- |
+| Library, paused | 0.03% | 0.03% |
+| Library, playing | 1.73% | 1.70% (main thread 0.34% to 0.03%) |
+| Player, playing | **3.92%** | **2.13%** |
+
+Roughly half, in both, from three changes. Scaled by the 6-11x this workstation's core has over an
+A53/A72-class one, that should be the difference between 10-20% and 5-10% on the machine that
+prompted it.
+
+## Method
 
 ```sh
 RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling
-scripts/census-matrix-tui.sh 30 3 > /tmp/tui-baseline.txt
+scripts/census-matrix-tui.sh 30 3 > /tmp/tui.txt
+scripts/census-matrix-gui.sh 30 3 > /tmp/gui.txt
 ```
 
-`scripts/cpu-census.sh` reports per-thread CPU and wakeups for a running player;
-`scripts/census-env.sh` points it at scratch cache and state roots warmed from the real ones, so a
-measurement run cannot leave the real player somewhere it did not put itself;
-`scripts/tui-harness.py` runs the TUI on a pty of an exact size, because under a tiling compositor
-the window size is otherwise the compositor's decision and "the same terminal, one third the height"
-is not a thing a run can ask for.
+`cpu-census.sh` reports per-thread CPU and wakeups for a running player. Per thread matters more than
+anything else here: the threads are already named, so the decoder's cost and the drawing's cost
+separate with no instrumentation, and process CPU alone cannot say which of the two to go and fix.
+`census-env.sh` points a run at scratch cache and state roots warmed from the real ones.
+`tui-harness.py` runs the TUI on a pty of an exact size, because under a tiling compositor the window
+size is otherwise the compositor's decision - and comparing a tall terminal against a short one is how
+you find out whether a frame is priced by what is on screen or by the size of the library.
 
-**Units.** Every percentage is a percentage of **one core**, which is the unit the complaint was in.
+**Caveats, once.** This is a 16-core x86 workstation that was in use throughout: three windows per row
+with the spread reported, GPU figures read only as relative within a run, and absolute numbers about a
+percent or two high because the profiling build forces frame pointers (a constant offset, so
+before/after is unaffected). Kernel sampling is unavailable (`perf_event_paranoid` is 2), so
+flamegraphs decompose user time only - which is why wakeup counts, not the profiler, are the evidence
+for anything syscall-shaped. The TUI figures exclude the terminal emulator, deliberately: the pty
+harness is measuring the player.
 
-**Caveats, stated once.** The machine these numbers come from is a 16-core x86 workstation that was
-in use while measuring, so: three windows per row with the spread reported; GPU numbers read only as
-relative within a run; and the absolute figures are roughly a percent or two high because the
-profiling build forces frame pointers (a constant offset, so it does not touch any before/after
-comparison). Kernel sampling is unavailable here (`perf_event_paranoid` is 2), so flamegraphs
-decompose user time only - which is why wakeup counts, not the profiler, are the evidence for
-anything syscall-shaped.
+## What the audio thread was doing
 
-## The headline
+45 s of `perf record -t` on `phonoscule-audio`, 425 samples, user time, self:
 
-TUI, half blocks, 200x50, warm caches, a 759-album library, on a pty with no terminal emulator in the
-measurement:
-
-| configuration | process CPU% | main thread | `phonoscule-audio` | `threaded-ml` |
-| --- | --- | --- | --- | --- |
-| Library, paused | **0.03** | 0.00 | 0.00 | 0.00 |
-| Library, playing | **1.83** (1.66-2.16) | 0.54 | 0.70 | 0.46 |
-| Player, paused | **0.03** | 0.00 | 0.00 | 0.00 |
-| Player, playing | **1.84** (1.83-1.86) | 0.66 | 0.66 | 0.42 |
-| Library, playing, 80x24 | **1.39** | 0.19 | 0.66 | 0.41 |
-
-Three things fall straight out of that table.
-
-**Paused is free.** 0.03%. Every cost in this program is playback-driven, so nothing that runs on a
-timer regardless of state is worth chasing for CPU.
-
-**The audio path is the larger half.** `phonoscule-audio` (decode and convert) plus `threaded-ml`
-(the PulseAudio client thread that hands samples to the server) is ~1.1% of the 1.83%, against ~0.54%
-for drawing. I had expected the reverse.
-
-**Scaling to the machine that prompted this.** 1.83% here, against the 10-20% reported on the Pocket
-Reform, is a factor of 6-11 - about what an A53/A72-class core against a modern x86 one predicts for
-scalar float DSP, especially with no SIMD anywhere in the decoder. So the shape of this table is
-believable as the shape of the problem on the target, with one adjustment noted under `floorf` below.
-
-## What the audio thread is doing
-
-45 seconds of `perf record -t` on `phonoscule-audio`, 425 samples, user-mode, self time:
-
-| symbol | share of the thread |
+| symbol | share of thread |
 | --- | --- |
 | `opuscule::celt::comb_filter` | **16.69%** |
 | `opuscule::cwrs::decode_pulses` | 15.73% |
@@ -73,100 +70,115 @@ believable as the shape of the problem on the target, with one adjustment noted 
 | `opuscule::vq::alg_unquant` | 4.46% |
 | `opuscule::vq::exp_rotation1` | 4.24% |
 | `opuscule::celt::deemphasis` | 2.56% |
-| `opuscule::entdec::ec_dec_uint` | 1.39% |
-| `floorf` | 0.86% |
 | `pa_detect_fork` + `pa_frame_size` | 1.18% |
-| `opuscule::util::OrPanic::or_panic::<i32>` | 0.75% |
+| `floorf` | 0.86% |
 
-Decoding is **84.68%** of the thread. Grouped: PVQ (`decode_pulses` + `quant_band` + `alg_unquant` +
-`exp_rotation1`) is ~34.7%, the inverse MDCT and its FFT ~16.8%, the comb filter 16.7%, everything
-else smaller. That ordering matches what the structure predicted, with one exception that turned out
-to be the biggest single item in the decoder.
+Decoding was 84.68% of the thread. Grouped: PVQ ~34.7%, inverse MDCT and its FFT ~16.8%, the comb
+filter 16.7%.
 
-## Findings
+## The three changes that paid
 
-### 1. The comb filter multiplies by zero for most music
+### Progress reported four times a second instead of sixteen
 
-`comb_filter` was the largest leaf in the entire decoder. RFC 6716's C runs its two loops whatever the
-postfilter gains are; libopus later added an early return for `g0 == 0 && g1 == 0`, and opuscule -
-being a translation of the RFC-era code - did not have it. An encoder leaves the postfilter off for a
-great deal of music, and when it is off every one of those multiply-accumulates has a zero
-coefficient.
+`player.rs` emitted `Event::Progress` 16 times a second and both front ends turned every one into a
+whole frame, though both render the position in whole seconds. Confirmed at the wakeup level: the
+main thread woke 14.3 times a second and this was the only thing waking it.
 
-Fixed in opuscule by taking libopus's shortcut. Both normal-path call sites pass `y: None`, so it is a
-plain return; the separate-output case used by packet-loss concealment still copies, as `OPUS_MOVE`
-does there.
+Worth 0.51 points on the TUI (1.61% to 1.10%, main thread 0.54% to 0.04%) and 1.79 points on the GUI
+(3.92% to 2.13%, main thread 1.43% to 0.58%). The GUI gains more because one message there is a whole
+widget-tree rebuild, a full layout, a draw and a present - iced 0.14 has no way for an update to say
+"nothing changed".
 
-### 2. The 16 Hz progress tick costs about what drawing costs
+The TUI additionally skips the redraw entirely when the second on screen has not changed, which is
+what takes its main thread to 0.04%: it now draws about once a second while playing, and not at all
+while paused.
 
-`player.rs` emits `Event::Progress` 16 times a second, and both front ends turn every one into a
-whole frame - though the TUI shows time in whole seconds. Confirmed at the wakeup level: the main
-thread wakes 14.3-14.9 times a second, and it is the only thing waking it.
+### Filling the buffer before writing to the sink
 
-Worth ~0.54% in the Library view and ~0.66% in the Player view, i.e. 30-36% of the process. Not "the
-whole problem" as I had assumed, but the largest single thing on the drawing side and the cheapest to
-fix.
+A decoder returns at most what is left of its current frame, so a read is cut short at a frame
+boundary and not only at the end of a track: Opus decodes 960 samples at a time, which was filling a
+512-frame buffer 512 and then 448, and each short read became its own write.
 
-### 3. Per-frame work is priced by screen area, not by library size
+Writes are not cheap. `threaded-ml` - libpulse's own thread, inside our process - cost 0.40% for 94
+writes a second, against 0.59% for all the decoding. Filling the buffer first and raising `CHUNK` to
+2048 took the TUI from 1.10% to 0.91%: the client thread 0.40% to 0.31% and 273 to 213 wakeups a
+second, and the audio thread 0.59% to 0.50%, since per-write overhead is partly paid there too.
 
-This one refuted the hypothesis it was meant to test. The plan predicted the all-albums `Vec<Line>`
-build (759 rows, ~40 visible) would dominate a frame, in which case shrinking the terminal would
-change nothing. Shrinking it from 200x50 to 80x24 - 5.2x fewer cells - cut the main thread from 0.54%
-to 0.19%.
+Costs latency: commands are checked once per chunk, so a pause or seek waits up to 43 ms rather than
+11 ms.
 
-Solving for a fixed part and a per-cell part gives roughly **0.11% that scales with the library and
-0.43% that scales with the screen**. So the expensive things in a frame are `terminal.draw`'s
-whole-buffer diff and reset and the half-blocks cover repaint, and building rows for 759 albums to
-show 40 of them is about 6% of the process. Windowing that row build - which the plan listed as a
-possible optimisation - would buy almost nothing, and the plan was right to rank it last.
+### Skipping the comb filter when neither tap has any gain
 
-### 4. `float2int16` was already inlined; its `floor` was not free
+The largest single leaf in the decoder. RFC 6716's C runs its two multiply-accumulate loops whatever
+the gains are; libopus later added an early return for `g0 == 0 && g1 == 0`, and opuscule, being a
+translation of the RFC-era code, did not have it. Bit-exact, and all 12 reference vectors still match
+the baseline in all four build configurations.
 
-The plan asserted that `sample_to_i16` and `float2int16`, being non-`#[inline]` `pub fn`s in another
-crate with no LTO, would be real calls 96,000 times a second. They are not: both appear in the profile
-as `(inlined)`, because rustc's MIR inliner crosses crate boundaries for small functions without
-needing the attribute. That fix was unnecessary and has been dropped.
+**How much it is worth depends on the content, and the two instruments disagreed.** Against the
+reference vectors: -21.9% on hybrid (vector 06), -5.1% on mixed CELT (09), and **nothing measurable**
+on CELT fullband stereo 20 ms (vector 11, p = 0.27) - which is the one shaped like an opusenc'd music
+library. But the census against the real library showed the audio thread dropping from ~0.67% to
+~0.59%, about 12%. So this library's encoder does leave the postfilter off a good deal of the time,
+and vector 11's does not. The census is the instrument that answers the question that was asked.
 
-What is real is `floorf` at 0.86% of the thread: `(x + 0.5).floor()` compiles to a libm call on
-baseline x86-64, which has no `roundss` before SSE4.1. **This is target-specific and does not apply to
-the machine that prompted the investigation** - aarch64 has `frintm`, so on the Pocket Reform this
-cost is already absent. On x86 it is a build-flag question (`-C target-cpu=native`), not a code one.
+## What was tested and did not pay
 
-### 5. The 40 Hz volume poll is a wakeup problem, not a CPU problem
+Recorded because each was a plausible plan that measurement killed, and the next person should not
+have to re-derive them.
 
-`volume.rs` wakes a thread 40 times a second forever, playing or idle. Measured exactly: **40.0
-wakeups per second**, paused and playing alike. It costs **0.02%**.
+**Per-frame work is priced by screen area, not by library size.** The prediction was that building a
+`Vec<Line>` for all 759 albums to show 40 of them would dominate a frame, in which case terminal size
+would not matter. Shrinking 200x50 to 80x24 - 5.2x fewer cells - took the main thread from 0.54% to
+0.19%. Solving for a fixed and a per-cell part gives roughly **0.11% scaling with the library against
+0.43% scaling with the screen**, so the row build was about 6% of the process and windowing it would
+buy almost nothing. Not done.
 
-So the fix the plan proposed (blocking on libpulse's own poll with a wake pipe registered as an io
-event, which I confirmed `libpulse_binding` 2.30 supports) is worth having for power - 40 wakeups a
-second is what keeps a core out of deep idle - but it is not part of the 10-20% and should not be sold
-as if it were.
+**`sample_to_i16` was already inlined.** The plan asserted that it and `float2int16`, being
+non-`#[inline]` `pub fn`s in another crate with no LTO, would be real calls 96,000 times a second.
+Both appear in the profile as `(inlined)` - rustc's MIR inliner crosses crate boundaries for small
+functions without the attribute. Nothing to fix.
 
-### 6. Handing samples to PulseAudio costs nearly as much as decoding them
+**`#[inline]` on the range decoder made it slower.** `ec_dec_icdf`, `ec_dec_bit_logp` and friends are
+small, called hundreds of times per packet, cross-module, at 16 codegen units with no LTO - and
+annotating them cost **+2.1%** on vector 11 (p = 0.00), plus 1.3% on hybrid and 1.0% on SILK.
+Inlining them into callers as large as `quant_band` and `decode_pulses` evidently costs more in code
+size and register pressure than the calls did. Reverted.
 
-`threaded-ml` - libpulse's own thread, created by `pa_simple` inside the sink - costs 0.42-0.46% and
-wakes **268-273 times a second**. The audio thread writes 95-97 times a second, exactly the 93.75 that
-`CHUNK = 512` at 48 kHz predicts, so each write costs about 2.85 wakeups of the client thread, plus
-`pa_detect_fork` and `pa_frame_size` on our own thread.
+**Thin LTO did not help the decoder either.** No significant change on vector 11 (p = 0.41),
+regressions of 1.7% and 2.0% on hybrid and SILK. The hot kernels are self-contained and the arch
+helpers are already `#[inline(always)]`, so there was little left to win and code-layout churn to
+lose. Reverted.
 
-This was not in the plan at all. The lever is the chunk size: 512 frames is 10.7 ms of audio per
-write, and a larger chunk divides this whole line item. The cost is command latency - the player
-checks for a pause or seek once per chunk - so 2048 frames would mean up to 43 ms, still well under
-what anyone notices.
+Between those two, the conclusion is that **the decoder's remaining cost is arithmetic, not overhead** -
+PVQ and the inverse MDCT doing real work. Getting it down further means SIMD or algorithmic change,
+both of which run into `forbid(unsafe_code)` and the bit-exactness rule.
 
-### 7. A safety helper that did not inline
+**The 40 Hz volume poll is a wakeup problem, not a CPU problem.** `volume.rs` wakes a thread 40 times
+a second forever, playing or idle - measured at exactly 40.0, and at **0.02%**. Blocking on libpulse's
+own poll with a wake pipe registered as an io event is worth doing for power, since 40 wakeups a
+second is what keeps a core out of deep idle, but it is not part of the 10-20% and should not be sold
+as if it were. Not done.
 
-`OrPanic::or_panic` appears as a real symbol at 0.75% of the audio thread. It is generic, so it should
-monomorphise into the caller and vanish; it carries no `#[inline]`, and at 16 codegen units without
-LTO that is evidently not enough. Cheap to fix, and it is pure overhead - the panic branch never
-taken.
+**`or_panic` was chasing noise.** A symbol at 0.75% of the audio thread is about three samples out of
+425, quite possibly sampling skid, and the call count argues against it too - it guards slice ranges
+once per band, not per sample. Was going to inline it and outline the panic behind `#[cold]`; measured
+it instead, found nothing, dropped it.
 
-## Status
+## Still open
 
-Measured and confirmed: the table above, the wakeup counts, the audio-thread profile.
-
-Fixed so far: finding 1 (the comb filter), pending the RFC vector bit-exactness gate.
-
-Not yet measured: the GUI matrix, and a run in a real terminal to price the emulator's own share
-(these numbers deliberately exclude it). One planned row, a queue holding the whole library, did not
-start playing and needs rerunning before it says anything.
+- The GUI's Player view is 2.13% against the TUI's 0.90%, with 0.58% on its main thread at four
+  messages a second and 8.6 wakeups a second where four were sent. The extra wakeups are the cover
+  flow's own 62.5 Hz animation timer, which is legitimate while animating; whether it settles as
+  promptly as it should is not yet measured.
+- One row (a queue holding the whole library) turned out not to isolate what it was meant to: it also
+  varies whether the playing album's cover has loaded, and a loaded cover is the expensive thing. No
+  number is reported for it. The library-size question was answered by the 200x50-against-80x24
+  comparison instead.
+- The TUI passes `known_covers: Default::default()` to every scan, so each 5-minute rescan re-reads
+  all 731 thumbnails and redoes the RGBA widening and the accent histogram, only to keep the accent
+  the index already holds. That is a periodic spike rather than steady-state cost, so it does not
+  appear in any table here. `benches/covers.rs` prices one cover; the fix is to pass the covers whose
+  path is already known, as the GUI does on rescans.
+- `phonoscule-audio` still wakes ~94 times a second after the chunk change, where 23 writes a second
+  would predict fewer. Whatever the remaining wakeups are, they are not writes, and they have not
+  been chased.
