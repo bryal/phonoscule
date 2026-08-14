@@ -116,6 +116,12 @@ name = "scan"
 harness = false
 required-features = ["library"]
 
+# The cached-thumbnail path, which a rescan repeats per cover unless told to skip it.
+[[bench]]
+name = "covers"
+harness = false
+required-features = ["library"]
+
 # Reaches into the accent heuristic, so it needs the module that has one.
 [[example]]
 name = "accent_probe"
