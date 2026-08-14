@@ -1,0 +1,10 @@
+# The TUI's config for a measurement run. Forces the image protocol rather than asking the terminal,
+# so which drawing path is under measurement is a property of the run and not of whichever terminal
+# happened to answer the startup query (and so the run does not spend up to two seconds on that query
+# either - see `covers::picker`).
+#
+# Half blocks on alacritty, because that is the combination the CPU complaint came from.
+music-dir = "~/Transcoded"
+
+[app.tui]
+image-protocol = "halfblocks"
