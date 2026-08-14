@@ -455,8 +455,22 @@ fn player_event(model: &mut Model, event: player::Event) -> After {
                 return After::Idle;
             }
             model.pending_seek = None;
+            let shown = model.pos.as_secs();
             model.pos = pos;
-            After::Redraw
+            // The position is only ever drawn as whole seconds (`view::fmt_time`), so a report landing
+            // in the second already on screen has nothing to add and a frame drawn for it is a frame
+            // spent painting the same characters. Assigned above either way, so `publish_media` still
+            // has a position fresh to `player::PROGRESS_HZ` and a relative seek still anchors on one.
+            //
+            // The seek bar's fill is measured in whole cells, which for any track longer than the bar
+            // is wide moves less often than the seconds do -- so the seconds are the finer of the two
+            // and gating on them loses nothing. On a short track in a wide terminal the bar advances a
+            // few cells at a time instead of one; that is the trade, and it is not worth a frame a
+            // second to avoid.
+            match pos.as_secs() == shown {
+                true => After::Idle,
+                false => After::Redraw,
+            }
         }
         player::Event::PlayState(state) => {
             model.play_state = state;
