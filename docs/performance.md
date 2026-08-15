@@ -16,24 +16,29 @@ Terminal player, half blocks at 200x50, a 759-album library, warm caches:
 | configuration | before | after |
 | --- | --- | --- |
 | Library, paused | 0.03% | 0.03% |
-| Library, playing | **1.83%** | **0.97%** |
-| Player, playing | **1.84%** | **0.95%** |
+| Library, playing | **1.83%** | **1.06%** |
+| Player, playing | **1.84%** | **1.05%** |
 
 Graphical player:
 
 | configuration | before | after |
 | --- | --- | --- |
 | Library, paused | 0.03% | 0.03% |
-| Library, playing | 1.73% | 1.70% (main thread 0.34% to 0.03%) |
-| Player, playing | **3.92%** | **2.13%** |
+| Library, playing | 1.73% | **1.79%** |
+| Player, playing | **3.92%** | **2.87%** |
 
-Roughly half, in both, from three changes. Scaled by the 6-11x this workstation's core has over an
+Both "after" columns are at **six times the progress rate** of the "before": 23.4 reports a second
+against 3.9, which is what a continuously drawn seek bar needs to stop looking steppy. The graphical
+player is cheaper than it was while updating twice as often; the terminal one pays about 0.10 points
+for reports it discards, because it draws whole seconds and gates on them.
+
+From five changes. Scaled by the 6-11x this workstation's core has over an
 A53/A72-class one, that should be the difference between 10-20% and 5-10% on the machine that
 prompted it.
 
-(The final figures come from the run after the census learned to keep playback looping - see the note
-at the end. Intermediate runs read 0.91% and 0.93%, biased low by rows where the queue had quietly
-run out, and those are not what is quoted here.)
+(Figures come from runs after the census learned to keep playback looping and to build before
+measuring - see the note at the end. Earlier runs biased low, once because a queue ran out and once
+because a whole matrix measured a stale binary.)
 
 ## Method
 
@@ -124,6 +129,27 @@ on CELT fullband stereo 20 ms (vector 11, p = 0.27) - which is the one shaped li
 library. But the census against the real library showed the audio thread dropping from ~0.67% to
 ~0.59%, about 12%. So this library's encoder does leave the postfilter off a good deal of the time,
 and vector 11's does not. The census is the instrument that answers the question that was asked.
+
+### Making a frame cheap enough to afford a frame rate
+
+The rate above is only affordable because of two cuts to what the graphical player does per message,
+both found by profiling its main thread. At 23.4 reports a second the player view went 7.10% ->
+5.57% -> **2.87%**, its main thread 2.97% -> 2.20% -> **0.88%**.
+
+**Walking only the cards on screen.** Every `AlbumGrid` traversal but `draw` visited all of them:
+`update` forwarded each event including the per-frame redraw request, `mouse_interaction` took a max
+over the lot, `overlay` collected from the lot. Thousands of cards for a screen of a few dozen. The
+range comes from the grid geometry, so the walk is O(visible) rather than O(all) with a filter inside.
+Layout still emits a node per card - the other methods pair card, tree and node by position.
+
+**Building the action bubbles only for the hovered card.** The bigger of the two. `hover` draws them
+over the card the cursor is on and no other, so every other card carried three buttons, three styled
+containers and three boxed style closures that could not be seen: twelve thousand widgets rebuilt on
+every message, to draw three.
+
+Both were on the deferred list from the original plan, ranked last on the grounds that after cutting
+the frame *rate* the per-frame cost no longer mattered. That held right up until a frame rate was
+wanted for its own sake.
 
 ## What was tested and did not pay
 
