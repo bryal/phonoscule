@@ -16,8 +16,8 @@ Terminal player, half blocks at 200x50, a 759-album library, warm caches:
 | configuration | before | after |
 | --- | --- | --- |
 | Library, paused | 0.03% | 0.03% |
-| Library, playing | **1.83%** | **0.91%** |
-| Player, playing | **1.84%** | **0.90%** |
+| Library, playing | **1.83%** | **0.97%** |
+| Player, playing | **1.84%** | **0.95%** |
 
 Graphical player:
 
@@ -30,6 +30,10 @@ Graphical player:
 Roughly half, in both, from three changes. Scaled by the 6-11x this workstation's core has over an
 A53/A72-class one, that should be the difference between 10-20% and 5-10% on the machine that
 prompted it.
+
+(The final figures come from the run after the census learned to keep playback looping - see the note
+at the end. Intermediate runs read 0.91% and 0.93%, biased low by rows where the queue had quietly
+run out, and those are not what is quoted here.)
 
 ## Method
 
@@ -144,14 +148,25 @@ annotating them cost **+2.1%** on vector 11 (p = 0.00), plus 1.3% on hybrid and 
 Inlining them into callers as large as `quant_band` and `decode_pulses` evidently costs more in code
 size and register pressure than the calls did. Reverted.
 
-**Thin LTO did not help the decoder either.** No significant change on vector 11 (p = 0.41),
-regressions of 1.7% and 2.0% on hybrid and SILK. The hot kernels are self-contained and the arch
-helpers are already `#[inline(always)]`, so there was little left to win and code-layout churn to
-lose. Reverted.
+**LTO did not help the decoder either, in either strength.** Thin: no significant change on vector 11
+(p = 0.41), regressions of 1.7% and 2.0% on hybrid and SILK. Fat, on top of one codegen unit: worse
+than one codegen unit alone everywhere, including a 1.1% regression on mixed CELT. Reverted.
 
 Between those two, the conclusion is that **the decoder's remaining cost is arithmetic, not overhead** -
 PVQ and the inverse MDCT doing real work. Getting it down further means SIMD or algorithmic change,
 both of which run into `forbid(unsafe_code)` and the bit-exactness rule.
+
+**`codegen-units = 1` did help, and is below the census's resolution anyway.** Worth recording as the
+one build setting of the three that measured positive: -1.5% on vector 11, -3.2% on mixed CELT, -3.0%
+on hybrid, -6.0% on SILK, all at p = 0.00. That it beat both LTO settings is the useful part - thin
+LTO is a deliberately conservative cross-unit pass, while one codegen unit simply hands LLVM the whole
+crate, and for a hot path spread over six modules of one crate the second is the stronger lever.
+
+It is applied, as a per-package override in this workspace: cargo ignores a dependency's own profile,
+so it has to be asked for by the consumer. But 1.5% of a decode that is 84% of a thread costing half a
+percent of a core is roughly 0.006 points, and the census duly did not move (0.93% to 0.97% on the
+library view, within the spread). Kept for being real and free rather than for showing up in a total -
+and noted here so the next person does not read the bench figure as a process figure.
 
 **The 40 Hz volume poll is a wakeup problem, not a CPU problem.** `volume.rs` wakes a thread 40 times
 a second forever, playing or idle - measured at exactly 40.0, and at **0.02%**. Blocking on libpulse's
