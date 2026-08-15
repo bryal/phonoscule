@@ -306,13 +306,13 @@ fn concurrency() -> usize {
 struct CacheEntry {
     mtime: SystemTime,
     size: u64,
-    title: String,
-    artist: String,
-    album: String,
+    title: Box<str>,
+    artist: Box<str>,
+    album: Box<str>,
     /// Empty when the file carries no ALBUMARTIST tag.
-    album_artist: String,
+    album_artist: Box<str>,
     /// Empty when the file carries no genre tag.
-    genre: String,
+    genre: Box<str>,
     /// The track's position within its album, when tagged (parsed leniently -- see [`number`]).
     track: Option<u32>,
     /// The disc the track belongs to on a multi-disc album, when tagged.
@@ -325,11 +325,11 @@ struct CacheEntry {
 /// title)`, where the artist is the ALBUMARTIST tag when present, else the track's own artist.
 /// The directory plays no part: same key means same album wherever the files live.
 fn album_key(entry: &CacheEntry) -> (&str, &str) {
-    let artist = match entry.album_artist.as_str() {
-        "" => entry.artist.as_str(),
+    let artist = match entry.album_artist.as_ref() {
+        "" => entry.artist.as_ref(),
         a => a,
     };
-    (artist, entry.album.as_str())
+    (artist, entry.album.as_ref())
 }
 
 /// The stable album id: [`album_key`], hashed.
@@ -475,9 +475,9 @@ impl Assembler {
             pending.tracks.push(PendingTrack {
                 disc: entry.disc,
                 track: entry.track,
-                genre: entry.genre.clone(),
+                genre: entry.genre.to_string(),
                 year: entry.year,
-                info: TrackInfo { path: path.clone(), title: entry.title.clone() },
+                info: TrackInfo { path: path.clone(), title: entry.title.to_string() },
             });
             *pending.contributions.entry(dir.to_path_buf()).or_default() += 1;
             self.dirty.insert(id);
@@ -760,19 +760,19 @@ async fn read_dir_tags(job: &DirJob, cache: &Cache) -> (Vec<(PathBuf, CacheEntry
                     mtime: file.mtime,
                     size: file.size,
                     title: match tags.title.as_str() {
-                        "" => file.path.file_stem().unwrap_or_default().to_string_lossy().to_string(),
-                        _ => tags.title,
+                        "" => file.path.file_stem().unwrap_or_default().to_string_lossy().into(),
+                        _ => tags.title.into(),
                     },
                     artist: match tags.artist.as_str() {
-                        "" => "Unknown Artist".to_string(),
-                        _ => tags.artist,
+                        "" => "Unknown Artist".into(),
+                        _ => tags.artist.into(),
                     },
                     album: match tags.album.as_str() {
-                        "" => "Singles".to_string(),
-                        _ => tags.album,
+                        "" => "Singles".into(),
+                        _ => tags.album.into(),
                     },
-                    album_artist: tags.album_artist,
-                    genre: tags.genre,
+                    album_artist: tags.album_artist.into(),
+                    genre: tags.genre.into(),
                     track: tags.track,
                     disc: tags.disc,
                     year: tags.year,
