@@ -86,16 +86,29 @@ row() {
     settle "$pid" || { echo "# player died during settle; log follows"; cat "$log"; return 0; }
 
     if [ "$play" = yes ]; then
+        # Looping, because a restored queue is a handful of tracks and a full matrix run is long
+        # enough to reach the end of it. A row whose playback quietly stopped half way through reads
+        # as a wonderful improvement, so make it unable to happen.
+        playerctl -p phonoscule-tui loop Playlist 2>/dev/null || echo "# could not set the loop mode"
         playerctl -p phonoscule-tui play 2>/dev/null || echo "# playerctl play failed"
         sleep 5
         echo "# mpris says: $(playerctl -p phonoscule-tui status 2>/dev/null || echo '?')"
     fi
+
+    # Re-checked after every window: a row that stopped playing measured the wrong thing, and it is
+    # better to say so in the output than to average it in.
+    check_playing() {
+        [ "$play" = yes ] || return 0
+        [ "$(playerctl -p phonoscule-tui status 2>/dev/null)" = Playing ] ||
+            echo "# WARNING: not playing at the end of this window; treat the row as suspect"
+    }
 
     CENSUS_EXTRA_PIDS=$harness
     export CENSUS_EXTRA_PIDS
     n=1
     while [ "$n" -le "$repeats" ]; do
         scripts/cpu-census.sh "$label run $n/$repeats" "$pid" "$window"
+        check_playing
         n=$((n + 1))
     done
 
