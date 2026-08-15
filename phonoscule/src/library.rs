@@ -270,16 +270,12 @@ pub const FULL: u32 = 768;
 /// The size is the caller's to choose, and should be the size it means to draw: resizing to a fixed
 /// intermediate and then again to the target would do the work twice and lose detail the once would
 /// have kept. Ref-counted, so passing the result around costs nothing.
-pub async fn decode_cover(file: PathBuf, edge: u32) -> Option<Arc<[u8]>> {
-    smol::unblock(move || match image::open(&file) {
-        Ok(img) => {
-            let rgba = img.resize_to_fill(edge, edge, image::imageops::FilterType::Triangle).into_rgba8().into_raw();
-            Some(Arc::<[u8]>::from(rgba))
-        }
-        Err(e) => {
-            log::warn!("could not decode cover {file:?}: {e}");
-            None
-        }
+pub async fn decode_cover(file: PathBuf, edge: u32) -> Option<Vec<u8>> {
+    smol::unblock(move || {
+        image::open(&file)
+            .inspect_err(|e| log::warn!("could not decode cover {file:?}: {e}"))
+            .ok()
+            .map(|img| img.resize_to_fill(edge, edge, image::imageops::FilterType::Triangle).into_rgba8().into_raw())
     })
     .await
 }
@@ -878,8 +874,7 @@ async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64) -> Option
         return Some((file, rgb_to_rgba(&rgb), accent));
     }
 
-    let decode_file = file.clone();
-    let rgb = smol::unblock(move || decode_thumbnail(&decode_file)).await?;
+    let rgb = decode_thumbnail(file.clone()).await?;
     if let Some(cache_path) = &cache_path
         && let Err(e) = smol::fs::write(cache_path, &rgb).await
     {
@@ -891,14 +886,8 @@ async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64) -> Option
 }
 
 /// Decodes an image file and downscales it to [`THUMB`]²  RGB, center-cropped to a square.
-fn decode_thumbnail(file: &Path) -> Option<Vec<u8>> {
-    match image::open(file) {
-        Ok(img) => Some(img.resize_to_fill(THUMB, THUMB, image::imageops::FilterType::Triangle).into_rgb8().into_raw()),
-        Err(e) => {
-            log::warn!("could not decode cover {file:?}: {e}");
-            None
-        }
-    }
+async fn decode_thumbnail(file: PathBuf) -> Option<Vec<u8>> {
+    decode_cover(file, THUMB).await
 }
 
 /// Expands packed RGB triplets to fully opaque RGBA quartets. The cache stores RGB, a third
