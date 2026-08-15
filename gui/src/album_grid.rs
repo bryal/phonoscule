@@ -32,6 +32,32 @@ use iced::advanced::widget::{Operation, Tree, tree};
 use iced::advanced::{Clipboard, Layout, Shell, Text, Widget, layout, mouse, overlay, text, text::Renderer as _};
 use iced::keyboard::{self, key::Named};
 use iced::{Border, Color, Element, Event, Length, Pixels, Rectangle, Renderer, Size, Theme, Vector};
+use std::ops::Range;
+
+/// The cards in `shown`, paired with their tree and their laid-out node.
+///
+/// Layout keeps a node per card whatever is on screen, because every other method pairs the three up
+/// by position and a missing node would misalign the lot. So the culling is here, in the walking.
+fn visible<'a, 'b, M>(
+    cards: &'a [Card<'b, M>],
+    trees: &'a [Tree],
+    layout: Layout<'a>,
+    shown: Range<usize>,
+) -> impl Iterator<Item = ((&'a Card<'b, M>, &'a Tree), Layout<'a>)> {
+    let skip = shown.start;
+    cards[shown.clone()].iter().zip(&trees[shown.clone()]).zip(layout.children().skip(skip).take(shown.len()))
+}
+
+/// [`visible`], for the methods that need the card and its tree mutably.
+fn visible_mut<'a, 'b, M>(
+    cards: &'a mut [Card<'b, M>],
+    trees: &'a mut [Tree],
+    layout: Layout<'a>,
+    shown: Range<usize>,
+) -> impl Iterator<Item = ((&'a mut Card<'b, M>, &'a mut Tree), Layout<'a>)> {
+    let skip = shown.start;
+    cards[shown.clone()].iter_mut().zip(&mut trees[shown.clone()]).zip(layout.children().skip(skip).take(shown.len()))
+}
 
 /// Horizontal padding around the grid, and spacing between cards within a row.
 const GRID_PADDING: f32 = 16.0;
@@ -274,7 +300,10 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
             None => mouse::Cursor::Unavailable,
         };
         let content_viewport = Rectangle { y: bounds.y + offset, ..bounds };
-        for ((card, tree), layout) in self.cards.iter_mut().zip(&mut tree.children).zip(layout.children()) {
+        // Only the cards on screen. A card that cannot be seen cannot be interacted with either, and
+        // this runs for every event including the redraw request that precedes each frame.
+        let shown = geom.visible(offset, bounds.height, n);
+        for ((card, tree), layout) in visible_mut(&mut self.cards, &mut tree.children, layout, shown.clone()) {
             card.cover.as_widget_mut().update(
                 tree,
                 event,
@@ -383,18 +412,16 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
     ) -> mouse::Interaction {
         let bounds = layout.bounds();
         let state = tree.state.downcast_ref::<State>();
-        let offset = state.offset.clamp(0.0, self.geom(bounds.width).max_offset(self.cards.len(), bounds.height));
+        let geom = self.geom(bounds.width);
+        let offset = state.offset.clamp(0.0, geom.max_offset(self.cards.len(), bounds.height));
         let content_cursor = match cursor.position_over(bounds) {
             Some(position) => mouse::Cursor::Available(position + Vector::new(0.0, offset)),
             None => mouse::Cursor::Unavailable,
         };
         let content_viewport = Rectangle { y: bounds.y + offset, ..bounds };
 
-        let from_children = self
-            .cards
-            .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
+        let shown = geom.visible(offset, bounds.height, self.cards.len());
+        let from_children = visible(&self.cards, &tree.children, layout, shown.clone())
             .map(|((card, tree), layout)| {
                 card.cover.as_widget().mouse_interaction(tree, layout, content_cursor, &content_viewport, renderer)
             })
@@ -402,7 +429,9 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
             .unwrap_or_default();
 
         // A pointer over any cover, since clicking it selects.
-        if from_children == mouse::Interaction::None && layout.children().any(|cover| content_cursor.is_over(cover.bounds())) {
+        if from_children == mouse::Interaction::None
+            && layout.children().skip(shown.start).take(shown.len()).any(|cover| content_cursor.is_over(cover.bounds()))
+        {
             mouse::Interaction::Pointer
         } else {
             from_children
@@ -507,11 +536,8 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
         let state = tree.state.downcast_ref::<State>();
         let offset = state.offset.clamp(0.0, self.geom(bounds.width).max_offset(self.cards.len(), bounds.height));
         let translation = translation - Vector::new(0.0, offset);
-        let children = self
-            .cards
-            .iter_mut()
-            .zip(&mut tree.children)
-            .zip(layout.children())
+        let shown = self.geom(bounds.width).visible(offset, bounds.height, self.cards.len());
+        let children = visible_mut(&mut self.cards, &mut tree.children, layout, shown)
             .filter_map(|((card, tree), layout)| {
                 card.cover.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
             })
@@ -604,6 +630,23 @@ impl Geom {
         row.min((n - 1) / self.cols) * self.cols
     }
 
+    /// The albums touching the viewport, as an index range. What the grid walks per frame instead of
+    /// all of them: a library is thousands of cards and a screen holds a few dozen, and every
+    /// traversal that visits one it cannot show is time spent on nothing.
+    ///
+    /// A row either side of the viewport is included, so a card is laid out and hit-testable just
+    /// before it is scrolled into view.
+    fn visible(&self, offset: f32, view_h: f32, n: usize) -> Range<usize> {
+        if n == 0 {
+            return 0..0;
+        }
+        let first_row = ((offset - self.top) / self.pitch()).floor().max(0.0) as usize;
+        let last_row = ((offset + view_h - self.top) / self.pitch()).ceil().max(0.0) as usize;
+        let start = first_row.saturating_sub(1) * self.cols;
+        let end = ((last_row + 1) * self.cols).min(n);
+        start.min(n)..end
+    }
+
     /// The scroll offset that brings the given row fully into view, or `None` if it already is.
     /// "In view" leaves the top clearance above the row (the floating tabs live there) and keeps
     /// its bottom above the bottom clearance (the player bar); the scroll is minimal -- up-moves
@@ -656,6 +699,29 @@ mod test {
     // tab clearance above and the player bar below.
     const GEOM: Geom = Geom { cols: COLS, side: 168.0, top: 60.0, bottom: 152.0 };
     const VIEW_H: f32 = 800.0;
+
+    /// The culled traversals hit-test and lay out only this range, so anything it wrongly excludes
+    /// becomes a card that cannot be hovered or clicked. It must therefore err wide, never narrow.
+    #[test]
+    fn the_visible_range_covers_everything_on_screen() {
+        // Every album whose card overlaps the viewport, found the slow way.
+        let on_screen = |offset: f32| -> Vec<usize> {
+            (0..N)
+                .filter(|&ix| {
+                    let top = GEOM.top + (ix / COLS) as f32 * GEOM.pitch();
+                    top + GEOM.card_h() > offset && top < offset + VIEW_H
+                })
+                .collect()
+        };
+        for offset in [0.0, 100.0, 255.0, 400.0, GEOM.max_offset(N, VIEW_H)] {
+            let shown = GEOM.visible(offset, VIEW_H, N);
+            for ix in on_screen(offset) {
+                assert!(shown.contains(&ix), "album {ix} is on screen at offset {offset} but outside {shown:?}");
+            }
+            assert!(shown.end <= N, "at offset {offset}, {shown:?} runs past the {N} albums there are");
+        }
+        assert_eq!(GEOM.visible(0.0, VIEW_H, 0), 0..0, "no albums, nothing to walk");
+    }
 
     #[test]
     fn horizontal_selection_is_linear_and_clamped() {
