@@ -23,9 +23,9 @@ Graphical player:
 
 | configuration | before | after |
 | --- | --- | --- |
-| Library, paused | 0.03% | 0.03% |
-| Library, playing | 1.73% | **1.79%** |
-| Player, playing | **3.92%** | **2.87%** |
+| paused | 0.03% | 0.03% |
+| Player, playing | 1.73% | 1.79% (within the spread) |
+| Library, playing | **3.92%** | **2.87%** |
 
 Both "after" columns are at **six times the progress rate** of the "before": 23.4 reports a second
 against 3.9, which is what a continuously drawn seek bar needs to stop looking steppy. The graphical
@@ -133,8 +133,11 @@ and vector 11's does not. The census is the instrument that answers the question
 ### Making a frame cheap enough to afford a frame rate
 
 The rate above is only affordable because of two cuts to what the graphical player does per message,
-both found by profiling its main thread. At 23.4 reports a second the player view went 7.10% ->
+both found by profiling its main thread. At 23.4 reports a second the **library** view went 7.10% ->
 5.57% -> **2.87%**, its main thread 2.97% -> 2.20% -> **0.88%**.
+
+Both changes are in the album grid, which only the library view has, so the player view gained
+nothing from either and remains essentially unoptimised.
 
 **Walking only the cards on screen.** Every `AlbumGrid` traversal but `draw` visited all of them:
 `update` forwarded each event including the per-frame redraw request, `mouse_interaction` took a max
@@ -207,10 +210,10 @@ it instead, found nothing, dropped it.
 
 ## Still open
 
-- The GUI's Player view is 2.13% against the TUI's 0.90%, with 0.58% on its main thread at four
-  messages a second and 8.6 wakeups a second where four were sent. The extra wakeups are the cover
-  flow's own 62.5 Hz animation timer, which is legitimate while animating; whether it settles as
-  promptly as it should is not yet measured.
+- The graphical player's **player** view has had no frame work at all: its per-message costs are a
+  `FlowCover` built for every album run in the queue when about seventeen are visible, `album_runs`
+  materialised three or four times a message, and a full-screen glow pass. It also now receives
+  roughly 1.5x the messages a pre-branch build sent.
 - One row (a queue holding the whole library) turned out not to isolate what it was meant to: it also
   varies whether the playing album's cover has loaded, and a loaded cover is the expensive thing. No
   number is reported for it. The library-size question was answered by the 200x50-against-80x24
@@ -236,7 +239,13 @@ frame. It does switch to the player view as intended, but it also changes whethe
 cover has loaded - and a loaded cover is the expensive thing on screen - so it was never isolating
 queue length. No number is reported for it.
 
-Both are the same lesson: the census answers precisely the question its configuration encodes, which
-is not always the question it was named after. Where a figure here is quoted with a spread, that is
+A third, and the worst: every GUI row was labelled with the wrong view. A restored session boots
+straight into the player view (`model.rs:434`), and the scratch state root carries a playlist - so the
+rows that pressed nothing were the player view, and the rows that pressed Tab were the library. The
+figures were right and the labels were inverted, which is harder to catch than a wrong figure: it read
+as coherent, and the reading was defended before it was checked.
+
+All three are the same lesson: the census answers precisely the question its configuration encodes,
+which is not always the question it was named after. Where a figure here is quoted with a spread, that is
 the spread of three windows on a machine that was in use, and where a figure moved less than its
 spread it is reported as no change rather than as a small one.
