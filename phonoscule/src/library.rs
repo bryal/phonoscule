@@ -92,9 +92,9 @@ pub struct CoverArt {
     /// The (absolute) image file this was decoded from, e.g. for pointing other programs at it
     /// and decoding a higher-resolution version on demand (see [`decode_cover`]).
     pub file: Arc<PathBuf>,
-    /// The thumbnail: [`THUMB`]²  RGBA. Ref-counted, so this stays the only in-memory copy however
-    /// many consumers hold it.
-    pub pixels: Arc<[u8]>,
+    /// The thumbnail: [`THUMB`]²  RGBA.
+    /// Ref-counted, so this stays the only in-memory copy however many consumers hold it.
+    pub thumbnail_pixels: Arc<[u8]>,
     /// The cover's most distinct color, e.g. for theming the surroundings after it.
     pub accent: Rgb,
 }
@@ -679,8 +679,8 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
                 .buffer_unordered(concurrency())
         );
         while let Some((ids, id, cover)) = covers.next().await {
-            let Some((file, pixels, accent)) = cover else { continue };
-            let art = CoverArt { id, file: Arc::new(file), pixels, accent };
+            let Some((file, thumbnail_pixels, accent)) = cover else { continue };
+            let art = CoverArt { id, file: Arc::new(file), thumbnail_pixels, accent };
             if tx.send(ScanEvent::Cover { albums: ids, art }).await.is_err() {
                 return;
             }

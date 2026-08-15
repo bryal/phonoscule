@@ -306,8 +306,8 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         // message carries) are indices into `app.filtered`.
         for (cell, &ix) in app.filtered.iter().enumerate() {
             let album = &app.albums[ix];
-            let handle = album.cover.as_ref().and_then(|c| app.covers.get(&c.id));
-            grid = grid.push(album_cover(cell, album, handle, app.selected == Some(cell)), &album.title, &album.artist);
+            let thumb = album.cover.as_ref().and_then(|c| app.thumbnails.get(&c.id));
+            grid = grid.push(album_cover(cell, album, thumb, app.selected == Some(cell)), &album.title, &album.artist);
         }
         let mut layers: Vec<Element<'_, Msg>> = vec![grid.into()];
         if app.filtered.is_empty() {
@@ -643,7 +643,7 @@ fn player_view(app: &App) -> Element<'_, Msg> {
                 (None, None) => None,
                 (cover, accent) => Some(FlowCover {
                     id: cover.as_ref().map_or(item.album_id, |c| c.id),
-                    thumb: cover.as_ref().and_then(|c| app.covers.get(&c.id)).cloned(),
+                    thumb: cover.as_ref().and_then(|c| app.thumbnails.get(&c.id)).cloned(),
                     accent,
                     full: cover.as_ref().and_then(|c| app.hires.peek(c.id)),
                 }),

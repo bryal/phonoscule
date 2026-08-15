@@ -159,7 +159,7 @@ pub struct App {
     /// would have the renderer re-upload every visible cover's texture every frame. They wrap the
     /// scan's ref-counted bitmaps rather than copying them, and are pruned with the albums holding
     /// them (see the `Done` scan event).
-    pub covers: HashMap<u64, iced::widget::image::Handle>,
+    pub thumbnails: HashMap<u64, iced::widget::image::Handle>,
     /// The configured UI scale factor (`[app.gui] scaling`, already clamped -- see `main`): the
     /// baseline Ctrl+= resets [`scale`](Self::scale) to.
     pub scaling: f32,
@@ -352,7 +352,7 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             media,
             mixer: volume::start(),
             watcher: watcher::start(&conf.music_dir),
-            covers: HashMap::new(),
+            thumbnails: HashMap::new(),
             scaling,
             scale: scaling,
             conf: conf.clone(),

@@ -286,8 +286,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             if !accepted.is_empty() {
                 // The handle for these pixels, made exactly once (see `App::covers`). It wraps the
                 // scan's bitmap rather than copying it, so this costs an id and a refcount.
-                let pixels = bytes::Bytes::from_owner(art.pixels.clone());
-                app.covers.insert(art.id, iced::widget::image::Handle::from_rgba(library::THUMB, library::THUMB, pixels));
+                let pixels = bytes::Bytes::from_owner(art.thumbnail_pixels.clone());
+                app.thumbnails.insert(art.id, iced::widget::image::Handle::from_rgba(library::THUMB, library::THUMB, pixels));
             }
             for album in app.albums.iter_mut().filter(|a| accepted.contains(&a.id)) {
                 album.cover = Some(art.clone());
@@ -323,7 +323,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 .chain(app.queue.iter().filter_map(|i| i.cover.as_ref()))
                 .map(|c| c.id)
                 .collect();
-            app.covers.retain(|id, _| live.contains(id));
+            app.thumbnails.retain(|id, _| live.contains(id));
             app.scan = ScanState::Complete;
             refresh_filter(app);
             // Persist the settled album list for the next launch's instant grid -- only when this
