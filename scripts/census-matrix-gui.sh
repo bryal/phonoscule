@@ -17,7 +17,11 @@ cd "$(dirname "$0")/.."
 eval "$(scripts/census-env.sh phonoscule)"
 
 player=./target/profiling/phonoscule-gui
-[ -x "$player" ] || { echo "$0: build it first" >&2; exit 1; }
+
+# Built here rather than checked for: an existing binary says nothing about whether it is the one you
+# meant to measure, and a stale one reads as a perfectly good result.
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling -p phonoscule-gui >&2 ||
+    { echo "$0: build failed, refusing to measure" >&2; exit 1; }
 
 # Pinned so runs are comparable; the graphics backend is not what is under test here.
 WGPU_BACKEND=${WGPU_BACKEND:-vulkan}

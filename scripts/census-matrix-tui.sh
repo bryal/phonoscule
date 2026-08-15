@@ -25,7 +25,12 @@ eval "$(scripts/census-env.sh phonoscule-tui)"
 
 player=./target/profiling/phonoscule-tui
 conf=scripts/census-tui.toml
-[ -x "$player" ] || { echo "$0: build it first: RUSTFLAGS='-C force-frame-pointers=yes' cargo build --profile profiling" >&2; exit 1; }
+
+# Built here rather than checked for, because an existing binary says nothing about whether it is the
+# one you meant to measure. A stale binary reads as a perfectly good result, which is worse than an
+# error - it once produced a whole matrix that was really the previous build measured twice.
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling -p phonoscule-tui >&2 ||
+    { echo "$0: build failed, refusing to measure" >&2; exit 1; }
 
 # Waits out the boot scan, polling the process's own tick counter rather than sleeping a guess - how
 # long a scan of the library takes is not a constant.
