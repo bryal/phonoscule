@@ -41,13 +41,14 @@ const CHUNK: usize = 2048;
 /// The rate is stated this way round because the check runs once per iteration, so a chunk boundary
 /// is the only moment a report can happen: asking for a rate directly means asking for one of
 /// `sample_rate / CHUNK / n` and silently getting the nearest. See [`progress_hz`].
-const PROGRESS_EVERY_CHUNKS: u32 = 6;
+const PROGRESS_EVERY_CHUNKS: u32 = 1;
 
-/// What [`PROGRESS_EVERY_CHUNKS`] works out to for a stream of `sample_rate`: how late a change of
-/// second may turn up in a UI, and nothing more.
+/// What [`PROGRESS_EVERY_CHUNKS`] works out to for a stream of `sample_rate`: 23.4 Hz for 48 kHz
+/// audio, and the most this loop can report at all.
 ///
-/// Every consumer renders whole seconds, and each report costs it a frame. One wanting smoother
-/// motion than this runs its own timer, rather than every consumer paying for it here.
+/// Every report costs a consumer a frame, so this is as fast as it is because a continuously drawn
+/// seek bar looks visibly steppy below it. A consumer drawing the position as whole seconds ignores
+/// most of these -- see how the terminal player gates its redraws.
 pub fn progress_hz(sample_rate: u32) -> f64 {
     sample_rate as f64 / (CHUNK as u32 * PROGRESS_EVERY_CHUNKS) as f64
 }
