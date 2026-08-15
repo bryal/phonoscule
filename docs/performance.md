@@ -182,3 +182,20 @@ it instead, found nothing, dropped it.
 - `phonoscule-audio` still wakes ~94 times a second after the chunk change, where 23 writes a second
   would predict fewer. Whatever the remaining wakeups are, they are not writes, and they have not
   been chased.
+
+## A note on trusting these numbers
+
+Two of the rows in a confirming run came back wrong, and both times it was the harness rather than the
+player. One row measured 0.00% because the restored queue had run out and playback had stopped - a row
+that stops playing looks like a triumph, since what is being measured is what playback costs. The
+census now sets the loop mode first and warns if a window ended with the player not playing.
+
+The other was the row meant to test whether a queue holding the whole library costs anything per
+frame. It does switch to the player view as intended, but it also changes whether the playing album's
+cover has loaded - and a loaded cover is the expensive thing on screen - so it was never isolating
+queue length. No number is reported for it.
+
+Both are the same lesson: the census answers precisely the question its configuration encodes, which
+is not always the question it was named after. Where a figure here is quoted with a spread, that is
+the spread of three windows on a machine that was in use, and where a figure moved less than its
+spread it is reported as no change rather than as a small one.
