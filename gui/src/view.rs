@@ -9,8 +9,8 @@ use crate::model::{
 };
 use crate::update::Msg;
 use iced::widget::{
-    button, center, column, container, hover, image, mouse_area, opaque, responsive, row, scrollable, slider, stack, text,
-    text_input,
+    Space, button, center, column, container, hover, image, mouse_area, opaque, responsive, row, scrollable, slider, stack,
+    text, text_input,
 };
 use iced::{Border, Center, Color, Element, Fill, Padding, Theme, color};
 use phonoscule::library::Album;
@@ -307,7 +307,7 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         for (cell, &ix) in app.filtered.iter().enumerate() {
             let album = &app.albums[ix];
             let handle = album.cover.as_ref().and_then(|c| app.covers.get(&c.id));
-            grid = grid.push(album_cover(cell, album, handle), &album.title, &album.artist);
+            grid = grid.push(album_cover(cell, album, handle, app.selected == Some(cell)), &album.title, &album.artist);
         }
         let mut layers: Vec<Element<'_, Msg>> = vec![grid.into()];
         if app.filtered.is_empty() {
@@ -546,7 +546,7 @@ const TWO_ROW_BAR_HEIGHT: f32 = 96.0;
 /// An album's cover element for the grid: the artwork (or a fallback tile) with the floating
 /// action bubbles over it. Size-agnostic -- the grid lays it out to exactly its cover square; it
 /// also draws the card's texts and the selection backdrop itself.
-fn album_cover<'a>(ix: usize, album: &'a Album, handle: Option<&image::Handle>) -> Element<'a, Msg> {
+fn album_cover<'a>(ix: usize, album: &'a Album, handle: Option<&image::Handle>, hovered: bool) -> Element<'a, Msg> {
     let cover: Element<'a, Msg> = match handle {
         Some(handle) => image(handle.clone()).width(Fill).height(Fill).content_fit(iced::ContentFit::Cover).into(),
         // No pixels (not loaded yet, or the album has none): a tile tinted by the album's accent
@@ -576,19 +576,31 @@ fn album_cover<'a>(ix: usize, album: &'a Album, handle: Option<&image::Handle>) 
     // Action bubbles along the cover's right edge, shown only while hovering the cover. Entering
     // the play bubble preloads the high-res cover, hiding its decode behind the hover-to-click gap;
     // the list bubble opens the album's track menu (as do right-click and Enter -- see the grid).
-    let play = text(FA_PLAY).font(font_awesome_solid()).size(12);
-    let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(14);
-    let tracks = text(FA_LIST).font(font_awesome_solid()).size(11);
-    let bubbles = container(
-        column![
-            mouse_area(bubble(container(play).center(Fill), Msg::PlayAlbum(ix))).on_enter(Msg::PreloadAlbum(ix)),
-            bubble(container(enqueue).center(Fill), Msg::QueueAlbum(ix)),
-            bubble(container(tracks).center(Fill), Msg::OpenTrackMenu(ix)),
-        ]
-        .spacing(6),
-    )
-    .align_right(Fill)
-    .padding(8);
+    //
+    // Built for the hovered card alone. `hover` only ever draws them over the card the cursor is on,
+    // and the grid reports exactly that card as the selection, so the rest were three buttons, three
+    // styled containers and three boxed style closures apiece that could never be seen -- twelve
+    // thousand widgets on a library of this size, on every message iced delivers. A keyboard-moved
+    // selection builds them too and still shows nothing, because `hover` asks the cursor.
+    let bubbles: Element<'a, Msg> = match hovered {
+        false => Space::new().into(),
+        true => {
+            let play = text(FA_PLAY).font(font_awesome_solid()).size(12);
+            let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(14);
+            let tracks = text(FA_LIST).font(font_awesome_solid()).size(11);
+            container(
+                column![
+                    mouse_area(bubble(container(play).center(Fill), Msg::PlayAlbum(ix))).on_enter(Msg::PreloadAlbum(ix)),
+                    bubble(container(enqueue).center(Fill), Msg::QueueAlbum(ix)),
+                    bubble(container(tracks).center(Fill), Msg::OpenTrackMenu(ix)),
+                ]
+                .spacing(6),
+            )
+            .align_right(Fill)
+            .padding(8)
+            .into()
+        }
+    };
     hover(cover, bubbles)
 }
 
