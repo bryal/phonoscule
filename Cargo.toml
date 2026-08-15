@@ -13,6 +13,7 @@ log = { version = "0.4.33", features = ["max_level_trace", "release_max_level_de
 embedded-io = "0.7.1"
 embedded-io-async = "0.7.0"
 embedded-io-adapters = { version = "0.7.0", features = ["futures-03"] }
+futures = "0.3.34"
 smol = "2.0"
 simple_logger = "5.2"
 

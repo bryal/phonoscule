@@ -20,21 +20,23 @@
 //! cover id is unchanged (pass it in [`ScanOptions::known_covers`] to skip its decoding
 //! entirely), and finally retain only [`ScanEvent::Done::album_ids`].
 
-use crate::{io::Skippable, metadata::Tag, opus, wav::Wav};
-use embedded_io_adapters::futures_03::FromFutures;
-use embedded_io_async::{Read as _, Seek as _, SeekFrom};
-use futures::{StreamExt, stream};
-use serde::{Deserialize, Serialize};
-use smol::{channel, fs::File, io::BufReader, stream::Stream};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
     future::Future,
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock},
+    thread,
     time::SystemTime,
 };
+
+use crate::{io::Skippable, metadata::Tag, opus, wav::Wav};
+use embedded_io_adapters::futures_03::FromFutures;
+use embedded_io_async::{Read as _, Seek as _, SeekFrom};
+use futures::{StreamExt, stream};
+use serde::{Deserialize, Serialize};
+use smol::{channel, fs::File, io::BufReader, stream::Stream};
 
 /// An sRGB color, components running 0 to 1: what a cover's accent is expressed in. Plain data, so
 /// a consumer converts it to whatever color type its toolkit wants.
@@ -265,19 +267,43 @@ pub const THUMB: u32 = 256;
 /// But to my eyes, we only need about 70% of that to look crisp enough.
 pub const FULL: u32 = 768;
 
+/// How many threads we'll spawn and keep around just for decoding cover art.
+const DECODER_THREAD_COUNT: usize = 4;
+
 /// Decodes a cover from its original artwork to `edge`²  RGBA, center-cropped like the thumbnails.
 ///
 /// The size is the caller's to choose, and should be the size it means to draw: resizing to a fixed
 /// intermediate and then again to the target would do the work twice and lose detail the once would
 /// have kept. Ref-counted, so passing the result around costs nothing.
 pub async fn decode_cover(file: PathBuf, edge: u32) -> Option<Vec<u8>> {
-    smol::unblock(move || {
-        image::open(&file)
-            .inspect_err(|e| log::warn!("could not decode cover {file:?}: {e}"))
-            .ok()
-            .map(|img| img.resize_to_fill(edge, edge, image::imageops::FilterType::Triangle).into_rgba8().into_raw())
-    })
-    .await
+    use futures::channel::oneshot;
+    static DECODER_THREADS: LazyLock<(
+        channel::Sender<(PathBuf, u32, oneshot::Sender<Option<Vec<u8>>>)>,
+        [thread::JoinHandle<()>; DECODER_THREAD_COUNT],
+    )> = LazyLock::new(|| {
+        let (req_tx, req_rx) = channel::unbounded::<(PathBuf, u32, oneshot::Sender<Option<Vec<u8>>>)>();
+        let threads = std::array::from_fn(|_thread_ix| {
+            let req_rx = req_rx.clone();
+            thread::spawn(move || {
+                while let Ok((file, edge, resp_tx)) = req_rx.recv_blocking() {
+                    let decoded =
+                        image::open(&file).inspect_err(|e| log::warn!("could not decode cover {file:?}: {e}")).ok().map(
+                            |img| img.resize_to_fill(edge, edge, image::imageops::FilterType::Triangle).into_rgba8().into_raw(),
+                        );
+                    if let Err(_) = resp_tx.send(decoded) {
+                        // That's awful rude of them to hang up on us while we were serving their request,
+                        // but no big deal. We'll just go on and serve the next request.
+                    }
+                }
+            })
+        });
+        (req_tx, threads)
+    });
+
+    let (resp_tx, resp_rx) = oneshot::channel();
+    let (req_tx, _) = &*DECODER_THREADS;
+    req_tx.send_blocking((file, edge, resp_tx)).expect("decoder threads should never exit on their own accord");
+    resp_rx.await.ok().flatten()
 }
 
 /// Scans `root`, streaming results as they are found. The stream ends after [`ScanEvent::Done`]
