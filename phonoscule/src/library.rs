@@ -249,18 +249,21 @@ pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output
     }
 }
 
-/// Cover thumbnails are downscaled to fit this square (center-cropped, like the iPod did). Sized
-/// for the library grid; the now-playing view decodes a higher-resolution version on demand. Also
-/// the LOD placeholder the cover flow shows until full-res arrives. Deliberately trades a bit of
-/// full-screen sharpening subtlety for faster cover loading -- at launch, every thumbnail is read
-/// from disk, and this squares into that bill.
-pub const THUMB: u32 = 320;
+/// Cover thumbnail resolution (square), optimized for the library grid.
+///
+/// The GUI's "Player" view decodes a higher-resolution version on demand,
+/// but the thumbnail is shown as an LOD placeholder untel the high-res version arrives.
+/// The thumbnail resolution should be good enough for the library grid and no better -
+/// we load *all* thumbnails from disk into memory at launch, so we need to be frugal.
+pub const THUMB: u32 = 256;
 
-/// The edge the GUI's cover flow decodes its focused covers to (see [`decode_cover`]), for when the
-/// window is run full-screen. Short of a true 4K-panel edge on
-/// purpose: it halves the per-cover memory and decode time versus 1024² while staying crisp enough
-/// that the difference isn't visible at the sizes the flow actually draws.
-pub const FULL: u32 = 900;
+/// Full-sized cover resolution (square), optimized for the cover flow (see [`decode_cover`]).
+///
+/// Originals are often 1024^2 px, but that's a bit more resolution than we need.
+/// With the GUI's "Player" view in full-screen, the center cover is about 50% of the display height.
+/// On a 4K/UHD display, that means the greatest cover resolution we could possibly benefit from is about 1080^2 px.
+/// But to my eyes, we only need about 70% of that to look crisp enough.
+pub const FULL: u32 = 768;
 
 /// Decodes a cover from its original artwork to `edge`²  RGBA, center-cropped like the thumbnails.
 ///
