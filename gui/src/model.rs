@@ -250,11 +250,13 @@ pub struct GlowState {
     pub center: (f32, f32),
 }
 
-/// How many decoded high-res covers [`HiResCache`] keeps. At FULL² RGBA (~3 MiB each) this bounds
-/// its footprint near 240 MiB -- and only a session that plays that many *distinct* albums reaches
-/// it; a typical one holds far fewer. Enough to blanket a favorite genre or playlist, so bouncing
-/// among its albums never re-decodes a cover.
-pub const HIRES_CAP: usize = 80;
+/// How many decoded high-res covers [`HiResCache`] keeps.
+///
+/// Note that these uncompressed covers weigh in at 2.25 MiB each for 768² RGBA.
+/// If you do the math, you'll realize it gets quite expensive quite quickly.
+/// So we want the smallest capacity we can get away with and still have a good UX.
+/// Enough to blanket a favorite genre or playlist, so shuffling it never re-decodes a cover.
+pub const HIRES_CAP: usize = 40;
 
 /// A least-recently-used cache of decoded high-res covers (FULL² RGBA), shared across every album
 /// that plays. Demand-driven in the style of a query-compilation cache: callers [`query`] a cover
