@@ -16,34 +16,15 @@ embedded-io-adapters = { version = "0.7.0", features = ["futures-03"] }
 smol = "2.0"
 simple_logger = "5.2"
 
-# Release codegen plus the debug info a sampling profiler needs, so `perf` can name the frames it
-# lands in. Kept apart from `release` so the binary a user builds stays exactly what it was: debug
-# info does not change codegen, so this is the same program with symbols attached. "limited" rather
-# than "full" because line tables plus function and scope info is what resolves a stack (inlined
-# frames included), while the local-variable info "full" adds describes locals that opt-level 3 has
-# mostly optimised away.
-#
-# Sample with `RUSTFLAGS="-C force-frame-pointers=yes"`: `perf record --call-graph fp` needs them and
-# rustc omits them on x86-64. That does change codegen, by a register and a couple of instructions
-# per non-leaf call, so it inflates absolute CPU readings by a percent or two -- equally in every
-# measurement, which leaves before/after comparisons intact.
+# The `release` build we want to measure, plus the debug info a sampling profiler needs. Sample it
+# with `RUSTFLAGS="-C force-frame-pointers=yes"`; see docs/performance.md.
 [profile.profiling]
 inherits = "release"
 debug = "limited"
 
-# The decoder is the single biggest thing a playing player spends CPU on, and its hot path runs
-# through six of its modules -- at the default sixteen codegen units LLVM sees them separately.
-# Handing it the whole crate is worth 1.5% of decode time on the CELT fullband stereo that a library
-# of opus files decodes as, and up to 6% on other content (`cargo bench --bench decode` over there).
-#
-# Being honest about the size of that: 1.5% of a decode that is 84% of a thread costing half a percent
-# of a core is about 0.006 points, which is an order of magnitude below what a per-process CPU
-# measurement here can resolve, and it duly did not move one. It is kept because it is real, it is
-# statistically solid at the level that can see it, it costs a single small crate's build time, and it
-# scales up on the slower machines this work is for -- not because it showed up in the totals.
-#
-# Scoped to the one package deliberately: the same setting across the whole graph would put iced and
-# wgpu through a single-unit build for no measured reason and a great deal of link time.
+# The decoder's hot path spans six of its modules, which the default sixteen codegen units optimise
+# separately. Only this package, since the rest of the graph showed no gain and iced and wgpu are slow
+# to link. Cargo ignores a dependency's own profile, so it has to be asked for here.
 [profile.release.package.opuscule]
 codegen-units = 1
 

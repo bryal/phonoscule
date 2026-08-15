@@ -3,20 +3,14 @@
 
     scripts/tui-harness.py --cols 200 --rows 50 -- ./target/profiling/phonoscule-tui conf.toml
 
-Prints `pid <N>` on stdout as soon as the player is up, so a census can be pointed at it, then stays
-alive draining the terminal until it is killed.
+Prints `pid <N>` once the player is up, then drains the terminal until killed.
 
-Why not just run it in a terminal: under a tiling compositor the window size is the compositor's
-decision, so "a 200x50 terminal" is not something a run can ask for - and comparing a full-height
-window against a short one is how you find out whether a frame costs what is on screen or what is in
-the library. A pty is the one way to state the size and get it. It also takes the terminal emulator
-out of the measurement, which is the point when the question is what the *player* spends; the
-emulator's own share is a separate run in a real terminal.
+Under a tiling compositor the window size is the compositor's decision, so a pty is the only way to
+ask for one and get it - and a tall terminal against a short one is how you find out whether a frame
+costs what is on screen or what is in the library. It also leaves the terminal emulator out of the
+measurement; the emulator's own share is a separate run in a real one.
 
-The drain is not optional. A pty has a small buffer, and a player whose output nobody reads blocks in
-`write` - it would look wonderfully cheap and be measuring nothing. Reading and discarding keeps it
-drawing at the rate it would really draw at. This process shows up as a neighbour in the census; it is
-doing far less than a real terminal would, which is exactly why it is not standing in for one.
+The drain is not optional: a player nobody reads blocks in `write`, and would measure as free.
 """
 
 import argparse
@@ -43,8 +37,8 @@ def main():
     ap.add_argument("--key-delay", type=float, default=0.4,
                     help="seconds between keystrokes")
     ap.add_argument("--tee", default=None,
-                    help="also write everything the player draws to this file, for checking that a "
-                         "configuration is the one it was meant to be")
+                    help="write what the player draws to this file, to check a configuration is the "
+                         "one it was meant to be")
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
     args = ap.parse_args()
 
@@ -53,8 +47,7 @@ def main():
         ap.error("expected a command after --")
 
     master, slave = pty.openpty()
-    # TIOCSWINSZ on the master is what the player reads back through its own ioctl, and what ratatui
-    # lays every frame out against.
+    # What the player reads back through its own ioctl, and lays every frame out against.
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", args.rows, args.cols, 0, 0))
 
     pid = os.fork()
@@ -94,8 +87,8 @@ def main():
             sent += 1
             keys_at = time.monotonic() + args.key_delay
         try:
-            # Blocking would stall the keystroke schedule, so this is a short-timeout poll. The read
-            # is large because a halfblocks cover repaint is tens of kilobytes a frame.
+            # Short timeout so the keystroke schedule is not stalled. Large read: a halfblocks cover
+            # repaint is tens of kilobytes a frame.
             ready, _, _ = select.select([master], [], [], 0.1)
             if ready:
                 chunk = os.read(master, 1 << 16)

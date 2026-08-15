@@ -457,16 +457,9 @@ fn player_event(model: &mut Model, event: player::Event) -> After {
             model.pending_seek = None;
             let shown = model.pos.as_secs();
             model.pos = pos;
-            // The position is only ever drawn as whole seconds (`view::fmt_time`), so a report landing
-            // in the second already on screen has nothing to add and a frame drawn for it is a frame
-            // spent painting the same characters. Assigned above either way, so `publish_media` still
-            // has a position fresh to `player::PROGRESS_HZ` and a relative seek still anchors on one.
-            //
-            // The seek bar's fill is measured in whole cells, which for any track longer than the bar
-            // is wide moves less often than the seconds do -- so the seconds are the finer of the two
-            // and gating on them loses nothing. On a short track in a wide terminal the bar advances a
-            // few cells at a time instead of one; that is the trade, and it is not worth a frame a
-            // second to avoid.
+            // The position only ever reaches the screen as whole seconds (`view::fmt_time`), so a
+            // report inside the second already drawn has nothing to add. Assigned above either way, so
+            // `publish_media` and a relative seek still see a current position.
             match pos.as_secs() == shown {
                 true => After::Idle,
                 false => After::Redraw,
@@ -709,12 +702,11 @@ pub fn save_session(model: &mut Model) -> Vec<Pin<Box<dyn Future<Output = ()> + 
     writes
 }
 
-/// Which scan this is, which decides what it is worth asking for again.
+/// Which scan this is, which decides what covers are worth asking for again.
 pub enum Scan {
-    /// The one at startup. Claims no cover, because learning where each album's artwork lives is what
-    /// it is for: nothing else populates [`covers::Covers::learn_file`].
+    /// At startup. Claims nothing: learning where each album's artwork lives is what it is for.
     Boot,
-    /// The watcher's, or the periodic one. Claims every cover whose file it already knows.
+    /// The watcher's, or the periodic one.
     Rescan,
 }
 
@@ -723,13 +715,8 @@ pub fn scan_options(model: &Model, phase: Scan) -> library::ScanOptions {
     library::ScanOptions {
         root: model.conf.music_dir.clone(),
         priority: vec![],
-        // A rescan claims what it already has. Re-reading a cover it knows about costs a 307,200-byte
-        // file read, an expansion of every pixel into RGBA, and an accent histogram over the result --
-        // measured at 319 us a cover, so 233 ms of CPU across a library this size, every five minutes.
-        // All of it to hand back a path we are holding and an accent the album index already persisted;
-        // `ScanEvent::Cover` keeps only those two and drops the pixels on arrival.
-        //
-        // The boot scan does want all of it, because it is where the paths come from.
+        // Re-reading a known cover costs a file read, an RGBA expansion and an accent histogram, all
+        // to hand back a path we hold and an accent the index already persisted.
         known_covers: match phase {
             Scan::Boot => Default::default(),
             Scan::Rescan => model.covers.known(),

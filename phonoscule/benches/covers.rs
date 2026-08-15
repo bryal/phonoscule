@@ -1,9 +1,5 @@
-//! What a cached cover thumbnail costs to take back off disk.
-//!
-//! This is the work a rescan repeats for every cover it is not told to skip: read the raw thumbnail,
-//! widen it to RGBA, and pick the accent colour out of it. A player that already knows an album's
-//! artwork path and already has its accent in the persisted index gets nothing back for any of it,
-//! so the per-cover figures here multiply straight out by however many covers a library holds.
+//! What a cached cover thumbnail costs to take back off disk: the work a rescan repeats for every
+//! cover it is not told to skip. Per-cover, so it multiplies out by however many a library holds.
 //!
 //! The corpus is generated once and cached under the temp dir, following `benches/scan.rs`.
 
@@ -17,17 +13,12 @@ const RGB_LEN: usize = (library::THUMB * library::THUMB * 3) as usize;
 /// Bump when changing the generator to invalidate cached corpora.
 const CORPUS_VERSION: u32 = 1;
 
-/// How many covers a library the size of the one this was written for holds, for the multiplied-out
-/// figure in the report.
+/// Covers in the library this was written for, for the multiplied-out figure.
 const LIBRARY_COVERS: usize = 731;
 
-/// One thumbnail's worth of bytes, shaped like album art rather than like noise.
-///
-/// The shape matters for `accent_color`, which histograms into 4096 buckets of a 4-bit-per-channel
-/// space and then scores them: real artwork piles into a few buckets, while random pixels spread
-/// across all of them and would take a path through the scoring loop that no real cover takes. So
-/// this is a dominant hue over most of the image with a small vivid patch, which is what a sleeve
-/// tends to look like to that histogram.
+/// One thumbnail's worth of bytes, shaped like album art rather than like noise: `accent_color`
+/// histograms into 4096 buckets, and noise spreads over all of them where real artwork piles into a
+/// few. So, a dominant hue with a small vivid patch.
 fn thumbnail_rgb(seed: u32) -> Vec<u8> {
     let edge = library::THUMB;
     let mut rgb = Vec::with_capacity(RGB_LEN);
@@ -72,9 +63,8 @@ fn thumbnails(c: &mut Criterion) {
     let rgb = thumbnail_rgb(0);
     assert_eq!(rgb.len(), RGB_LEN, "the generator and THUMB have drifted apart");
 
-    // A file read plus `rgb_to_rgba`'s widening: 102,400 pixels copied into a fresh 409,600-byte
-    // allocation. The page cache is warm after the first iteration, so this is the read syscall and
-    // the widening, not the disk.
+    // A file read plus `rgb_to_rgba`'s widening. The page cache is warm after the first iteration, so
+    // this is the syscall and the widening, not the disk.
     group.throughput(Throughput::Bytes(RGB_LEN as u64));
     group.bench_function("read_thumbnail", |b| {
         b.iter(|| {
@@ -84,12 +74,10 @@ fn thumbnails(c: &mut Criterion) {
         })
     });
 
-    // The accent histogram on its own, given the pixels: a 4096-bucket table allocated per call plus
-    // a pass over every seventh pixel and a scoring pass over the buckets.
+    // The accent histogram on its own, given the pixels.
     group.bench_function("accent_color", |b| b.iter(|| library::accent_color(&rgb)));
 
-    // Both together, which is what one cover costs a rescan that was not told to skip it, and the
-    // figure to multiply by the size of a library.
+    // Both together: what one cover costs a rescan that was not told to skip it.
     group.bench_function("read_and_accent", |b| {
         b.iter(|| {
             let rgba = smol::block_on(library::read_thumbnail(&dir, 0));

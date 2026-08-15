@@ -4,13 +4,9 @@
 #
 #     scripts/census-matrix-gui.sh 30 3 > /tmp/gui-baseline.txt
 #
-# Unlike the terminal player there is no pty to size, so the window is whatever the compositor gives
-# it - which means the window geometry is recorded rather than chosen, and rows are only comparable
-# within one run. Playback goes through MPRIS, so nothing needs focusing; switching views does need a
-# key, which goes through `wtype` after focusing the window with `swaymsg`, and is therefore the one
-# part of this that is specific to this desktop.
-#
-# Nothing here touches the real player's directories: `census-env.sh` points it at scratch roots.
+# No pty to size here, so the window is whatever the compositor gives it: recorded rather than chosen,
+# and rows are comparable within a run only. Switching views needs `swaymsg` and `wtype`, the one part
+# specific to this desktop; playback still goes over MPRIS.
 
 set -eu
 
@@ -73,7 +69,7 @@ row() {
         echo "# mpris says: $(playerctl -p phonoscule status 2>/dev/null || echo '?')"
     fi
 
-    # Recorded rather than chosen: the compositor sized this window, so it is a property of the run.
+    # A property of the run, not a choice: the compositor sized it.
     echo "# window: $(swaymsg -t get_tree 2>/dev/null | grep -o '"name": "Phonoscule"[^}]*' | head -1 || echo '?')"
 
     n=1

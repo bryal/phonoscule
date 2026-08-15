@@ -6,16 +6,12 @@
 #     eval "$(scripts/census-env.sh phonoscule-tui)"
 #     ./target/profiling/phonoscule-tui scripts/census-tui.toml
 #
-# Why not just run the player normally: a measurement run browses, plays, and triggers rescans, and
-# all of that writes - the session, the album index, the tag cache, thumbnails. Pointing it at
-# scratch roots means a suite of runs cannot leave the real player somewhere it did not put itself,
-# and means "warm" and "cold" become a thing the operator chooses rather than a thing that depends on
-# which run happened to go first.
+# A measurement run browses, plays and rescans, all of which write. Scratch roots keep a suite of runs
+# from leaving the real player somewhere it did not put itself, and make warm-versus-cold a choice
+# rather than an accident of ordering. `dirs` resolves both roots through those two variables, so
+# overriding them is enough.
 #
-# `dirs` resolves both roots through $XDG_CACHE_HOME and $XDG_STATE_HOME, so overriding those is
-# enough - no flags, no config keys, nothing to keep in step with the code.
-#
-# Idempotent: the copy happens once and later calls just print. Delete the root to force a re-warm.
+# Idempotent: the copy happens once. Delete the root to force a re-warm.
 
 set -eu
 
@@ -28,10 +24,8 @@ player=$1
 root=${CENSUS_ROOT:-$HOME/.cache/phonoscule-census}/$player
 
 if [ ! -d "$root" ]; then
-    # A full copy rather than hardlinks. The scan writes thumbnails in place when it decides one is
-    # missing or stale, and a hardlinked cache would land that write in the real player's directory -
-    # which is exactly the thing this script exists to prevent. A couple of hundred megabytes is a
-    # cheap price for that not being a question.
+    # Copied, not hardlinked: the scan rewrites thumbnails in place, which through a hardlink would
+    # land in the real player's directory - the one thing this exists to prevent.
     mkdir -p "$root/cache" "$root/state"
     [ -d "$HOME/.cache/$player" ] && cp -a "$HOME/.cache/$player" "$root/cache/$player"
     [ -d "$HOME/.local/state/$player" ] && cp -a "$HOME/.local/state/$player" "$root/state/$player"

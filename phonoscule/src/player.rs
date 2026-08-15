@@ -32,25 +32,13 @@ pub const PLAYBACK_SAMPLE_RATE: u32 = 48000;
 
 type OutSample = Stereo<PcmS16Le>;
 
-/// Frames decoded and written to the sink per loop iteration.
-///
-/// Also how often the loop looks at its command channel, so this is the ceiling on how long a pause or
-/// a seek waits to be noticed: 2048 frames is 43 ms at [`PLAYBACK_SAMPLE_RATE`], comfortably below
-/// what a hand on a key can tell. Spending that latency buys a quarter of the writes, and a write is
-/// not cheap -- see the fill loop in `player_loop`.
+/// Frames decoded and written to the sink per loop iteration. Also how often commands are looked at,
+/// so it caps how long a pause or seek waits to be noticed: 43 ms at [`PLAYBACK_SAMPLE_RATE`].
 const CHUNK: usize = 2048;
 
-/// How often [`Event::Progress`] reports where playback has reached.
-///
-/// This bounds how late a change of second can turn up in a UI, and that is all it is for. Every
-/// consumer we have renders the position as whole seconds, so reporting faster than the eye can see a
-/// digit change buys nothing and costs a frame each time: the front ends redraw on the events they are
-/// given, and a redraw is not cheap -- on the terminal player it was measured at around a third of the
-/// process's CPU, all of it drawing the same pixels over again.
-///
-/// Four a second keeps a clock honest to 250 ms, which is also close enough for a seek taken relative
-/// to "where the bar is now". A front end that wants motion smoother than this runs its own timer for
-/// it (the graphical one already does, for the cover flow), rather than everyone paying for it here.
+/// How often [`Event::Progress`] reports where playback has reached: how late a change of second may
+/// turn up in a UI, and nothing more. Every consumer renders whole seconds, and each report costs
+/// them a frame. A front end wanting smoother motion runs its own timer.
 pub const PROGRESS_HZ: u64 = 4;
 
 /// A queue entry: the track, and the album it belongs to as an opaque grouping key (equal keys on
@@ -397,13 +385,9 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
                 PlayState::Paused => continue,
                 PlayState::Playing => (),
             }
-            // Fill the buffer before writing rather than writing whatever a single read returned. A
-            // decoder hands back at most what is left of its current frame -- Opus decodes 960 samples
-            // at a time, so a 512-frame buffer was being served 512 and then 448 -- and each write
-            // costs a round trip to the audio server, which on PulseAudio also wakes its client thread
-            // about three times. That thread was measured at 0.40% of a core for 94 writes a second,
-            // against 0.59% for all of the decoding, so what it costs is the writing and not the
-            // audio.
+            // Fill the buffer rather than writing whatever one read returned: a decoder hands back at
+            // most what is left of its current frame, and writes are expensive enough that being cut
+            // short at every frame boundary cost more than the decoding did.
             let mut n = 0;
             while n < buf.len() {
                 let Some(read) = source.read_samples(&mut buf[n..]).await else {

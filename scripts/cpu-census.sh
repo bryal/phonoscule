@@ -1,22 +1,14 @@
 #!/bin/sh
 #
-# Reports what CPU a running player is actually spending, broken down by thread, alongside the
-# processes around it. Point it at a pid that is already up and settled:
+# What CPU a running player is spending, per thread, alongside the processes around it:
 #
 #     scripts/cpu-census.sh player-playing $(pgrep -x phonoscule-tui) 60
 #
-# An observer and nothing else - it never launches, drives or kills anything. That is deliberate:
-# getting a player into a given state (this view, playing, this queue) differs per player and per
-# machine, while reading the cost of that state does not. So the launching lives in whatever drives
-# the run, and this stays portable enough to answer the same question on a slow machine.
+# An observer only - getting a player into a given state differs per machine, reading the cost of it
+# does not. The per-thread split is the point: the threads are already named, so the decoder's cost
+# and the drawing's separate without instrumentation.
 #
-# The threads are already named where it matters (`phonoscule-audio`, `phonoscule-input`,
-# `volume-mixer`), so the per-thread table splits the decoder's cost from the drawing's without any
-# instrumentation. That split is the whole point: process CPU alone cannot say which of the two to
-# go and fix.
-#
-# Every number here is a percentage of ONE core, which is the unit the complaint is in ("10-20% of
-# my CPU"), not a percentage of the machine.
+# Percentages are of ONE core, not of the machine.
 
 set -eu
 
@@ -34,20 +26,15 @@ if [ ! -d "/proc/$pid" ]; then
     exit 1
 fi
 
-# The processes that a player's own behaviour shows up in besides itself. Writing to the sink more
-# often costs CPU in the audio server and everything downstream of it, and drawing more often costs
-# it in the terminal emulator - so a change that looks free in the player can be paid for next door.
-# `CENSUS_EXTRA_PIDS` is for whatever else a particular run wants watched, the terminal it is drawn
-# in above all.
+# Where a player's behaviour shows up besides itself: a change that looks free here can be paid for
+# next door. `CENSUS_EXTRA_PIDS` adds whatever else a run wants watched, the terminal above all.
 neighbours=$(pgrep -d, -x 'pipewire|pipewire-pulse|wireplumber|easyeffects|sway' 2>/dev/null || true)
 if [ -n "${CENSUS_EXTRA_PIDS:-}" ]; then
     neighbours="$neighbours,$CENSUS_EXTRA_PIDS"
 fi
 
-# Fields 14 and 15 of /proc/pid/stat are utime and stime. Everything up to and including the last
-# ") " goes first, because a comm can contain both spaces and parentheses and splitting on
-# whitespace before that point would misalign every field after it; state then lands at $1, so
-# utime and stime are at $12 and $13.
+# utime and stime, fields 14 and 15 of /proc/pid/stat. Strip through the last ") " first: a comm can
+# contain spaces and parentheses. State then lands at $1, so the two are at $12 and $13.
 cpu_ticks() {
     sed 's/.*) //' "/proc/$1/stat" | awk '{print $12 + $13}'
 }
@@ -72,8 +59,7 @@ echo "RUSTFLAGS     ${RUSTFLAGS:-(unset)}"
 echo "load before   $(cut -d' ' -f1-3 /proc/loadavg)"
 echo
 
-# pidstat and /proc are read over the same window, so the two are cross-checks on each other rather
-# than two separate measurements. They disagreeing is worth knowing about.
+# Same window as pidstat, so the two cross-check each other.
 before=$(cpu_ticks "$pid")
 start=$(date +%s.%N)
 
@@ -89,10 +75,8 @@ else
     neighbours_pid=
 fi
 
-# Read once a second for the length of the window. Treated as relative within a single run and
-# nothing more: this is a shared GPU on a machine someone is using, so anything else drawing lands
-# in the same counter. It answers "did this configuration move it against the one measured minutes
-# ago", never "this configuration costs N%".
+# Relative within a run and nothing more: this is a shared GPU on a machine someone is using, so
+# anything else drawing lands in the same counter.
 gpu_samples=$(mktemp)
 if [ -r "$gpu" ]; then
     i=0
