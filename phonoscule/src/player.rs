@@ -36,10 +36,21 @@ type OutSample = Stereo<PcmS16Le>;
 /// so it caps how long a pause or seek waits to be noticed: 43 ms at [`PLAYBACK_SAMPLE_RATE`].
 const CHUNK: usize = 2048;
 
-/// How often [`Event::Progress`] reports where playback has reached: how late a change of second may
-/// turn up in a UI, and nothing more. Every consumer renders whole seconds, and each report costs
-/// them a frame. A front end wanting smoother motion runs its own timer.
-pub const PROGRESS_HZ: u64 = 4;
+/// Loop iterations between [`Event::Progress`] reports.
+///
+/// The rate is stated this way round because the check runs once per iteration, so a chunk boundary
+/// is the only moment a report can happen: asking for a rate directly means asking for one of
+/// `sample_rate / CHUNK / n` and silently getting the nearest. See [`progress_hz`].
+const PROGRESS_EVERY_CHUNKS: u32 = 6;
+
+/// What [`PROGRESS_EVERY_CHUNKS`] works out to for a stream of `sample_rate`: how late a change of
+/// second may turn up in a UI, and nothing more.
+///
+/// Every consumer renders whole seconds, and each report costs it a frame. One wanting smoother
+/// motion than this runs its own timer, rather than every consumer paying for it here.
+pub fn progress_hz(sample_rate: u32) -> f64 {
+    sample_rate as f64 / (CHUNK as u32 * PROGRESS_EVERY_CHUNKS) as f64
+}
 
 /// A queue entry: the track, and the album it belongs to as an opaque grouping key (equal keys on
 /// adjacent entries form an album run) -- what repeat-album advancement walks.
@@ -311,7 +322,7 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
         let mut pos = source.fast_forward(start_at).await.unwrap_or(0);
         start_at = 0;
         let _ = events.send(Event::Progress(t_of(pos))).await;
-        let mut prev_status_pos = pos;
+        let mut chunks_since_report = 0;
 
         loop {
             let maybe_cmd = match buffered.take() {
@@ -350,7 +361,7 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
                     match source.seek_samples(target).await {
                         Some(new_pos) => {
                             pos = new_pos;
-                            prev_status_pos = pos;
+                            chunks_since_report = 0;
                             if events.send(Event::Progress(t_of(pos))).await.is_err() {
                                 return;
                             }
@@ -411,12 +422,12 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
             sink.write(&buf[..n]); // blocks until the device takes the chunk - this is our pacing
             pos += n as u64;
 
-            let progress_interval = sample_rate as u64 / PROGRESS_HZ;
-            if pos < prev_status_pos || pos - prev_status_pos > progress_interval {
+            chunks_since_report += 1;
+            if chunks_since_report >= PROGRESS_EVERY_CHUNKS {
+                chunks_since_report = 0;
                 if events.send(Event::Progress(t_of(pos))).await.is_err() {
                     return;
                 }
-                prev_status_pos = pos;
             }
         }
     }
