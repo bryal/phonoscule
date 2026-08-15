@@ -42,11 +42,8 @@ watcher = ["dep:smol", "dep:futures", "dep:notify", "log/std"]
 media = ["dep:smol", "dep:zbus", "dep:windows", "log/std"]
 
 [dependencies]
-# TEMPORARY, DO NOT MERGE: pointed at the local checkout so decoder changes can be measured through a
-# real player. Before this branch merges, opuscule is published and this goes back to a version
-# requirement -- a path dependency would push our working copy onto everyone else, and `cargo
-# publish` rejects one outright.
-opuscule = { path = "../../opuscule" }
+# 0.2.1 skips the comb filter when the postfilter is off, which is most of a music library.
+opuscule = "0.2.1"
 ogg = "0.9.2"
 utf8-decode = "2.0"
 embedded-io       = { workspace = true }
