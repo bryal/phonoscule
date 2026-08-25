@@ -297,7 +297,7 @@ impl HiResCache {
             return Task::none();
         }
         let file = (*file).clone();
-        Task::perform(library::decode_cover(file, library::FULL), move |pixels| Msg::HiResLoaded {
+        Task::perform(library::decode_cover(file, library::FULL, library::Pixels::Rgba), move |pixels| Msg::HiResLoaded {
             id,
             pixels: pixels.map(Arc::<[u8]>::from),
         })

@@ -270,39 +270,73 @@ pub const FULL: u32 = 768;
 /// How many threads we'll spawn and keep around just for decoding cover art.
 const DECODER_THREAD_COUNT: usize = 4;
 
-/// Decodes a cover from its original artwork to `edge`²  RGBA, center-cropped like the thumbnails.
+/// How the decoded pixels come out. The two consumers want different things and neither can widen or
+/// narrow the other's for free, so it is the caller's to name: a toolkit wants an alpha channel to
+/// hand its renderer, while the thumbnail cache stores three bytes a pixel and is a third smaller on
+/// disk for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pixels {
+    Rgb,
+    Rgba,
+}
+
+impl Pixels {
+    /// Bytes per pixel, for sizing a buffer or checking one is what it claims to be.
+    pub const fn stride(self) -> usize {
+        match self {
+            Pixels::Rgb => 3,
+            Pixels::Rgba => 4,
+        }
+    }
+}
+
+/// A decode to run: the artwork, the square edge to fit it to, and what to hand back.
+type Request = (PathBuf, u32, Pixels, futures::channel::oneshot::Sender<Option<Vec<u8>>>);
+
+/// Decodes a cover from its original artwork to `edge`²  in `pixels`, center-cropped.
 ///
 /// The size is the caller's to choose, and should be the size it means to draw: resizing to a fixed
 /// intermediate and then again to the target would do the work twice and lose detail the once would
-/// have kept. Ref-counted, so passing the result around costs nothing.
-pub async fn decode_cover(file: PathBuf, edge: u32) -> Option<Vec<u8>> {
+/// have kept.
+///
+/// Runs on a small pool of threads of its own rather than the blocking pool, because decoding holds
+/// the *whole* source image -- several tens of megabytes for a large sleeve -- and a pool that grows
+/// on demand will happily hold a hundred of them at once. Requests queue; the queue is cheap, the
+/// concurrency is what costs.
+pub async fn decode_cover(file: PathBuf, edge: u32, pixels: Pixels) -> Option<Vec<u8>> {
     use futures::channel::oneshot;
-    static DECODER_THREADS: LazyLock<(
-        channel::Sender<(PathBuf, u32, oneshot::Sender<Option<Vec<u8>>>)>,
-        [thread::JoinHandle<()>; DECODER_THREAD_COUNT],
-    )> = LazyLock::new(|| {
-        let (req_tx, req_rx) = channel::unbounded::<(PathBuf, u32, oneshot::Sender<Option<Vec<u8>>>)>();
-        let threads = std::array::from_fn(|_thread_ix| {
-            let req_rx = req_rx.clone();
-            thread::spawn(move || {
-                while let Ok((file, edge, resp_tx)) = req_rx.recv_blocking() {
-                    let decoded =
-                        image::open(&file).inspect_err(|e| log::warn!("could not decode cover {file:?}: {e}")).ok().map(
-                            |img| img.resize_to_fill(edge, edge, image::imageops::FilterType::Triangle).into_rgba8().into_raw(),
-                        );
-                    if let Err(_) = resp_tx.send(decoded) {
-                        // That's awful rude of them to hang up on us while we were serving their request,
-                        // but no big deal. We'll just go on and serve the next request.
+    static DECODER_THREADS: LazyLock<(channel::Sender<Request>, [thread::JoinHandle<()>; DECODER_THREAD_COUNT])> =
+        LazyLock::new(|| {
+            let (req_tx, req_rx) = channel::unbounded::<Request>();
+            let threads = std::array::from_fn(|_thread_ix| {
+                let req_rx = req_rx.clone();
+                thread::spawn(move || {
+                    while let Ok((file, edge, pixels, resp_tx)) = req_rx.recv_blocking() {
+                        let decoded = image::open(&file)
+                            .inspect_err(|e| log::warn!("could not decode cover {file:?}: {e}"))
+                            .ok()
+                            .map(|img| {
+                                let img = img.resize_to_fill(edge, edge, image::imageops::FilterType::Triangle);
+                                match pixels {
+                                    Pixels::Rgb => img.into_rgb8().into_raw(),
+                                    Pixels::Rgba => img.into_rgba8().into_raw(),
+                                }
+                            });
+                        if resp_tx.send(decoded).is_err() {
+                            // That's awful rude of them to hang up on us while we were serving their request,
+                            // but no big deal. We'll just go on and serve the next request.
+                        }
                     }
-                }
-            })
+                })
+            });
+            (req_tx, threads)
         });
-        (req_tx, threads)
-    });
 
     let (resp_tx, resp_rx) = oneshot::channel();
     let (req_tx, _) = &*DECODER_THREADS;
-    req_tx.send_blocking((file, edge, resp_tx)).expect("decoder threads should never exit on their own accord");
+    // Never blocks in practice: the channel is unbounded. Keep it that way, or this needs to become
+    // an await.
+    req_tx.send_blocking((file, edge, pixels, resp_tx)).expect("decoder threads should never exit on their own accord");
     resp_rx.await.ok().flatten()
 }
 
@@ -871,7 +905,10 @@ async fn read_tags(path: &Path) -> Option<FileTags> {
 }
 
 /// Number of bytes in a cached thumbnail: [`THUMB`]²  RGB.
-const THUMB_RGB_LEN: usize = (THUMB * THUMB * 3) as usize;
+///
+/// Also what a cache file is checked against, which is the only thing standing between a thumbnail
+/// written in the wrong pixel format and a library that silently renders none of its artwork.
+const THUMB_RGB_LEN: usize = (THUMB * THUMB * Pixels::Rgb.stride() as u32) as usize;
 
 /// Reads one cached thumbnail by cover id, as [`THUMB`]²  RGBA: a plain file read and a widening, no
 /// image decoding. `None` when it was never cached, or the file is not the size it should be.
@@ -912,8 +949,11 @@ async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64) -> Option
 }
 
 /// Decodes an image file and downscales it to [`THUMB`]²  RGB, center-cropped to a square.
+///
+/// RGB, not RGBA: this is what gets written to the thumbnail cache, and every reader of that cache --
+/// [`read_thumbnail`], [`load_cover`], [`accent_color`] -- takes three bytes to the pixel.
 async fn decode_thumbnail(file: PathBuf) -> Option<Vec<u8>> {
-    decode_cover(file, THUMB).await
+    decode_cover(file, THUMB, Pixels::Rgb).await
 }
 
 /// Expands packed RGB triplets to fully opaque RGBA quartets. The cache stores RGB, a third
