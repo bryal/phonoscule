@@ -214,7 +214,12 @@ impl Covers {
     }
 
     /// Takes in a finished load.
-    pub fn absorb(&mut self, load: Load) {
+    /// Reports whether anything actually landed in a cache. A load that was abandoned -- stale
+    /// layout, or a thumbnail that could not be read -- changes nothing on screen, and drawing a
+    /// frame for it is what turns a cover that never loads into a spin: the frame asks for it again,
+    /// the load fails again, and the redraw it triggers closes the loop.
+    #[must_use]
+    pub fn absorb(&mut self, load: Load) -> bool {
         let Load { cover_id, quality, size, generation, protocol } = load;
         let stale = !self.layout.current(generation);
         let (cache, pinned) = match quality {
@@ -224,10 +229,19 @@ impl Covers {
         match protocol {
             // Encoded for a layout that has since gone: drop it rather than cache something no
             // lookup will accept, and let it be asked for again at the size now wanted.
-            Some(_) if stale => cache.give_up(cover_id),
-            Some(protocol) => cache.insert(cover_id, Encoded { protocol, size }, pinned),
+            Some(_) if stale => {
+                cache.give_up(cover_id);
+                false
+            }
+            Some(protocol) => {
+                cache.insert(cover_id, Encoded { protocol, size }, pinned);
+                true
+            }
             // Leave it uncached and retryable: a thumbnail may appear once the scan writes it.
-            None => cache.give_up(cover_id),
+            None => {
+                cache.give_up(cover_id);
+                false
+            }
         }
     }
 
@@ -279,7 +293,9 @@ pub async fn load(picker: Picker, dir: Option<PathBuf>, layout: Layout, request:
             let Some(file) = file else { return give_up };
             // Decoded straight to the size it will be drawn at, so the artwork is resized once.
             let edge = drawn_edge(&picker, size);
-            let Some(pixels) = library::decode_cover((*file).clone(), edge).await else { return give_up };
+            let Some(pixels) = library::decode_cover((*file).clone(), edge, library::Pixels::Rgba).await else {
+                return give_up;
+            };
             match image::RgbaImage::from_raw(edge, edge, pixels.to_vec()) {
                 Some(image) => image,
                 None => return give_up,

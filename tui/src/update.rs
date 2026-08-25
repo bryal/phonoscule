@@ -185,10 +185,10 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             model.dirty_player = true;
             After::Redraw
         }
-        Msg::Cover(load) => {
-            model.covers.absorb(load);
-            After::Redraw
-        }
+        Msg::Cover(load) => match model.covers.absorb(load) {
+            true => After::Redraw,
+            false => After::Idle,
+        },
         Msg::Search(first) => {
             model.focus = Focus::Search;
             if let Some(c) = first {
