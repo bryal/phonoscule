@@ -92,10 +92,13 @@ echo "started $(date -Is)"
 echo "NOTE: the mouse must stay off the window - hovering a cover is a message per motion event."
 echo
 
+# A restored session opens on the player view, and the scratch state root carries a playlist -- so it
+# is the rows that press nothing that show the cover flow, and Tab that reaches the album grid.
+#
 #   label                  play switch
-row "G1-library-paused"     no   no
-row "G2-library-playing"    yes  no
-row "G3-player-paused"      no   yes
-row "G4-player-playing"     yes  yes
+row "G1-player-paused"      no   no
+row "G2-player-playing"     yes  no
+row "G3-library-paused"     no   yes
+row "G4-library-playing"    yes  yes
 
 echo "finished $(date -Is)"
