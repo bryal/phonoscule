@@ -442,6 +442,7 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             cache_file: paths::tag_cache_file(),
             covers_dir: paths::covers_dir(),
             thumb_edge: paths::THUMB_EDGE,
+            full_covers_dir: paths::full_covers_dir(),
         };
         let scan = Task::run(library::scan(options), Msg::Library);
         // Run the media worker for the whole session, on iced's executor; it pushes to the OS and

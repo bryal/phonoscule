@@ -1037,6 +1037,7 @@ fn rescan_options(app: &App) -> library::ScanOptions {
         cache_file: paths::tag_cache_file(),
         covers_dir: paths::covers_dir(),
         thumb_edge: paths::THUMB_EDGE,
+        full_covers_dir: paths::full_covers_dir(),
     }
 }
 

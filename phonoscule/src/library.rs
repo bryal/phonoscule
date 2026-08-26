@@ -158,6 +158,11 @@ pub struct ScanOptions {
     /// decoding to more than will be drawn is work thrown away twice -- once to produce it, once to
     /// shrink past it.
     pub thumb_edge: u32,
+    /// Directory holding the [`FULL`]-size covers, filled for every album the scan sees so that
+    /// showing one later is a read rather than a decode of the whole sleeve. `None` for a consumer
+    /// that never draws a cover larger than its thumbnail, which is not free to say: filling it
+    /// costs a decode per cover that has none, on a scan that would otherwise have skipped it.
+    pub full_covers_dir: Option<PathBuf>,
 }
 
 /// The thumbnail cache directory to use under `dir` for thumbnails of `edge` pixels: the size is in
@@ -759,12 +764,16 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
         drop(cover_tx); // lets the cover phase finish
     };
 
-    // Best-effort: make the thumbnail cache directory once, up front.
-    if let Some(dir) = &options.covers_dir {
+    // Best-effort: make the cache directories once, up front.
+    for dir in [&options.covers_dir, &options.full_covers_dir].into_iter().flatten() {
         let _ = smol::fs::create_dir_all(dir).await;
     }
     let covers_dir = options.covers_dir.as_deref();
+    let full_covers_dir = options.full_covers_dir.as_deref();
     let thumb_edge = options.thumb_edge;
+    // Hands each cover on to the full-size phase once its thumbnail is out. Bounded, so a scan that
+    // outruns the decoding waits rather than queueing the whole library.
+    let (full_tx, full_rx) = channel::bounded::<(u64, Arc<PathBuf>)>(64);
     let covers_phase = async {
         // Pinned on the stack: the channel receiver (hence the whole chain) is not `Unpin`.
         let mut covers = std::pin::pin!(
@@ -778,13 +787,33 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
         while let Some((ids, id, cover)) = covers.next().await {
             let Some((file, thumbnail_pixels, encoded, accent)) = cover else { continue };
             let art = CoverArt { id, file: Arc::new(file), thumbnail_pixels, edge: thumb_edge, accent };
+            if full_covers_dir.is_some() && full_tx.send((id, Arc::clone(&art.file))).await.is_err() {
+                return;
+            }
             if tx.send(ScanEvent::Cover { albums: ids, art, encoded }).await.is_err() {
                 return;
             }
         }
+        drop(full_tx); // lets the full-size phase finish
     };
 
-    futures::join!(read_tags_phase, covers_phase);
+    // The full-size covers, behind the thumbnails rather than in front of them: a thumbnail is what
+    // the grid is waiting for, and making one of these costs a decode of the whole sleeve. Its own
+    // phase for that reason -- doing it inside the phase above would put that decode between every
+    // album and the screen. Both share the one decoder pool, so this cannot widen the peak.
+    let full_covers_phase = async {
+        let mut jobs = std::pin::pin!(
+            full_rx
+                .map(|(id, file)| async move {
+                    let Some(dir) = full_covers_dir else { return };
+                    cache_full_cover((*file).clone(), cover_file(dir, id, FULL_FORMAT), FULL).await;
+                })
+                .buffer_unordered(concurrency())
+        );
+        while jobs.next().await.is_some() {}
+    };
+
+    futures::join!(read_tags_phase, covers_phase, full_covers_phase);
     let album_ids: Vec<u64> = asm.assembled.keys().copied().collect();
     log::info!("scan done: found {} albums ({n_parsed} files (re)parsed)", album_ids.len());
 
@@ -1023,18 +1052,38 @@ pub async fn load_full_cover(file: PathBuf, cache_path: Option<PathBuf>, edge: u
     let rgb = decode_cover(file, edge, Pixels::Rgb).await?;
     let rgba = rgb_to_rgba(&rgb);
     if let Some(cache_path) = cache_path {
-        smol::unblock(move || match encode_full_cover(&rgb, edge) {
-            // Best-effort, like the thumbnails': a failed write just means we decode again next time.
-            Some(encoded) => {
-                if let Err(e) = std::fs::write(&cache_path, &encoded) {
-                    log::warn!("could not cache cover {cache_path:?}: {e}");
-                }
-            }
-            None => log::warn!("could not encode cover {cache_path:?}"),
-        })
-        .await;
+        write_full_cover(rgb, edge, cache_path).await;
     }
     Some(rgba)
+}
+
+/// Puts this cover in the full-size cache if it is not there already, decoding the artwork if so.
+///
+/// What fills the cache for a library rather than for a screen: [`load_full_cover`] only ever asks
+/// for the cover it is about to draw, so left to it the cache holds wherever the listener has been.
+/// A scan is the one pass that sees every album, and it is holding the artwork's path anyway.
+pub async fn cache_full_cover(file: PathBuf, cache_path: PathBuf, edge: u32) {
+    // Existence is the whole question -- a readable entry of the wrong size is `load_full_cover`'s
+    // to notice and overwrite, and reading every cover back to check would defeat the point.
+    if smol::fs::metadata(&cache_path).await.is_ok() {
+        return;
+    }
+    let Some(rgb) = decode_cover(file, edge, Pixels::Rgb).await else { return };
+    write_full_cover(rgb, edge, cache_path).await;
+}
+
+/// Encodes `edge`²  RGB pixels into the full-size cache. Best-effort, like the thumbnails': a
+/// failure just means the cover is decoded from its artwork again next time.
+async fn write_full_cover(rgb: Vec<u8>, edge: u32, cache_path: PathBuf) {
+    smol::unblock(move || match encode_full_cover(&rgb, edge) {
+        Some(encoded) => {
+            if let Err(e) = std::fs::write(&cache_path, &encoded) {
+                log::warn!("could not cache cover {cache_path:?}: {e}");
+            }
+        }
+        None => log::warn!("could not encode cover {cache_path:?}"),
+    })
+    .await;
 }
 
 /// Encodes `edge`²  RGB pixels for the full-size cover cache.
@@ -1428,6 +1477,7 @@ mod test {
     fn plain_options(root: &Path) -> ScanOptions {
         ScanOptions {
             thumb_edge: 64,
+            full_covers_dir: None,
             root: root.to_path_buf(),
             priority: vec![],
             known_covers: Default::default(),
@@ -1477,7 +1527,12 @@ mod test {
             std::fs::create_dir_all(root.join(dir)).unwrap();
             std::fs::write(root.join(dir).join("t.wav"), wav_bytes(title, "Artist", "Spread", Some(track))).unwrap();
         }
-        let options = || ScanOptions { thumb_edge: 64, cache_file: Some(root.join("cache.json")), ..plain_options(&root) };
+        let options = || ScanOptions {
+            thumb_edge: 64,
+            full_covers_dir: None,
+            cache_file: Some(root.join("cache.json")),
+            ..plain_options(&root)
+        };
 
         // The cold scan primes the cache (its events may show the album growing).
         let mut albums = Vec::new();
@@ -1616,6 +1671,7 @@ mod test {
             cache_file: Some(cache_file.clone()),
             covers_dir: None,
             thumb_edge: 64,
+            full_covers_dir: None,
         };
 
         // Initial scan populates the cache.
