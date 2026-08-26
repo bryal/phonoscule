@@ -1061,12 +1061,19 @@ fn publish_media(app: &App) {
 }
 
 /// How many album runs on each side of the playing one the cover flow ensures are held in the
-/// high-res cache (plus the current run itself). Asymmetric because skipping forward is more common
-/// than back. There is no separate eviction here: covers that fall outside this span stay in the
-/// global cache until its LRU bound retires them (see [`HiResCache`](crate::model::HiResCache)), so
-/// a short hop back finds them still resident and instant.
-pub const ENSURE_PREV: usize = 6;
-pub const ENSURE_NEXT: usize = 8;
+/// high-res cache (plus the current run itself).
+///
+/// The flow draws further out than this -- covers stay in it to `VISIBLE_RANGE`, half again as far.
+/// Those ride on their thumbnails, which is the point: a cover six places out is faded most of the
+/// way to nothing and tilted away, and there is no resolution to make out. Anything nearer that has
+/// not arrived yet is a read and a small decode away, a few milliseconds, since the covers are on
+/// disk (see [`library::load_full_cover`]).
+///
+/// There is no separate eviction here: covers that fall outside this span stay in the global cache
+/// until its LRU bound retires them (see [`HiResCache`](crate::model::HiResCache)), so a short hop
+/// back finds them still resident and instant.
+pub const ENSURE_PREV: usize = 5;
+pub const ENSURE_NEXT: usize = 5;
 
 /// Queries the high-res cache for the covers around the playing album, so it decodes the ones it
 /// doesn't already hold and keeps the on-screen window hot in its LRU. The cache owns all the
