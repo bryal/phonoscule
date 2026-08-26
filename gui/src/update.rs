@@ -301,10 +301,16 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 item.accent = Some(color(art.accent));
             }
             // The playing track's cover art may just have arrived -- notably right after boot,
-            // when a restored queue's covers all hydrate through the scan. Re-publish it, and
-            // (re)fill the cover flow's high-res window that TrackStarted found coverless.
+            // when a restored queue's covers all hydrate through the scan. Re-publish it.
             if app.queue.get(app.current).is_some_and(|item| accepted.contains(&item.album_id)) {
                 publish_media(app);
+            }
+            // Any queued album's cover arriving can complete the flow's high-res window, and only
+            // the album it arrived for. A scan hydrates the queue one album at a time, so an
+            // `ensure_hires` run before its neighbours' covers exist skips them and nothing asks
+            // again -- which left the window with whatever had happened to arrive by then. Cheap to
+            // repeat: a resident or in-flight cover makes the query a no-op.
+            if app.queue.iter().any(|item| accepted.contains(&item.album_id)) {
                 return ensure_hires(app);
             }
         }
