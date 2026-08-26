@@ -301,8 +301,8 @@ pub const THUMB_FORMAT: image::ImageFormat = image::ImageFormat::Qoi;
 /// Originals are often 1024^2 px, but that's a bit more resolution than we need.
 /// With the GUI's "Player" view in full-screen, the center cover is about 50% of the display height.
 /// On a 4K/UHD display, that means the greatest cover resolution we could possibly benefit from is about 1080^2 px.
-/// But to my eyes, we only need about 70% of that to look crisp enough.
-pub const FULL: u32 = 768;
+/// But to my eyes, we only need about 75% of that to look crisp enough.
+pub const FULL: u32 = 800;
 
 /// What the full-size cover cache stores, and what [`load_full_cover`] reads back. See
 /// [`encode_full_cover`] for why this one is lossy where [`THUMB_FORMAT`] is not.

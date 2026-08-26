@@ -252,11 +252,16 @@ pub struct GlowState {
 
 /// How many decoded high-res covers [`HiResCache`] keeps.
 ///
-/// Note that these uncompressed covers weigh in at 2.25 MiB each for 768² RGBA.
+/// Note that these uncompressed covers weigh in at 2.44 MiB each for 800² RGBA.
 /// If you do the math, you'll realize it gets quite expensive quite quickly.
 /// So we want the smallest capacity we can get away with and still have a good UX.
-/// Enough to blanket a favorite genre or playlist, so shuffling it never re-decodes a cover.
-pub const HIRES_CAP: usize = 40;
+///
+/// The prefetched window plus a little, and derived from it so it cannot silently fall below: a cap
+/// under the window would have each move evict a cover the same move just asked for. The slack is
+/// what a short hop back finds still resident. It used to be far wider, which was worth it when
+/// coming back meant decoding a whole sleeve again; now that the covers are on disk it buys a few
+/// milliseconds for a couple of megabytes apiece.
+pub const HIRES_CAP: usize = crate::update::ENSURE_PREV + 1 + crate::update::ENSURE_NEXT + 3;
 
 /// A least-recently-used cache of decoded high-res covers (FULL² RGBA), shared across every album
 /// that plays. Demand-driven in the style of a query-compilation cache: callers [`query`] a cover

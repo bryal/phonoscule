@@ -1065,8 +1065,8 @@ fn publish_media(app: &App) {
 /// than back. There is no separate eviction here: covers that fall outside this span stay in the
 /// global cache until its LRU bound retires them (see [`HiResCache`](crate::model::HiResCache)), so
 /// a short hop back finds them still resident and instant.
-const ENSURE_PREV: usize = 6;
-const ENSURE_NEXT: usize = 8;
+pub const ENSURE_PREV: usize = 6;
+pub const ENSURE_NEXT: usize = 8;
 
 /// Queries the high-res cache for the covers around the playing album, so it decodes the ones it
 /// doesn't already hold and keeps the on-screen window hot in its LRU. The cache owns all the
