@@ -380,14 +380,14 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
         },
         Msg::Player(event) => player_event(model, event),
         Msg::Library(library::ScanEvent::Album(album)) => absorb_album(model, *album),
-        Msg::Library(library::ScanEvent::Cover { albums, art }) => {
+        Msg::Library(library::ScanEvent::Cover { albums, art, encoded }) => {
             // Only albums whose current cover choice this art satisfies take it: an album can
             // outgrow a queued cover mid-scan, and the stale decode must not overwrite the winner.
             // The pixels are not kept: a library's worth of them is hundreds of megabytes, and they
             // are on disk in the thumbnail cache, to be read back a few at a time as covers are
             // shown. What is worth keeping is the accent colour, which stands in for artwork that
             // has not been loaded yet and costs twelve bytes.
-            model.covers.learn(art.id, art.file.clone(), art.encoded.clone());
+            model.covers.learn(art.id, art.file.clone(), encoded);
             let mut applied = false;
             for album in model.albums.iter_mut().filter(|a| albums.contains(&a.id) && a.cover_id == Some(art.id)) {
                 model.index_dirty |= album.accent != Some(art.accent);

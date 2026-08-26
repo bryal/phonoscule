@@ -100,10 +100,6 @@ pub struct CoverArt {
     /// The thumbnail's edge in pixels, which is whatever the scan was asked for -- a consumer that
     /// hands the pixels to a toolkit needs to say how wide they are.
     pub edge: u32,
-    /// The same thumbnail as the cache stores it, in [`THUMB_FORMAT`]. For a consumer that would
-    /// rather hold a library's worth of covers encoded and decode one when it draws it: at these
-    /// sizes that is tens of megabytes against hundreds, and decoding is a tenth of a millisecond.
-    pub encoded: Arc<[u8]>,
     /// The cover's most distinct color, e.g. for theming the surroundings after it.
     pub accent: Rgb,
 }
@@ -127,7 +123,17 @@ pub enum ScanEvent {
     /// album's current `cover_id` still matches [`CoverArt::id`]: an album can outgrow a queued
     /// cover mid-scan (a later directory contributed more of its tracks), and the stale decode
     /// must not overwrite the winner.
-    Cover { albums: Vec<u64>, art: CoverArt },
+    Cover {
+        albums: Vec<u64>,
+        art: CoverArt,
+        /// The same thumbnail as the cache stores it, in [`THUMB_FORMAT`], for a consumer that would
+        /// rather hold a library's worth of covers encoded and decode one when it draws it: at these
+        /// sizes that is tens of megabytes against hundreds.
+        ///
+        /// Beside the art rather than within it, so that a consumer keeping the art -- which is
+        /// mostly a path and an id -- does not keep these as well without meaning to.
+        encoded: Arc<[u8]>,
+    },
     /// The scan is complete: every album has been reported. Albums absent from `album_ids` no
     /// longer exist and should be dropped.
     Done { album_ids: Vec<u64> },
@@ -752,8 +758,8 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
         );
         while let Some((ids, id, cover)) = covers.next().await {
             let Some((file, thumbnail_pixels, encoded, accent)) = cover else { continue };
-            let art = CoverArt { id, file: Arc::new(file), thumbnail_pixels, edge: thumb_edge, encoded, accent };
-            if tx.send(ScanEvent::Cover { albums: ids, art }).await.is_err() {
+            let art = CoverArt { id, file: Arc::new(file), thumbnail_pixels, edge: thumb_edge, accent };
+            if tx.send(ScanEvent::Cover { albums: ids, art, encoded }).await.is_err() {
                 return;
             }
         }
@@ -1202,7 +1208,7 @@ mod test {
                         }
                         albums.push(*album);
                     }
-                    ScanEvent::Cover { albums: ids, art } => {
+                    ScanEvent::Cover { albums: ids, art, .. } => {
                         for album in albums.iter_mut().filter(|a| ids.contains(&a.id) && a.cover_id == Some(art.id)) {
                             album.cover = Some(art.clone());
                         }

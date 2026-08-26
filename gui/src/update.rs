@@ -277,7 +277,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             app.albums.insert(ix, *album);
             refresh_filter(app);
         }
-        Msg::Library(library::ScanEvent::Cover { albums, art }) => {
+        Msg::Library(library::ScanEvent::Cover { albums, art, .. }) => {
             // Only albums whose current cover choice this art satisfies take it: an album can
             // outgrow a queued cover mid-scan (see `ScanEvent::Cover`), and the stale decode must
             // not overwrite the winner -- neither on the album nor on its queue items.
