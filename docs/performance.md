@@ -169,13 +169,26 @@ The library view went **2.57% -> 2.11%**, its main thread **1.50% -> 1.00%**. Th
 has no grid, did not move (2.24% against 2.24%) - the control that says the cut landed where it was
 aimed.
 
-Resident memory did not move either (443.5 MB against 445.7 MB), and that is the finding rather than
-a disappointment. `App::thumbnails` holds an `image::Handle` per album built with `from_rgba`, which
-is 256x256x4 bytes retained for every one of them - around 199 MB, or 45% of what the player is
-resident. The grid no longer measures an image, which is what made a decode-on-demand handle
-unaffordable before, so the bytes could now be the *encoded* QOI the cache already stores and iced's
-raster cache could decode the few dozen on screen and trim the rest. What stops it is the cover flow,
-which reads pixels straight out of `Handle::Rgba` to upload them to its own texture. Untouched.
+Resident memory did not move: 443.5 MB against 445.7 MB. It was never going to, and the reason is
+worth writing down, because the obvious suspect is the wrong one.
+
+`App::thumbnails` holds an `image::Handle` per album, but `from_rgba` wraps the scan's buffer rather
+than copying it, so the handle costs an id and a refcount. The 731 decoded thumbnails - 731 x 256 x
+256 x 4, **192 MB**, or 43% of what the player is resident - are `CoverArt::thumbnail_pixels`, kept
+alive by `App::albums[i].cover` for every album in the library whether or not it is on screen.
+Dropping the handles would free nothing at all.
+
+So the memory is a question about what an album retains, not about how a card is drawn. The encoded
+covers behind those 192 MB are 77 MB on disk; holding those instead and letting iced's raster cache
+decode the few dozen on screen and trim the rest is worth around 115 MB. Two things are in the way,
+and only one of them was ever about the grid:
+
+- `CoverArt` carries decoded pixels, and every album clones one. This is the 192 MB.
+- The cover flow reads pixels straight out of `Handle::Rgba` to upload them to its own texture
+  (`coverflow.rs`, `cover_texture`), so a handle over encoded bytes would drop it to accent tiles.
+
+Removing the measure was a precondition - a decode-on-demand handle that gets measured is decoded
+anyway, and measuring also marks every card as hit, so nothing is ever trimmed. It was not the cost.
 
 ## What was tested and did not pay
 
