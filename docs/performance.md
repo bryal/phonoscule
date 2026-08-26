@@ -25,7 +25,7 @@ Graphical player:
 | --- | --- | --- |
 | paused | 0.03% | 0.03% |
 | Player, playing | 1.73% | 1.79% (within the spread) |
-| Library, playing | **3.92%** | **2.87%** |
+| Library, playing | **3.92%** | **2.11%** |
 
 Both "after" columns are at **six times the progress rate** of the "before": 23.4 reports a second
 against 3.9, which is what a continuously drawn seek bar needs to stop looking steppy. The graphical
@@ -153,6 +153,29 @@ every message, to draw three.
 Both were on the deferred list from the original plan, ranked last on the grounds that after cutting
 the frame *rate* the per-frame cost no longer mattered. That held right up until a frame rate was
 wanted for its own sake.
+
+**Drawing the covers rather than delegating them.** The third and last cut, and the one the other two
+were up against: culling can skip the walking, but never the layout. Layout has to emit a node per
+card because every other method pairs card, tree and node up by position, and a missing node
+misaligns the lot - so a library of 759 albums was 759 elements built, diffed and laid out per
+message however few were on screen.
+
+The grid already drew each card's title and artist itself. Now it draws the cover too, with
+`draw_image` for artwork and a quad plus a centred string for the accent tile, which leaves the
+action bubbles as the only child there is: one element, one node, for the card under the cursor.
+Hit testing comes off `Geom` instead of off those nodes, so hovering and clicking are arithmetic.
+
+The library view went **2.57% -> 2.11%**, its main thread **1.50% -> 1.00%**. The player view, which
+has no grid, did not move (2.24% against 2.24%) - the control that says the cut landed where it was
+aimed.
+
+Resident memory did not move either (443.5 MB against 445.7 MB), and that is the finding rather than
+a disappointment. `App::thumbnails` holds an `image::Handle` per album built with `from_rgba`, which
+is 256x256x4 bytes retained for every one of them - around 199 MB, or 45% of what the player is
+resident. The grid no longer measures an image, which is what made a decode-on-demand handle
+unaffordable before, so the bytes could now be the *encoded* QOI the cache already stores and iced's
+raster cache could decode the few dozen on screen and trim the rest. What stops it is the cover flow,
+which reads pixels straight out of `Handle::Rgba` to upload them to its own texture. Untouched.
 
 ## What was tested and did not pay
 
