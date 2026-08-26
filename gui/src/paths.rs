@@ -52,7 +52,14 @@ pub fn album_index_file() -> Option<PathBuf> {
     Some(cache_dir()?.join("albums.json"))
 }
 
-/// The decoded cover thumbnails.
+/// The cover thumbnails, one per album and all of them held decoded.
 pub fn covers_dir() -> Option<PathBuf> {
     Some(library::covers_dir(&cache_dir()?, THUMB_EDGE))
+}
+
+/// The full-size covers the player view draws, so that showing one is a read and a small decode
+/// rather than decoding a whole sleeve. Only ever holds the covers that have actually been looked
+/// at, which is why it can afford a resolution the thumbnails cannot.
+pub fn full_covers_dir() -> Option<PathBuf> {
+    Some(library::covers_dir(&cache_dir()?, library::FULL))
 }

@@ -274,11 +274,19 @@ pub struct HiResCache {
     /// second decode of the same cover.
     pending: HashSet<u64>,
     tick: u64,
+    /// Where a cover that has been decoded once is kept, so the next miss reads it back instead of
+    /// decoding the sleeve again. `None` disables the cache (always decode from the artwork).
+    dir: Option<PathBuf>,
 }
 
 impl HiResCache {
-    pub fn new() -> Self {
-        HiResCache { entries: HashMap::new(), pending: HashSet::new(), tick: 0 }
+    pub fn new(dir: Option<PathBuf>) -> Self {
+        if let Some(dir) = &dir
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            log::warn!("could not create the cover cache {dir:?}: {e}");
+        }
+        HiResCache { entries: HashMap::new(), pending: HashSet::new(), tick: 0, dir }
     }
 
     /// Demands the high-res cover for `id`, decoded from `file`. Query-compilation style: if it's
@@ -297,10 +305,8 @@ impl HiResCache {
             return Task::none();
         }
         let file = (*file).clone();
-        Task::perform(library::decode_cover(file, library::FULL, library::Pixels::Rgba), move |pixels| Msg::HiResLoaded {
-            id,
-            pixels: pixels.map(Arc::<[u8]>::from),
-        })
+        let cache_path = self.dir.as_ref().map(|dir| dir.join(format!("{id:016x}")));
+        Task::perform(library::load_full_cover(file, cache_path, library::FULL), move |pixels| Msg::HiResLoaded { id, pixels })
     }
 
     /// Absorbs the result of a [`query`](Self::query)'s decode: clears the in-flight mark and, on
@@ -337,12 +343,6 @@ impl HiResCache {
         } else {
             false
         }
-    }
-}
-
-impl Default for HiResCache {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -384,7 +384,7 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             album_scroll: 0.0,
             volume: None,
             pending_volume: None,
-            hires: HiResCache::new(),
+            hires: HiResCache::new(paths::full_covers_dir()),
             anim_pos: 0.0,
             glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
             glow_to: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
@@ -706,7 +706,7 @@ mod test {
     /// query does) makes an entry the freshest, so the window survives while colder covers go.
     #[test]
     fn evicts_the_least_recently_used() {
-        let mut cache = HiResCache::new();
+        let mut cache = HiResCache::new(None);
         for id in 0..HIRES_CAP as u64 {
             cache.complete(id, Some(pixels(0)));
         }
@@ -724,7 +724,7 @@ mod test {
     /// `query`, via `touch`, promotes -- once per album move, not once per frame).
     #[test]
     fn peek_does_not_promote() {
-        let mut cache = HiResCache::new();
+        let mut cache = HiResCache::new(None);
         for id in 0..HIRES_CAP as u64 {
             cache.complete(id, Some(pixels(0)));
         }
@@ -739,7 +739,7 @@ mod test {
     /// thumbnail -- and lets a later query retry it rather than being deduplicated forever.
     #[test]
     fn failed_decode_stores_nothing_and_reopens_the_query() {
-        let mut cache = HiResCache::new();
+        let mut cache = HiResCache::new(None);
         cache.pending.insert(9);
         cache.complete(9, None);
         assert!(cache.peek(9).is_none());

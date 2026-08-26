@@ -288,6 +288,14 @@ pub const THUMB_FORMAT: image::ImageFormat = image::ImageFormat::Qoi;
 /// But to my eyes, we only need about 70% of that to look crisp enough.
 pub const FULL: u32 = 768;
 
+/// What the full-size cover cache stores, and what [`load_full_cover`] reads back. See
+/// [`encode_full_cover`] for why this one is lossy where [`THUMB_FORMAT`] is not.
+pub const FULL_FORMAT: image::ImageFormat = image::ImageFormat::Jpeg;
+
+/// The quality [`encode_full_cover`] writes at, on JPEG's 1-100 scale. At 90 a cover is around
+/// 180 KB against 920 KB stored losslessly, and the whole library's covers come to some 130 MB.
+const FULL_QUALITY: u8 = 90;
+
 /// How many threads we'll spawn and keep around just for decoding cover art.
 const DECODER_THREAD_COUNT: usize = 4;
 
@@ -979,6 +987,59 @@ async fn load_cover(
     Some((file, rgb_to_rgba(&rgb), Arc::from(encoded), accent))
 }
 
+/// Loads a cover at `edge`²  RGBA from `cache_path`, decoding the original artwork and caching the
+/// result when it holds nothing usable. `None` if the artwork will not decode.
+///
+/// The counterpart to [`read_thumbnail`] for the sizes a cover is *looked* at rather than picked
+/// from, and the reason to have a cache at these sizes at all: a sleeve is some 1700 pixels square,
+/// so decoding one costs about six times what decoding this does, and holds a buffer several times
+/// the size of the answer while it works. Both of those are paid on every miss.
+pub async fn load_full_cover(file: PathBuf, cache_path: Option<PathBuf>, edge: u32) -> Option<Arc<[u8]>> {
+    if let Some(cache_path) = &cache_path
+        && let Ok(encoded) = smol::fs::read(cache_path).await
+    {
+        let cached = smol::unblock(move || image::load_from_memory_with_format(&encoded, FULL_FORMAT).ok())
+            .await
+            // A cache written for another edge is not this caller's to use: it would be handed back
+            // as if it were what was asked for, and drawn at the wrong resolution ever after.
+            .filter(|img| img.width() == edge && img.height() == edge);
+        if let Some(img) = cached {
+            return Some(Arc::from(img.into_rgba8().into_raw()));
+        }
+    }
+
+    // RGB from the decoder, because that is what gets encoded; the caller's alpha is added last.
+    let rgb = decode_cover(file, edge, Pixels::Rgb).await?;
+    let rgba = rgb_to_rgba(&rgb);
+    if let Some(cache_path) = cache_path {
+        smol::unblock(move || match encode_full_cover(&rgb, edge) {
+            // Best-effort, like the thumbnails': a failed write just means we decode again next time.
+            Some(encoded) => {
+                if let Err(e) = std::fs::write(&cache_path, &encoded) {
+                    log::warn!("could not cache cover {cache_path:?}: {e}");
+                }
+            }
+            None => log::warn!("could not encode cover {cache_path:?}"),
+        })
+        .await;
+    }
+    Some(rgba)
+}
+
+/// Encodes `edge`²  RGB pixels for the full-size cover cache.
+///
+/// Lossy, where the thumbnails' [`THUMB_FORMAT`] is not. At 768 square a lossless cover is the best
+/// part of a megabyte, which would make the cache cost about what the artwork it stands in for does
+/// and defeat the point; JPEG is a tenth of that. The artwork is already a JPEG, so this is a second
+/// generation of one, and the quality is set high enough that it does not show at the size the cover
+/// flow draws these.
+fn encode_full_cover(rgb: &[u8], edge: u32) -> Option<Vec<u8>> {
+    let img = image::RgbImage::from_raw(edge, edge, rgb.to_vec())?;
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, FULL_QUALITY).encode_image(&img).ok()?;
+    Some(encoded.into_inner())
+}
+
 /// Encodes `edge`²  RGB pixels for the cache. `None` if they will not encode, which would mean the
 /// buffer and the edge disagree.
 fn encode_thumbnail(rgb: &[u8], edge: u32) -> Option<Vec<u8>> {
@@ -1085,6 +1146,46 @@ async fn save_cache(path: &Path, cache: &Cache) {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// A cover written to the cache comes back from it, and one written at another edge does not:
+    /// a cache entry is handed back as if it were what was asked for, so a wrong-sized one would be
+    /// drawn at the wrong resolution ever after rather than failing where it could be seen.
+    #[test]
+    fn a_cached_cover_is_reused_only_at_its_own_edge() {
+        const EDGE: u32 = 32;
+        let root = std::env::temp_dir().join(format!("phonoscule-full-cover-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let artwork = root.join("cover.png");
+        // Distinguishable from the cache entry below, so "which one came back" is answerable.
+        image::RgbImage::from_fn(EDGE * 2, EDGE * 2, |x, _| image::Rgb([(x * 4) as u8, 0, 0])).save(&artwork).unwrap();
+
+        let cached = |edge: u32| {
+            let rgb = image::RgbImage::from_pixel(edge, edge, image::Rgb([0, 255, 0])).into_raw();
+            let path = root.join(format!("cache.{edge}"));
+            std::fs::write(&path, encode_full_cover(&rgb, edge).expect("encodes")).unwrap();
+            path
+        };
+
+        let green = |pixels: &Arc<[u8]>| pixels[1] > 200 && pixels[0] < 60;
+
+        let hit = smol::block_on(load_full_cover(artwork.clone(), Some(cached(EDGE)), EDGE)).expect("decodes");
+        assert_eq!(hit.len() as u32, EDGE * EDGE * 4, "RGBA at the edge asked for");
+        assert!(green(&hit), "the cache entry, not the artwork");
+
+        // The wrong edge is ignored, and the artwork is decoded and written over it instead.
+        let wrong = cached(EDGE / 2);
+        let miss = smol::block_on(load_full_cover(artwork.clone(), Some(wrong.clone()), EDGE)).expect("decodes");
+        assert_eq!(miss.len() as u32, EDGE * EDGE * 4, "still RGBA at the edge asked for");
+        assert!(!green(&miss), "the artwork, not the cache entry of the wrong size");
+        // The cache now holds the right size, so this load is a hit -- on the artwork's colours
+        // rather than the green, and only approximately equal to the first load, this being JPEG.
+        let rewritten = smol::block_on(load_full_cover(artwork, Some(wrong), EDGE)).expect("decodes");
+        assert!(!green(&rewritten), "still the artwork");
+        let worst = rewritten.iter().zip(miss.iter()).map(|(a, b)| a.abs_diff(*b)).max().expect("not empty");
+        assert!(worst < 16, "within a re-encode of the first load, off by at most {worst}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// The album index round-trips everything but the runtime-only cover art.
     #[test]
