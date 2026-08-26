@@ -100,6 +100,10 @@ pub struct CoverArt {
     /// The thumbnail's edge in pixels, which is whatever the scan was asked for -- a consumer that
     /// hands the pixels to a toolkit needs to say how wide they are.
     pub edge: u32,
+    /// The same thumbnail as the cache stores it, in [`THUMB_FORMAT`]. For a consumer that would
+    /// rather hold a library's worth of covers encoded and decode one when it draws it: at these
+    /// sizes that is tens of megabytes against hundreds, and decoding is a tenth of a millisecond.
+    pub encoded: Arc<[u8]>,
     /// The cover's most distinct color, e.g. for theming the surroundings after it.
     pub accent: Rgb,
 }
@@ -268,7 +272,7 @@ pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output
 ///
 /// Self-describing, so a cache file carries its own dimensions and nothing has to agree in advance
 /// about what size it should be.
-const THUMB_FORMAT: image::ImageFormat = image::ImageFormat::Qoi;
+pub const THUMB_FORMAT: image::ImageFormat = image::ImageFormat::Qoi;
 
 /// Full-sized cover resolution (square), optimized for the cover flow (see [`decode_cover`]).
 ///
@@ -747,8 +751,8 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
                 .buffer_unordered(concurrency())
         );
         while let Some((ids, id, cover)) = covers.next().await {
-            let Some((file, thumbnail_pixels, accent)) = cover else { continue };
-            let art = CoverArt { id, file: Arc::new(file), thumbnail_pixels, edge: thumb_edge, accent };
+            let Some((file, thumbnail_pixels, encoded, accent)) = cover else { continue };
+            let art = CoverArt { id, file: Arc::new(file), thumbnail_pixels, edge: thumb_edge, encoded, accent };
             if tx.send(ScanEvent::Cover { albums: ids, art }).await.is_err() {
                 return;
             }
@@ -930,39 +934,43 @@ pub async fn read_thumbnail(covers_dir: &Path, id: u64) -> Option<(Arc<[u8]>, u3
 
 /// Loads a cover thumbnail as `edge`²  RGBA, plus its accent color and absolute path. Reads the
 /// cached thumbnail when there is one, and otherwise decodes the original and caches the result.
-async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64, edge: u32) -> Option<(PathBuf, Arc<[u8]>, Rgb)> {
+async fn load_cover(
+    path: PathBuf,
+    covers_dir: Option<&Path>,
+    id: u64,
+    edge: u32,
+) -> Option<(PathBuf, Arc<[u8]>, Arc<[u8]>, Rgb)> {
     // Absolute, so consumers (e.g. the MPRIS art URL) don't depend on our working directory.
     let file = smol::fs::canonicalize(path).await.ok()?;
     let cache_path = covers_dir.map(|dir| dir.join(format!("{id:016x}")));
 
     if let Some(cache_path) = &cache_path
         && let Ok(encoded) = smol::fs::read(cache_path).await
-        && let Some(rgb) =
-            smol::unblock(move || image::load_from_memory_with_format(&encoded, THUMB_FORMAT).ok().map(|img| img.into_rgb8()))
-                .await
-                // A cache written for a different edge is not this scan's to use: it would be handed back
-                // as if it were what was asked for, and drawn at the wrong resolution ever after.
-                .filter(|rgb| rgb.width() == edge)
     {
-        let accent = accent_color(rgb.as_raw());
-        return Some((file, rgb_to_rgba(rgb.as_raw()), accent));
+        let encoded: Arc<[u8]> = Arc::from(encoded);
+        let decoding = Arc::clone(&encoded);
+        let rgb =
+            smol::unblock(move || image::load_from_memory_with_format(&decoding, THUMB_FORMAT).ok().map(|img| img.into_rgb8()))
+                .await
+                // A cache written for a different edge is not this scan's to use: it would be handed back as
+                // if it were what was asked for, and drawn at the wrong resolution ever after.
+                .filter(|rgb| rgb.width() == edge);
+        if let Some(rgb) = rgb {
+            let accent = accent_color(rgb.as_raw());
+            return Some((file, rgb_to_rgba(rgb.as_raw()), encoded, accent));
+        }
     }
 
     let rgb = decode_thumbnail(file.clone(), edge).await?;
-    if let Some(cache_path) = &cache_path {
-        let encoded = encode_thumbnail(&rgb, edge);
-        match encoded {
-            // Best-effort: a failed write just means we decode again next launch.
-            Some(encoded) => {
-                if let Err(e) = smol::fs::write(cache_path, &encoded).await {
-                    log::warn!("could not cache thumbnail {cache_path:?}: {e}");
-                }
-            }
-            None => log::warn!("could not encode thumbnail for {file:?}"),
-        }
+    let encoded = encode_thumbnail(&rgb, edge)?;
+    if let Some(cache_path) = &cache_path
+        && let Err(e) = smol::fs::write(cache_path, &encoded).await
+    {
+        // Best-effort: a failed write just means we decode again next launch.
+        log::warn!("could not cache thumbnail {cache_path:?}: {e}");
     }
     let accent = accent_color(&rgb);
-    Some((file, rgb_to_rgba(&rgb), accent))
+    Some((file, rgb_to_rgba(&rgb), Arc::from(encoded), accent))
 }
 
 /// Encodes `edge`²  RGB pixels for the cache. `None` if they will not encode, which would mean the
