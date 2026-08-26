@@ -1,6 +1,6 @@
 //! The application state.
 
-use crate::covers::Covers;
+use crate::covers::{self, Covers};
 use crate::logger;
 use phonoscule::config::Conf;
 use phonoscule::library::Album;
@@ -148,6 +148,11 @@ pub struct Model {
     pub conf: Conf,
     /// The covers held for display, and how the terminal draws them (see the covers module).
     pub covers: Covers,
+    /// The cover the browser's preview pane last drew, and the one the player's did. Two panes, two
+    /// memos: an album can be browsed and playing at once, at two different sizes, and neither should
+    /// evict the other.
+    pub browser_cover: covers::CoverMemo,
+    pub player_cover: covers::CoverMemo,
     pub scan: ScanState,
     /// Every album, ordered by artist then title -- the order scan events upsert into, not the
     /// order the browser shows. See [`shown`](Self::shown).
@@ -246,6 +251,8 @@ impl Model {
             dirty_player: false,
             conf,
             covers,
+            browser_cover: covers::CoverMemo::default(),
+            player_cover: covers::CoverMemo::default(),
             scan: ScanState::Scanning,
             albums,
             index_dirty: false,

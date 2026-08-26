@@ -1,6 +1,6 @@
 //! Drawing the frame: a header, the body of whichever view is up, and a status line.
 
-use crate::covers;
+use crate::covers::{self, CoverMemo, Covers};
 use crate::model::{Focus, Model, Picker, ScanState, Subject, View};
 use phonoscule::library::Album;
 use phonoscule::player;
@@ -226,7 +226,7 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
     let [cover_area, _] = Layout::horizontal([Constraint::Length(cover_size.width), Constraint::Min(0)]).areas(cover_area);
 
     let accent = album.accent.map(|c| Color::Rgb(channel(c.r), channel(c.g), channel(c.b)));
-    let (cover_id, nearby) = (album.cover_id, nearby_covers(model));
+    let cover_id = album.cover_id;
     let mut lines =
         vec![Line::from(Span::raw(album.title.clone()).bold()), Line::from(Span::raw(album.artist.clone()).fg(Color::Cyan))];
     let year = album.year.map(|year| format!("{year:04}"));
@@ -240,42 +240,33 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
         lines.push(Line::from(vec![Span::raw(format!("{:02} ", n + 1)).fg(Color::DarkGray), Span::raw(track.title.clone())]));
     }
 
-    draw_cover(frame, model, cover_area, cover_id, accent, &nearby);
+    draw_cover(frame, &model.covers, &mut model.browser_cover, cover_area, cover_id, accent);
     frame.render_widget(Paragraph::new(lines), rest);
 }
 
-/// Draws the cover for `cover_id` in `area`, asking for it -- and for `also`, the ones worth having
-/// ready -- at the size this pane draws them in.
+/// Draws an album's cover, or its accent colour when there is none to draw.
 ///
-/// Each pane asks for one quality at one size, which is what keeps a cache to a single live size: the
-/// browser's preview wants thumbnails, the player wants the artwork decoded, and neither asks for the
-/// other's at its own size.
+/// The memo is the pane's own, so the browser and the player each keep what they last drew: an album
+/// can be browsed and playing at once, at two different sizes, and neither should displace the other.
 ///
-/// Until a cover arrives, and for an album that has no artwork at all, the area is filled with the
-/// album's accent colour, which the index knows long before any pixels are read. So a cover never
-/// holds up a keypress; the colour is simply replaced once the artwork is ready.
-fn draw_cover(frame: &mut Frame, model: &mut Model, area: Rect, cover_id: Option<u64>, accent: Option<Color>, also: &[u64]) {
+/// Until the scan reports a cover, and for an album that has no artwork at all, the area is filled
+/// with the accent colour the index knows long before any pixels are read -- so a cover never holds
+/// up a keypress, the colour is simply replaced once there is a picture.
+fn draw_cover(
+    frame: &mut Frame,
+    covers: &Covers,
+    memo: &mut CoverMemo,
+    area: Rect,
+    cover_id: Option<u64>,
+    accent: Option<Color>,
+) {
     let size = Size::new(area.width, area.height);
-    if let Some(id) = cover_id {
-        model.covers.want(id, size);
-        for &other in also {
-            model.covers.want(other, size);
-        }
-        if let Some(protocol) = model.covers.best(id, size) {
-            frame.render_widget(Image::new(protocol), area);
-            return;
-        }
+    if let Some(protocol) = memo.get(covers, cover_id, size) {
+        frame.render_widget(Image::new(protocol), area);
+        return;
     }
     let fill = accent.unwrap_or(Color::DarkGray);
     frame.render_widget(Block::default().style(Style::default().bg(fill)), area);
-}
-
-/// The albums around the browser's cursor, whose thumbnails are worth having before they are asked
-/// for: a single keypress reaches them.
-fn nearby_covers(model: &Model) -> Vec<u64> {
-    let row = model.selected_row();
-    let first = row.saturating_sub(covers::PIN_RADIUS);
-    (first..=row + covers::PIN_RADIUS).filter_map(|row| model.album_at(row)?.cover_id).collect()
 }
 
 /// An accent colour component as a terminal one.
@@ -342,7 +333,7 @@ fn now_playing(frame: &mut Frame, model: &mut Model, area: Rect) {
     // get theirs ready too, for skipping through it.
     let cover_id = model.playing().and_then(|item| model.album_of(item)).and_then(|album| album.cover_id);
     let accent = Some(accent_of(model));
-    draw_cover(frame, model, cover_area, cover_id, accent, &crate::update::queue_window(model));
+    draw_cover(frame, &model.covers, &mut model.player_cover, cover_area, cover_id, accent);
 
     let mut lines = vec![Line::default(), Line::from(Span::raw(title).bold())];
     if let Some((artist, album, year)) = byline {
@@ -596,41 +587,35 @@ mod test {
         assert!(!drawn.contains("No albums found"), "the library is not empty");
     }
 
-    /// The two panes draw a cover at different sizes, and an encoding is good for one size only -- so
-    /// the player must ask afresh rather than be handed what the browser cached. Left unchecked, the
-    /// player would silently draw the browser's smaller grid of blocks stretched over its pane.
+    /// Covers reach the screen in both views, and each pane keeps its own -- switching between them
+    /// must not leave one drawing the other's picture, or its accent block.
     #[test]
-    fn the_player_asks_again_at_its_own_size() {
+    fn both_views_draw_their_cover() {
+        /// How many half blocks the terminal is showing. Either glyph counts: the encoder picks
+        /// whichever puts the brighter half in the foreground.
+        fn blocks(terminal: &Terminal<TestBackend>) -> usize {
+            let half = |cell: &&ratatui::buffer::Cell| matches!(cell.symbol(), "\u{2580}" | "\u{2584}");
+            terminal.backend().buffer().content().iter().filter(half).count()
+        }
+
         let mut model = browser(5);
         for album in &mut model.albums {
             album.cover_id = Some(album.id + 100);
         }
+        for id in 100..105u64 {
+            model.covers.learn(id, std::sync::Arc::new("/cover.jpg".into()), covers::test_cover_bytes());
+        }
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
 
         terminal.draw(|frame| view(frame, &mut model)).unwrap();
-        let browsing = model.covers.take_wanted();
-        assert!(!browsing.is_empty(), "the browser asks for the covers it shows");
-
-        // Let those loads finish. A load still in flight would hide a second request for the same
-        // cover, which is exactly the case this test is here to catch.
-        let browsed_size = browsing[0].size;
-        for request in browsing {
-            let pixels = image::RgbaImage::from_pixel(8, 8, image::Rgba([9, 9, 9, 255]));
-            let image = image::DynamicImage::ImageRgba8(pixels);
-            let protocol = covers::encode_for_test(image, request.size);
-            let _ = model.covers.absorb(covers::Load {
-                cover_id: request.cover_id,
-                size: request.size,
-                generation: 0,
-                protocol: Some(protocol),
-            });
-        }
+        let browsing = blocks(&terminal);
+        assert!(browsing > 0, "the browser draws the selected album's cover");
 
         send(&mut model, Msg::PlaySelected);
         terminal.draw(|frame| view(frame, &mut model)).unwrap();
-        let playing = model.covers.take_wanted();
-        assert!(!playing.is_empty(), "the player asks for the cover it shows");
-        assert!(playing.iter().all(|r| r.size != browsed_size), "and at its own size, not the browser's");
+        let playing = blocks(&terminal);
+        assert!(playing > 0, "and the player draws the playing album's");
+        assert_ne!(browsing, playing, "the two panes are different sizes, so they draw different amounts");
     }
 
     /// Walking back to the top scrolls the view with the selection, once it has nowhere else to go.

@@ -4,7 +4,6 @@
 //! with the playing album's cover art shown through whatever image protocol the terminal speaks.
 //! Follows the model/update/view architecture; this file boots it and runs the event loop.
 
-mod cache;
 mod covers;
 mod keys;
 mod logger;
@@ -157,9 +156,6 @@ async fn event_loop(
         if redraw {
             update::reconcile(&mut model);
             terminal.draw(|frame| view::view(frame, &mut model))?;
-            // Drawing is what discovers which covers are wanted, and at what size, so the loads it
-            // asked for are started once the frame is out.
-            load_covers(&mut model, &tx);
         }
         update::publish_media(&model, &media);
         for write in update::save_session(&mut model) {
@@ -185,19 +181,6 @@ fn every(interval: Duration) -> impl futures::Stream<Item = ()> + Send {
 }
 
 /// Starts the cover loads the last frame asked for. Each runs on the executor and lands back as a
-/// message, so the few milliseconds of resizing and encoding never hold up a keypress.
-fn load_covers(model: &mut Model, tx: &channel::Sender<Msg>) {
-    let dir = model.covers.dir();
-    let layout = model.covers.layout();
-    for request in model.covers.take_wanted() {
-        let (dir, layout, tx) = (dir.clone(), layout.clone(), tx.clone());
-        smol::spawn(async move {
-            let load = covers::load(dir, layout, request).await;
-            let _ = tx.send(Msg::Cover(load)).await;
-        })
-        .detach();
-    }
-}
 
 /// How long messages are absorbed before drawing. Enough to swallow a burst whole, short enough that
 /// a scan's steady stream of albums still yields a frame several times a second.

@@ -34,8 +34,6 @@ pub enum Msg {
     Media(media::Control),
     /// Time to look over the music directory again.
     Rescan,
-    /// A cover finished loading and encoding (see the covers module).
-    Cover(covers::Load),
     /// Play the selected album, replacing the queue.
     PlaySelected,
     /// Append the selected album to the queue.
@@ -111,9 +109,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             None => After::Idle,
         },
         Msg::Resize => {
-            // Every cover was encoded for the area it was drawn in, and none of those areas survive
-            // a resize.
-            model.covers.clear();
+            // Nothing to invalidate: each pane's memo notices its area changed and rebuilds.
             After::Redraw
         }
         Msg::Log(entry) => {
@@ -185,10 +181,6 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             model.dirty_player = true;
             After::Redraw
         }
-        Msg::Cover(load) => match model.covers.absorb(load) {
-            true => After::Redraw,
-            false => After::Idle,
-        },
         Msg::Search(first) => {
             model.focus = Focus::Search;
             if let Some(c) = first {
@@ -395,7 +387,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             // are on disk in the thumbnail cache, to be read back a few at a time as covers are
             // shown. What is worth keeping is the accent colour, which stands in for artwork that
             // has not been loaded yet and costs twelve bytes.
-            model.covers.learn_file(art.id, art.file.clone());
+            model.covers.learn(art.id, art.file.clone(), art.encoded.clone());
             let mut applied = false;
             for album in model.albums.iter_mut().filter(|a| albums.contains(&a.id) && a.cover_id == Some(art.id)) {
                 model.index_dirty |= album.accent != Some(art.accent);
@@ -628,30 +620,6 @@ pub fn reconcile(model: &mut Model) {
         let Model { albums, queue, .. } = model;
         crate::model::hydrate(albums, queue);
     }
-    pin_covers(model);
-}
-
-/// Names the covers that must stay cached: around the browser's cursor for thumbnails, and around
-/// the playing album in the queue for the high-resolution ones. Loading them is the view's business,
-/// which is where the size they must be encoded for is known.
-fn pin_covers(model: &mut Model) {
-    let row = model.selected_row();
-    let first = row.saturating_sub(covers::PIN_RADIUS);
-    let thumbs: Vec<u64> = (first..=row + covers::PIN_RADIUS).filter_map(|row| model.album_at(row)?.cover_id).collect();
-    model.covers.pin(thumbs);
-}
-
-/// The albums whose high-resolution covers are worth having ready: the playing one, and its
-/// neighbours in the queue.
-pub fn queue_window(model: &Model) -> Vec<u64> {
-    let albums = model.queue_albums();
-    let Some(playing) = model.playing().map(|item| item.album_id) else { return vec![] };
-    let Some(at) = albums.iter().position(|&id| id == playing) else { return vec![] };
-    let first = at.saturating_sub(covers::PIN_RADIUS);
-    albums[first..(at + covers::PIN_RADIUS + 1).min(albums.len())]
-        .iter()
-        .filter_map(|&id| model.albums.iter().find(|album| album.id == id)?.cover_id)
-        .collect()
 }
 
 /// Tells the OS what is playing. Fire and forget: the media worker coalesces a burst of these down
