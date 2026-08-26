@@ -723,6 +723,7 @@ pub fn scan_options(model: &Model, phase: Scan) -> library::ScanOptions {
         },
         cache_file: paths::tag_cache_file(),
         covers_dir: paths::covers_dir(),
+        thumb_edge: covers::COVER_EDGE,
     }
 }
 

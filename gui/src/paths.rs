@@ -7,6 +7,10 @@
 //! [`dirs`](phonoscule::dirs)' - all we bring is the name.
 
 use phonoscule::{dirs, library};
+
+/// The square edge covers are cached at: what an album card in the grid wants, and no more -- every
+/// one of them is held in memory at once.
+pub const THUMB_EDGE: u32 = 256;
 use std::path::PathBuf;
 
 /// The name our directories go by under the platform's roots.
@@ -45,5 +49,5 @@ pub fn album_index_file() -> Option<PathBuf> {
 
 /// The decoded cover thumbnails.
 pub fn covers_dir() -> Option<PathBuf> {
-    Some(library::covers_dir(&cache_dir()?))
+    Some(library::covers_dir(&cache_dir()?, THUMB_EDGE))
 }

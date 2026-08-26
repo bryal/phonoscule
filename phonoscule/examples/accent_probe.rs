@@ -4,12 +4,16 @@
 //!
 //! `cargo run -p phonoscule-gui --example accent_probe -- <image>`
 
-use phonoscule::library::{THUMB, accent_color};
+use phonoscule::library::accent_color;
+
+/// What to shrink to before sampling. Any square will do -- this is about the colour, not the size --
+/// but a small one keeps the probe quick.
+const EDGE: u32 = 256;
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: accent_probe <image>");
     let img = image::open(&path).expect("cannot decode");
-    let rgb = img.resize_to_fill(THUMB, THUMB, image::imageops::FilterType::Triangle).into_rgb8().into_raw();
+    let rgb = img.resize_to_fill(EDGE, EDGE, image::imageops::FilterType::Triangle).into_rgb8().into_raw();
 
     let accent = accent_color(&rgb);
     println!("accent: r={:.3} g={:.3} b={:.3}", accent.r, accent.g, accent.b);

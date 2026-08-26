@@ -7,11 +7,15 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use phonoscule::library;
 use std::path::PathBuf;
 
-/// Raw cached thumbnails are [`library::THUMB`]² RGB.
-const RGB_LEN: usize = (library::THUMB * library::THUMB * 3) as usize;
+/// The edge these benchmarks work at. A consumer's choice in real use (see `ScanOptions`), so this
+/// is simply the one the graphical player asks for.
+const EDGE: u32 = 256;
+
+/// Source pixels for one thumbnail, before the cache encodes them.
+const RGB_LEN: usize = (EDGE * EDGE * 3) as usize;
 
 /// Bump when changing the generator to invalidate cached corpora.
-const CORPUS_VERSION: u32 = 1;
+const CORPUS_VERSION: u32 = 2;
 
 /// Covers in the library this was written for, for the multiplied-out figure.
 const LIBRARY_COVERS: usize = 731;
@@ -20,7 +24,7 @@ const LIBRARY_COVERS: usize = 731;
 /// histograms into 4096 buckets, and noise spreads over all of them where real artwork piles into a
 /// few. So, a dominant hue with a small vivid patch.
 fn thumbnail_rgb(seed: u32) -> Vec<u8> {
-    let edge = library::THUMB;
+    let edge = EDGE;
     let mut rgb = Vec::with_capacity(RGB_LEN);
     let (br, bg, bb) = ((seed * 37 % 90 + 20) as u8, (seed * 61 % 80 + 30) as u8, (seed * 17 % 70 + 40) as u8);
     for y in 0..edge {
@@ -46,10 +50,13 @@ fn covers(n: usize) -> PathBuf {
     }
     let tmp = root.with_extension("partial");
     let _ = std::fs::remove_dir_all(&tmp);
-    let dir = library::covers_dir(&tmp);
+    let dir = library::covers_dir(&tmp, EDGE);
     std::fs::create_dir_all(&dir).unwrap();
     for id in 0..n as u64 {
-        std::fs::write(dir.join(format!("{id:016x}")), thumbnail_rgb(id as u32)).unwrap();
+        let img = image::RgbImage::from_raw(EDGE, EDGE, thumbnail_rgb(id as u32)).unwrap();
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img).write_to(&mut encoded, image::ImageFormat::Qoi).unwrap();
+        std::fs::write(dir.join(format!("{id:016x}")), encoded.into_inner()).unwrap();
     }
     std::fs::rename(&tmp, &root).unwrap();
     root
@@ -59,12 +66,12 @@ fn thumbnails(c: &mut Criterion) {
     let mut group = c.benchmark_group("covers");
 
     let root = covers(1);
-    let dir = library::covers_dir(&root);
+    let dir = library::covers_dir(&root, EDGE);
     let rgb = thumbnail_rgb(0);
-    assert_eq!(rgb.len(), RGB_LEN, "the generator and THUMB have drifted apart");
+    assert_eq!(rgb.len(), RGB_LEN, "the generator and EDGE have drifted apart");
 
-    // A file read plus `rgb_to_rgba`'s widening. The page cache is warm after the first iteration, so
-    // this is the syscall and the widening, not the disk.
+    // A file read, a QOI decode and `rgb_to_rgba`'s widening. The page cache is warm after the first
+    // iteration, so this is the decode and the widening, not the disk.
     group.throughput(Throughput::Bytes(RGB_LEN as u64));
     group.bench_function("read_thumbnail", |b| {
         b.iter(|| {

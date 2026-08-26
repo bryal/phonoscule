@@ -131,6 +131,7 @@ fn drain(root: PathBuf) -> Vec<Album> {
             known_covers: Default::default(),
             cache_file: None,
             covers_dir: None,
+            thumb_edge: 256,
         };
         let mut albums: Vec<Album> = Vec::new();
         let mut stream = std::pin::pin!(library::scan(options));

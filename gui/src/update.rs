@@ -287,7 +287,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 // The handle for these pixels, made exactly once (see `App::covers`). It wraps the
                 // scan's bitmap rather than copying it, so this costs an id and a refcount.
                 let pixels = bytes::Bytes::from_owner(art.thumbnail_pixels.clone());
-                app.thumbnails.insert(art.id, iced::widget::image::Handle::from_rgba(library::THUMB, library::THUMB, pixels));
+                app.thumbnails.insert(art.id, iced::widget::image::Handle::from_rgba(art.edge, art.edge, pixels));
             }
             for album in app.albums.iter_mut().filter(|a| accepted.contains(&a.id)) {
                 album.cover = Some(art.clone());
@@ -1030,6 +1030,7 @@ fn rescan_options(app: &App) -> library::ScanOptions {
         known_covers: app.albums.iter().filter_map(|a| a.cover.as_ref().map(|c| c.id)).collect(),
         cache_file: paths::tag_cache_file(),
         covers_dir: paths::covers_dir(),
+        thumb_edge: paths::THUMB_EDGE,
     }
 }
 

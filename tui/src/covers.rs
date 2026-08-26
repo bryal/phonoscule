@@ -39,6 +39,14 @@ pub const PIN_RADIUS: usize = 2;
 /// wide as it is tall.
 const CELL_ASPECT: u16 = 2;
 
+/// The square edge covers are cached at.
+///
+/// A block grid is at most `width` by `height * 2` pixels, and the largest pane this player draws --
+/// the player view's cover, on a tall terminal -- comes to something under a hundred a side. This is
+/// the next power of two above that, so a cover is never upscaled in practice, and it is a sixteenth
+/// of the pixels the graphical player wants for its album grid.
+pub const COVER_EDGE: u32 = 128;
+
 /// An encoded cover, and the area it was encoded for. Kept together because an encoding is good for
 /// one size only: a lookup at any other misses rather than stretching what it found, which is what
 /// catches a load that was already in flight when the terminal changed shape.
@@ -233,7 +241,7 @@ pub async fn load(dir: Option<PathBuf>, layout: Layout, request: Request) -> Loa
     }
     let Some(dir) = dir else { return give_up };
     let Some(pixels) = library::read_thumbnail(&dir, cover_id).await else { return give_up };
-    let edge = library::THUMB;
+    let (pixels, edge) = pixels;
     let Some(image) = image::RgbaImage::from_raw(edge, edge, pixels.to_vec()) else { return give_up };
     if !layout.current(generation) {
         return give_up;
