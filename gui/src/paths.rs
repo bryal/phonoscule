@@ -12,9 +12,13 @@ use phonoscule::{dirs, library};
 /// one of them is held in memory at once, decoded, so a card costs `edge`² x 4 bytes for as long as
 /// the library has it.
 ///
-/// A card's cover square is 156 to 172 pixels wide (see the album grid's metrics), so this is a
-/// little headroom over the largest of them and nothing more. It is on disk in the path, so changing
-/// it starts a fresh cache rather than reinterpreting the old one.
+/// Cards stretch to fill their row, so a cover square is not one size: it is around 165 pixels on a
+/// window wide enough for six columns or more, and grows as columns drop out -- 205 at three, 248 at
+/// two. This covers everything down to a three-column window and upscales below that, which is the
+/// trade for holding the whole library: another 30 pixels of edge is another 40 MB resident.
+///
+/// It is on disk in the path, so changing it starts a fresh cache rather than reinterpreting the old
+/// one.
 pub const THUMB_EDGE: u32 = 220;
 use std::path::PathBuf;
 
