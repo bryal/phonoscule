@@ -93,6 +93,14 @@ wait "$pidstat_pid" || true
 after=$(cpu_ticks "$pid")
 end=$(date +%s.%N)
 
+# Read at the end of the window, once the player has had it to grow into. Rss is the resident total;
+# the anonymous half is the one a cover cache moves, since the file-backed half is mostly the binary
+# and the fonts and shifts for reasons of its own.
+echo "--- memory, from /proc/$pid/smaps_rollup ---"
+awk '/^(Rss|Pss|Anonymous):/ { printf "  %-10s %8.1f MB\n", tolower($1), $2 / 1024 }' \
+    "/proc/$pid/smaps_rollup" 2>/dev/null || echo "  (unreadable)"
+echo
+
 echo "--- process total, from /proc/$pid/stat (percent of one core) ---"
 awk -v b="$before" -v a="$after" -v s="$start" -v e="$end" -v hz="$tick_hz" 'BEGIN {
     secs = e - s
