@@ -25,7 +25,7 @@ Graphical player:
 | --- | --- | --- |
 | paused | 0.03% | 0.03% |
 | Player, playing | 1.73% | 1.79% (within the spread) |
-| Library, playing | **3.92%** | **2.11%** |
+| Library, playing | **3.92%** | **2.87%** |
 
 Both "after" columns are at **six times the progress rate** of the "before": 23.4 reports a second
 against 3.9, which is what a continuously drawn seek bar needs to stop looking steppy. The graphical
@@ -153,42 +153,6 @@ every message, to draw three.
 Both were on the deferred list from the original plan, ranked last on the grounds that after cutting
 the frame *rate* the per-frame cost no longer mattered. That held right up until a frame rate was
 wanted for its own sake.
-
-**Drawing the covers rather than delegating them.** The third and last cut, and the one the other two
-were up against: culling can skip the walking, but never the layout. Layout has to emit a node per
-card because every other method pairs card, tree and node up by position, and a missing node
-misaligns the lot - so a library of 759 albums was 759 elements built, diffed and laid out per
-message however few were on screen.
-
-The grid already drew each card's title and artist itself. Now it draws the cover too, with
-`draw_image` for artwork and a quad plus a centred string for the accent tile, which leaves the
-action bubbles as the only child there is: one element, one node, for the card under the cursor.
-Hit testing comes off `Geom` instead of off those nodes, so hovering and clicking are arithmetic.
-
-The library view went **2.57% -> 2.11%**, its main thread **1.50% -> 1.00%**. The player view, which
-has no grid, did not move (2.24% against 2.24%) - the control that says the cut landed where it was
-aimed.
-
-Resident memory did not move: 443.5 MB against 445.7 MB. It was never going to, and the reason is
-worth writing down, because the obvious suspect is the wrong one.
-
-`App::thumbnails` holds an `image::Handle` per album, but `from_rgba` wraps the scan's buffer rather
-than copying it, so the handle costs an id and a refcount. The 731 decoded thumbnails - 731 x 256 x
-256 x 4, **192 MB**, or 43% of what the player is resident - are `CoverArt::thumbnail_pixels`, kept
-alive by `App::albums[i].cover` for every album in the library whether or not it is on screen.
-Dropping the handles would free nothing at all.
-
-So the memory is a question about what an album retains, not about how a card is drawn. The encoded
-covers behind those 192 MB are 77 MB on disk; holding those instead and letting iced's raster cache
-decode the few dozen on screen and trim the rest is worth around 115 MB. Two things are in the way,
-and only one of them was ever about the grid:
-
-- `CoverArt` carries decoded pixels, and every album clones one. This is the 192 MB.
-- The cover flow reads pixels straight out of `Handle::Rgba` to upload them to its own texture
-  (`coverflow.rs`, `cover_texture`), so a handle over encoded bytes would drop it to accent tiles.
-
-Removing the measure was a precondition - a decode-on-demand handle that gets measured is decoded
-anyway, and measuring also marks every card as hit, so nothing is ever trimmed. It was not the cost.
 
 ## What was tested and did not pay
 
