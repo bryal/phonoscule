@@ -221,7 +221,7 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
 
     // The cover takes what the pane can spare once the byline and a few tracks have their rows.
     let for_cover = Size::new(area.width, area.height.saturating_sub(DETAILS_ROWS));
-    let cover_size = covers::square(&model.covers.picker, for_cover);
+    let cover_size = covers::square(for_cover);
     let [cover_area, rest] = Layout::vertical([Constraint::Length(cover_size.height), Constraint::Min(0)]).areas(area);
     let [cover_area, _] = Layout::horizontal([Constraint::Length(cover_size.width), Constraint::Min(0)]).areas(cover_area);
 
@@ -240,7 +240,7 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
         lines.push(Line::from(vec![Span::raw(format!("{:02} ", n + 1)).fg(Color::DarkGray), Span::raw(track.title.clone())]));
     }
 
-    draw_cover(frame, model, cover_area, cover_id, accent, covers::Quality::Thumb, &nearby);
+    draw_cover(frame, model, cover_area, cover_id, accent, &nearby);
     frame.render_widget(Paragraph::new(lines), rest);
 }
 
@@ -254,20 +254,12 @@ fn preview(frame: &mut Frame, model: &mut Model, area: Rect) {
 /// Until a cover arrives, and for an album that has no artwork at all, the area is filled with the
 /// album's accent colour, which the index knows long before any pixels are read. So a cover never
 /// holds up a keypress; the colour is simply replaced once the artwork is ready.
-fn draw_cover(
-    frame: &mut Frame,
-    model: &mut Model,
-    area: Rect,
-    cover_id: Option<u64>,
-    accent: Option<Color>,
-    quality: covers::Quality,
-    also: &[u64],
-) {
+fn draw_cover(frame: &mut Frame, model: &mut Model, area: Rect, cover_id: Option<u64>, accent: Option<Color>, also: &[u64]) {
     let size = Size::new(area.width, area.height);
     if let Some(id) = cover_id {
-        model.covers.want(id, quality, size);
+        model.covers.want(id, size);
         for &other in also {
-            model.covers.want(other, quality, size);
+            model.covers.want(other, size);
         }
         if let Some(protocol) = model.covers.best(id, size) {
             frame.render_widget(Image::new(protocol), area);
@@ -342,7 +334,7 @@ fn now_playing(frame: &mut Frame, model: &mut Model, area: Rect) {
     let byline = model.album_of(item).map(|album| (album.artist.clone(), album.title.clone(), album.year));
 
     let for_cover = Size::new(area.width, area.height.saturating_sub(4));
-    let cover_size = covers::square(&model.covers.picker, for_cover);
+    let cover_size = covers::square(for_cover);
     let [cover_area, rest] = Layout::vertical([Constraint::Length(cover_size.height), Constraint::Min(0)]).areas(area);
     let [cover_area, _] = Layout::horizontal([Constraint::Length(cover_size.width), Constraint::Min(0)]).areas(cover_area);
 
@@ -350,8 +342,7 @@ fn now_playing(frame: &mut Frame, model: &mut Model, area: Rect) {
     // get theirs ready too, for skipping through it.
     let cover_id = model.playing().and_then(|item| model.album_of(item)).and_then(|album| album.cover_id);
     let accent = Some(accent_of(model));
-    let ahead = crate::update::full_window(model);
-    draw_cover(frame, model, cover_area, cover_id, accent, covers::Quality::Full, &ahead);
+    draw_cover(frame, model, cover_area, cover_id, accent, &crate::update::queue_window(model));
 
     let mut lines = vec![Line::default(), Line::from(Span::raw(title).bold())];
     if let Some((artist, album, year)) = byline {
@@ -544,7 +535,6 @@ fn total_time(model: &Model) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::covers::Quality;
     use crate::model::{Model, browser};
     use crate::update::{Edge, Msg, update};
     use ratatui::Terminal;
@@ -606,36 +596,30 @@ mod test {
         assert!(!drawn.contains("No albums found"), "the library is not empty");
     }
 
-    /// Each pane asks for one quality only, which is what keeps each cache to a single live size. A
-    /// pane that asked the other's cache at its own size would hold two sizes there, and an album both
-    /// browsed and playing would have its cover re-encoded on every switch between the views.
+    /// The two panes draw a cover at different sizes, and an encoding is good for one size only -- so
+    /// the player must ask afresh rather than be handed what the browser cached. Left unchecked, the
+    /// player would silently draw the browser's smaller grid of blocks stretched over its pane.
     #[test]
-    fn each_pane_asks_for_one_quality() {
+    fn the_player_asks_again_at_its_own_size() {
         let mut model = browser(5);
         for album in &mut model.albums {
             album.cover_id = Some(album.id + 100);
-        }
-        // Artwork is only asked for where its file is known, so let the player have somewhere to
-        // decode from.
-        for id in 100..105 {
-            model.covers.learn_file(id, std::sync::Arc::new("/cover.jpg".into()));
         }
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
 
         terminal.draw(|frame| view(frame, &mut model)).unwrap();
         let browsing = model.covers.take_wanted();
         assert!(!browsing.is_empty(), "the browser asks for the covers it shows");
-        assert!(browsing.iter().all(|r| r.quality == Quality::Thumb), "the browser asks for thumbnails only");
 
         // Let those loads finish. A load still in flight would hide a second request for the same
         // cover, which is exactly the case this test is here to catch.
+        let browsed_size = browsing[0].size;
         for request in browsing {
             let pixels = image::RgbaImage::from_pixel(8, 8, image::Rgba([9, 9, 9, 255]));
             let image = image::DynamicImage::ImageRgba8(pixels);
-            let protocol = model.covers.picker.new_protocol(image, request.size, covers::resize()).unwrap();
-            model.covers.absorb(covers::Load {
+            let protocol = covers::encode_for_test(image, request.size);
+            let _ = model.covers.absorb(covers::Load {
                 cover_id: request.cover_id,
-                quality: request.quality,
                 size: request.size,
                 generation: 0,
                 protocol: Some(protocol),
@@ -646,7 +630,7 @@ mod test {
         terminal.draw(|frame| view(frame, &mut model)).unwrap();
         let playing = model.covers.take_wanted();
         assert!(!playing.is_empty(), "the player asks for the cover it shows");
-        assert!(playing.iter().all(|r| r.quality == Quality::Full), "the player asks for artwork only");
+        assert!(playing.iter().all(|r| r.size != browsed_size), "and at its own size, not the browser's");
     }
 
     /// Walking back to the top scrolls the view with the selection, once it has nowhere else to go.

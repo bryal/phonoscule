@@ -40,23 +40,8 @@ Options:
 
 ";
 
-/// This player's own config settings, listed after the shared ones.
-fn config_help_tui() -> String {
-    format!(
-        "
-  [app.tui]
-    image-protocol
-               Draw cover art with this terminal image protocol rather than
-               asking the terminal which it speaks. One of:
-               {}. Optional; `halfblocks` needs
-               no protocol at all and works anywhere.
-",
-        covers::PROTOCOL_NAMES,
-    )
-}
-
 fn help() -> String {
-    format!("{HELP}{}{}\n{}", config::config_help(APP), config_help_tui(), keys::HELP)
+    format!("{HELP}{}\n{}", config::config_help(APP), keys::HELP)
 }
 
 fn main() {
@@ -93,7 +78,6 @@ fn run() -> anyhow::Result<()> {
     // Before the terminal is taken over, so failures here print normally.
     let logs = logger::start();
     let conf = smol::block_on(config::load(APP, arg_conf_path))?;
-    let forced_protocol = conf.app_str("image-protocol")?.map(str::to_owned);
     let index = smol::block_on(library::load_index(paths::album_index_file()));
     let restored = smol::block_on(session::load(paths::playlist_file(), paths::player_file()));
 
@@ -106,8 +90,7 @@ fn run() -> anyhow::Result<()> {
         name: "phonoscule-tui".into(),
         description: "Terminal application based on the Phonoscule music player library".into(),
     });
-    let picker = covers::picker(forced_protocol.as_deref());
-    let covers = covers::Covers::new(picker, paths::covers_dir());
+    let covers = covers::Covers::new(paths::covers_dir());
     let model = Model::restored(conf, covers, engine, index, restored);
     // The query's bytes went out behind ratatui's back, and a terminal that did not understand them
     // will have printed them; wipe the screen before the first frame. Through the backend, whose
@@ -207,9 +190,9 @@ fn load_covers(model: &mut Model, tx: &channel::Sender<Msg>) {
     let dir = model.covers.dir();
     let layout = model.covers.layout();
     for request in model.covers.take_wanted() {
-        let (picker, dir, layout, tx) = (model.covers.picker.clone(), dir.clone(), layout.clone(), tx.clone());
+        let (dir, layout, tx) = (dir.clone(), layout.clone(), tx.clone());
         smol::spawn(async move {
-            let load = covers::load(picker, dir, layout, request).await;
+            let load = covers::load(dir, layout, request).await;
             let _ = tx.send(Msg::Cover(load)).await;
         })
         .detach();

@@ -63,9 +63,11 @@ impl<T> Lru<T> {
         }
     }
 
-    /// Drops everything held. Loads in flight are left to land and be judged on arrival.
-    pub fn clear(&mut self) {
+    /// Drops every entry *and* every in-flight mark: whatever they were loading is no longer wanted,
+    /// and a mark left behind would make [`start_loading`](Self::start_loading) refuse the next ask.
+    pub fn abandon(&mut self) {
         self.entries.clear();
+        self.pending.clear();
     }
 
     /// Drops an entry that is no longer any use, so it can be loaded afresh.

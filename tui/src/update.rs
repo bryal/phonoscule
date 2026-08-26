@@ -638,17 +638,17 @@ fn pin_covers(model: &mut Model) {
     let row = model.selected_row();
     let first = row.saturating_sub(covers::PIN_RADIUS);
     let thumbs: Vec<u64> = (first..=row + covers::PIN_RADIUS).filter_map(|row| model.album_at(row)?.cover_id).collect();
-    model.covers.pin(thumbs, full_window(model));
+    model.covers.pin(thumbs);
 }
 
 /// The albums whose high-resolution covers are worth having ready: the playing one, and its
 /// neighbours in the queue.
-pub fn full_window(model: &Model) -> Vec<u64> {
+pub fn queue_window(model: &Model) -> Vec<u64> {
     let albums = model.queue_albums();
     let Some(playing) = model.playing().map(|item| item.album_id) else { return vec![] };
     let Some(at) = albums.iter().position(|&id| id == playing) else { return vec![] };
-    let first = at.saturating_sub(covers::FULL_BEHIND);
-    albums[first..(at + covers::FULL_AHEAD + 1).min(albums.len())]
+    let first = at.saturating_sub(covers::PIN_RADIUS);
+    albums[first..(at + covers::PIN_RADIUS + 1).min(albums.len())]
         .iter()
         .filter_map(|&id| model.albums.iter().find(|album| album.id == id)?.cover_id)
         .collect()
@@ -1010,7 +1010,7 @@ mod test {
 
         // Restored with no library at all: the paths are all there is to show.
         let conf = phonoscule::config::Conf::new("tui", "/music".into());
-        let covers = crate::covers::Covers::new(ratatui_image::picker::Picker::halfblocks(), None);
+        let covers = crate::covers::Covers::new(None);
         let engine = player::start(player::Client { name: "restore-test".into(), description: String::new() });
         let mut model = Model::restored(conf, covers, engine, vec![], restored);
         assert_eq!(model.queue.len(), paths.len());

@@ -433,7 +433,6 @@ mod testing {
     use super::*;
     use crate::covers::Covers;
     use phonoscule::library::TrackInfo;
-    use ratatui_image::picker::Picker;
     /// A browser over `n` synthetic albums, sorted so their titles read in order.
     pub fn browser(n: usize) -> Model {
         let conf = Conf::new("tui", "/music".into());
@@ -455,7 +454,7 @@ mod testing {
         let engine = player::start(player::Client { name: "phonoscule-tui-test".into(), description: String::new() });
         // A thumbnail directory that need not exist: the tests ask what covers are wanted, and never
         // run the loads that would read it.
-        let covers = Covers::new(Picker::halfblocks(), Some("/covers".into()));
+        let covers = Covers::new(Some("/covers".into()));
         Model::restored(conf, covers, engine, albums, session::Restored::default())
     }
 }
