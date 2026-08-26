@@ -167,6 +167,17 @@ pub fn covers_dir(dir: &Path, edge: u32) -> PathBuf {
     dir.join(format!("covers.{edge}"))
 }
 
+/// The file the cover with this id is cached as under `dir`, in `format`.
+///
+/// Named with the format's own extension so a file browser will open one: a cache nobody can look
+/// through is a cache nobody can check. It also means a change of format renames every entry, so
+/// the old ones are visibly stale rather than silently unreadable.
+pub fn cover_file(dir: &Path, id: u64, format: image::ImageFormat) -> PathBuf {
+    // The canonical extension first, so JPEG is `.jpg` and not `.jpeg`.
+    let extension = format.extensions_str().first().copied().unwrap_or("bin");
+    dir.join(format!("{id:016x}.{extension}"))
+}
+
 /// Bumped when [`SavedAlbum`] changes shape or meaning (like the id derivation); an old or
 /// unreadable index just means the grid stays empty until the scan streams the albums in, like
 /// before the index existed.
@@ -940,7 +951,7 @@ async fn read_tags(path: &Path) -> Option<FileTags> {
 /// For a consumer that would rather load thumbnails as it needs them than hold the whole library's
 /// worth at once -- [`scan`] hands them over as it goes, but nothing says they must be kept.
 pub async fn read_thumbnail(covers_dir: &Path, id: u64) -> Option<(Arc<[u8]>, u32)> {
-    let encoded = smol::fs::read(covers_dir.join(format!("{id:016x}"))).await.ok()?;
+    let encoded = smol::fs::read(cover_file(covers_dir, id, THUMB_FORMAT)).await.ok()?;
     let img = smol::unblock(move || image::load_from_memory_with_format(&encoded, THUMB_FORMAT).ok()).await?;
     let edge = img.width().min(img.height());
     Some((Arc::from(img.into_rgba8().into_raw()), edge))
@@ -956,7 +967,7 @@ async fn load_cover(
 ) -> Option<(PathBuf, Arc<[u8]>, Arc<[u8]>, Rgb)> {
     // Absolute, so consumers (e.g. the MPRIS art URL) don't depend on our working directory.
     let file = smol::fs::canonicalize(path).await.ok()?;
-    let cache_path = covers_dir.map(|dir| dir.join(format!("{id:016x}")));
+    let cache_path = covers_dir.map(|dir| cover_file(dir, id, THUMB_FORMAT));
 
     if let Some(cache_path) = &cache_path
         && let Ok(encoded) = smol::fs::read(cache_path).await
@@ -1146,6 +1157,15 @@ async fn save_cache(path: &Path, cache: &Cache) {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The point of naming entries after their format is that a file browser opens them, which a
+    /// fallback extension would quietly undo.
+    #[test]
+    fn a_cached_cover_is_named_for_what_is_in_it() {
+        let dir = Path::new("/covers.220");
+        assert_eq!(cover_file(dir, 0x2b, THUMB_FORMAT), Path::new("/covers.220/000000000000002b.qoi"));
+        assert_eq!(cover_file(dir, 0x2b, FULL_FORMAT), Path::new("/covers.220/000000000000002b.jpg"));
+    }
 
     /// A cover written to the cache comes back from it, and one written at another edge does not:
     /// a cache entry is handed back as if it were what was asked for, so a wrong-sized one would be

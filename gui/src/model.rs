@@ -305,7 +305,7 @@ impl HiResCache {
             return Task::none();
         }
         let file = (*file).clone();
-        let cache_path = self.dir.as_ref().map(|dir| dir.join(format!("{id:016x}")));
+        let cache_path = self.dir.as_ref().map(|dir| library::cover_file(dir, id, library::FULL_FORMAT));
         Task::perform(library::load_full_cover(file, cache_path, library::FULL), move |pixels| Msg::HiResLoaded { id, pixels })
     }
 
