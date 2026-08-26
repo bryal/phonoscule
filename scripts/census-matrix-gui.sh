@@ -51,7 +51,9 @@ row() {
     echo "# $label   (play=$play, switch_view=$switch)"
     echo "##############################################################################"
 
-    "$player" > /dev/null 2>&1 &
+    # Under `timeout` so a row that is interrupted, or whose kill is never reached, cannot leave a
+    # window open and an album playing indefinitely. The bound is generous; the kill below is normal.
+    timeout $((repeats * window + 300)) "$player" > /dev/null 2>&1 &
     gui=$!
     sleep 3
     pid=$(pgrep -x phonoscule-gui | head -1)
@@ -69,6 +71,9 @@ row() {
 
     if [ "$play" = yes ]; then
         playerctl -p phonoscule play 2>/dev/null || echo "# playerctl play failed"
+        # Silent, but decoding: the mixer sits past the decoder, so what is being measured is
+        # unchanged and nobody in the next room has to listen to the suite run.
+        playerctl -p phonoscule volume 0 2>/dev/null || true
         sleep 5
         echo "# mpris says: $(playerctl -p phonoscule status 2>/dev/null || echo '?')"
     fi
