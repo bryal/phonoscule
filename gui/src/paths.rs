@@ -9,8 +9,13 @@
 use phonoscule::{dirs, library};
 
 /// The square edge covers are cached at: what an album card in the grid wants, and no more -- every
-/// one of them is held in memory at once.
-pub const THUMB_EDGE: u32 = 256;
+/// one of them is held in memory at once, decoded, so a card costs `edge`² x 4 bytes for as long as
+/// the library has it.
+///
+/// A card's cover square is 156 to 172 pixels wide (see the album grid's metrics), so this is a
+/// little headroom over the largest of them and nothing more. It is on disk in the path, so changing
+/// it starts a fresh cache rather than reinterpreting the old one.
+pub const THUMB_EDGE: u32 = 220;
 use std::path::PathBuf;
 
 /// The name our directories go by under the platform's roots.
