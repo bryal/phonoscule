@@ -5,6 +5,7 @@
 //! and receives a message with the clicked item's queue index. Rendering uses no depth buffer;
 //! quads are drawn back-to-front (iced's custom-primitive render pass has no depth attachment).
 
+use crate::paths::THUMB_EDGE;
 use glam::{Mat4, Vec3};
 use iced::mouse;
 use iced::wgpu;
@@ -16,15 +17,17 @@ use std::fmt;
 use std::sync::Arc;
 
 /// A cover to show in the flow, at whatever detail is available: the album's accent color (known
-/// from the persisted index before any pixels load), the thumbnail, and the on-demand high-res
-/// version (see `ensure_hires`) -- the best resident tier is drawn. The high-res bitmap is shared
-/// straight from the global cache (`Arc<[u8]>`), not copied.
+/// from the persisted index before any pixels load), the thumbnail, and the high-res version --
+/// the best resident tier is drawn. Both bitmaps are shared straight from the model's caches
+/// (`Arc<[u8]>`, see `ensure_covers`), not copied.
 pub struct FlowCover {
     /// The cover art's id when pixels exist; otherwise any stable stand-in (the album id) -- it
     /// only namespaces the texture cache.
     pub id: u64,
-    pub thumb: Option<iced::widget::image::Handle>,
+    /// `THUMB_EDGE`² RGBA.
+    pub thumb: Option<Arc<[u8]>>,
     pub accent: Option<iced::Color>,
+    /// `FULL`² RGBA.
     pub full: Option<Arc<[u8]>>,
 }
 
@@ -47,8 +50,9 @@ const FADE_START: f32 = 1.0;
 /// ...and where they reach full transparency.
 const FADE_END: f32 = 7.5;
 /// How far to each side covers are still laid out & drawn: just past the fade, so a cover never
-/// pops in or out visibly.
-const VISIBLE_RANGE: f32 = FADE_END + 0.5;
+/// pops in or out visibly. Public because it is also how far out the model keeps thumbnails
+/// resident for the flow (see `ensure_covers`).
+pub const VISIBLE_RANGE: f32 = FADE_END + 0.5;
 /// Where the tilted side stacks start, in world units from the center. Covers are 1.0 wide, and
 /// the side covers sit further back (see [`SIDE_Z`]), so this is small enough that the nearest
 /// side covers tuck slightly under the center cover, like the iPod did.
@@ -294,14 +298,11 @@ impl fmt::Debug for Upload {
     }
 }
 
-/// The pixels for a texture upload, from whichever tier we're drawing. The thumbnail lives in
-/// iced's image `Handle` (which stores it as `bytes::Bytes`), so we hand that buffer straight to
-/// the GPU; the high-res tier is our own `Arc<[u8]>` from the global cache. Both clones are cheap
-/// ref-count bumps -- naming each in its own variant keeps a per-frame pixel copy off the table,
-/// and confines the `bytes` dependency to the one buffer iced hands us in that type.
+/// The pixels for a texture upload, from whichever tier we're drawing. A bitmap is the model's own
+/// `Arc<[u8]>` from its cover caches, handed straight to the GPU: a cheap ref-count bump, so a
+/// per-frame pixel copy stays off the table.
 enum Pixels {
-    Thumb(bytes::Bytes),
-    Full(Arc<[u8]>),
+    Bitmap(Arc<[u8]>),
     /// A single RGBA pixel: the accent-colored zeroth tier stretches it over the whole quad.
     Solid([u8; 4]),
 }
@@ -309,8 +310,7 @@ enum Pixels {
 impl Pixels {
     fn as_slice(&self) -> &[u8] {
         match self {
-            Pixels::Thumb(pixels) => pixels,
-            Pixels::Full(pixels) => pixels,
+            Pixels::Bitmap(pixels) => pixels,
             Pixels::Solid(pixel) => pixel,
         }
     }
@@ -322,10 +322,10 @@ impl Pixels {
 fn cover_texture(cover: &FlowCover) -> (TexKey, Option<Upload>) {
     if let Some(full) = &cover.full {
         let key = (cover.id, Tier::Full);
-        (key, Some(Upload { key, size: (FULL, FULL), pixels: Pixels::Full(full.clone()) }))
-    } else if let Some(iced::widget::image::Handle::Rgba { width, height, pixels, .. }) = &cover.thumb {
+        (key, Some(Upload { key, size: (FULL, FULL), pixels: Pixels::Bitmap(full.clone()) }))
+    } else if let Some(thumb) = &cover.thumb {
         let key = (cover.id, Tier::Thumb);
-        (key, Some(Upload { key, size: (*width, *height), pixels: Pixels::Thumb(pixels.clone()) }))
+        (key, Some(Upload { key, size: (THUMB_EDGE, THUMB_EDGE), pixels: Pixels::Bitmap(thumb.clone()) }))
     } else if let Some(accent) = cover.accent {
         // Dimmed by the same factor as the grid's fallback tiles, so the two zeroth LODs match.
         let level = |c: f32| (0.55 * c * 255.0).round() as u8;

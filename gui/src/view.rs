@@ -606,7 +606,7 @@ fn player_view(app: &App) -> Element<'_, Msg> {
     }
     // One FlowCover per album run, at whatever detail exists yet: the accent color (known from
     // the index before any pixels), the thumbnail once loaded, and the high-res version if the
-    // global cache holds it (see `ensure_hires`) -- the flow draws the best tier and sharpens as
+    // caches hold it (see `ensure_covers`) -- the flow draws the best tier and sharpens as
     // better ones arrive. Only an album with nothing known at all falls to the grey placeholder.
     let covers = album_runs(&app.queue)
         .iter()
@@ -616,7 +616,7 @@ fn player_view(app: &App) -> Element<'_, Msg> {
                 (None, None) => None,
                 (cover, accent) => Some(FlowCover {
                     id: cover.as_ref().map_or(item.album_id, |c| c.id),
-                    thumb: cover.as_ref().and_then(|c| app.thumbnails.get(&c.id)).cloned(),
+                    thumb: cover.as_ref().and_then(|c| app.thumbs.peek(c.id)),
                     accent,
                     full: cover.as_ref().and_then(|c| app.hires.peek(c.id)),
                 }),
