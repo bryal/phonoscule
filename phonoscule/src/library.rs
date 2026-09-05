@@ -86,7 +86,10 @@ pub struct TrackInfo {
     pub title: String,
 }
 
-/// Decoded cover art: the thumbnail pixels, and what was derived from them.
+/// A cover the scan has digested: where it came from and what was derived from it. No pixels -- a
+/// consumer that wants the thumbnail reads it back from the cache with [`read_thumbnail`] (or hands
+/// its toolkit the path from [`cover_file`]), or keeps the encoded bytes that ride beside this on
+/// [`ScanEvent::Cover`]. Cheap enough to hold for every album in the library.
 #[derive(Clone)]
 pub struct CoverArt {
     /// Stable content-derived id (image file path + mtime).
@@ -94,12 +97,6 @@ pub struct CoverArt {
     /// The (absolute) image file this was decoded from, e.g. for pointing other programs at it
     /// and decoding a higher-resolution version on demand (see [`decode_cover`]).
     pub file: Arc<PathBuf>,
-    /// The thumbnail, `edge`²  RGBA. Ref-counted, so this stays the only in-memory copy however
-    /// many consumers hold it.
-    pub thumbnail_pixels: Arc<[u8]>,
-    /// The thumbnail's edge in pixels, which is whatever the scan was asked for -- a consumer that
-    /// hands the pixels to a toolkit needs to say how wide they are.
-    pub edge: u32,
     /// The cover's most distinct color, e.g. for theming the surroundings after it.
     pub accent: Rgb,
 }
@@ -785,8 +782,8 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
                 .buffer_unordered(concurrency())
         );
         while let Some((ids, id, cover)) = covers.next().await {
-            let Some((file, thumbnail_pixels, encoded, accent)) = cover else { continue };
-            let art = CoverArt { id, file: Arc::new(file), thumbnail_pixels, edge: thumb_edge, accent };
+            let Some((file, encoded, accent)) = cover else { continue };
+            let art = CoverArt { id, file: Arc::new(file), accent };
             if full_covers_dir.is_some() && full_tx.send((id, Arc::clone(&art.file))).await.is_err() {
                 return;
             }
@@ -977,8 +974,9 @@ async fn read_tags(path: &Path) -> Option<FileTags> {
 /// Reads one cached thumbnail by cover id, as `edge`²  RGBA plus that edge. `None` when it was never
 /// cached or will not decode -- a torn write, or a file from before the format changed.
 ///
-/// For a consumer that would rather load thumbnails as it needs them than hold the whole library's
-/// worth at once -- [`scan`] hands them over as it goes, but nothing says they must be kept.
+/// How a consumer gets at the pixels: [`scan`] hands over where a cover is and what colour it is
+/// ([`CoverArt`]) plus the encoded bytes, never the decoded picture, so that holding the library's
+/// worth of covers is a choice rather than the default.
 pub async fn read_thumbnail(covers_dir: &Path, id: u64) -> Option<(Arc<[u8]>, u32)> {
     let encoded = smol::fs::read(cover_file(covers_dir, id, THUMB_FORMAT)).await.ok()?;
     let img = smol::unblock(move || image::load_from_memory_with_format(&encoded, THUMB_FORMAT).ok()).await?;
@@ -986,14 +984,11 @@ pub async fn read_thumbnail(covers_dir: &Path, id: u64) -> Option<(Arc<[u8]>, u3
     Some((Arc::from(img.into_rgba8().into_raw()), edge))
 }
 
-/// Loads a cover thumbnail as `edge`²  RGBA, plus its accent color and absolute path. Reads the
-/// cached thumbnail when there is one, and otherwise decodes the original and caches the result.
-async fn load_cover(
-    path: PathBuf,
-    covers_dir: Option<&Path>,
-    id: u64,
-    edge: u32,
-) -> Option<(PathBuf, Arc<[u8]>, Arc<[u8]>, Rgb)> {
+/// Digests a cover: its absolute path, the thumbnail as the cache stores it (`edge`²  in
+/// [`THUMB_FORMAT`]), and its accent color. Reads the cached thumbnail when there is one, and
+/// otherwise decodes the original and caches the result. The decoded pixels are not handed back --
+/// the accent is all the scan needs them for, and a consumer that wants them has the cache.
+async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64, edge: u32) -> Option<(PathBuf, Arc<[u8]>, Rgb)> {
     // Absolute, so consumers (e.g. the MPRIS art URL) don't depend on our working directory.
     let file = smol::fs::canonicalize(path).await.ok()?;
     let cache_path = covers_dir.map(|dir| cover_file(dir, id, THUMB_FORMAT));
@@ -1010,8 +1005,7 @@ async fn load_cover(
                 // if it were what was asked for, and drawn at the wrong resolution ever after.
                 .filter(|rgb| rgb.width() == edge);
         if let Some(rgb) = rgb {
-            let accent = accent_color(rgb.as_raw());
-            return Some((file, rgb_to_rgba(rgb.as_raw()), encoded, accent));
+            return Some((file, encoded, accent_color(rgb.as_raw())));
         }
     }
 
@@ -1024,7 +1018,7 @@ async fn load_cover(
         log::warn!("could not cache thumbnail {cache_path:?}: {e}");
     }
     let accent = accent_color(&rgb);
-    Some((file, rgb_to_rgba(&rgb), Arc::from(encoded), accent))
+    Some((file, Arc::from(encoded), accent))
 }
 
 /// Loads a cover at `edge`²  RGBA from `cache_path`, decoding the original artwork and caching the
