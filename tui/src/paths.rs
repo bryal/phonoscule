@@ -41,5 +41,5 @@ pub fn album_index_file() -> Option<PathBuf> {
 
 /// The decoded cover thumbnails.
 pub fn covers_dir() -> Option<PathBuf> {
-    Some(library::covers_dir(&cache_dir()?))
+    Some(library::covers_dir(&cache_dir()?, crate::covers::COVER_EDGE))
 }

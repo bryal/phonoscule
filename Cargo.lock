@@ -3622,9 +3622,9 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "opuscule"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95ba00316be72d70cdedb4f764a0dc7f0070751e5fa1a779af3674ede77cebd0"
+checksum = "3014874b7b7cd28e8158e720be03b119feb637db2ff67938ca1377a4caf70908"
 
 [[package]]
 name = "orbclient"
@@ -3928,7 +3928,6 @@ version = "1.2.0-dev"
 dependencies = [
  "anyhow",
  "bytemuck",
- "bytes",
  "embedded-io-adapters",
  "embedded-io-async",
  "futures",

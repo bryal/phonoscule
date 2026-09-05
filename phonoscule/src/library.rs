@@ -20,21 +20,23 @@
 //! cover id is unchanged (pass it in [`ScanOptions::known_covers`] to skip its decoding
 //! entirely), and finally retain only [`ScanEvent::Done::album_ids`].
 
-use crate::{io::Skippable, metadata::Tag, opus, wav::Wav};
-use embedded_io_adapters::futures_03::FromFutures;
-use embedded_io_async::{Read as _, Seek as _, SeekFrom};
-use futures::{StreamExt, stream};
-use serde::{Deserialize, Serialize};
-use smol::{channel, fs::File, io::BufReader, stream::Stream};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
     future::Future,
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock},
+    thread,
     time::SystemTime,
 };
+
+use crate::{io::Skippable, metadata::Tag, opus, wav::Wav};
+use embedded_io_adapters::futures_03::FromFutures;
+use embedded_io_async::{Read as _, Seek as _, SeekFrom};
+use futures::{StreamExt, stream};
+use serde::{Deserialize, Serialize};
+use smol::{channel, fs::File, io::BufReader, stream::Stream};
 
 /// An sRGB color, components running 0 to 1: what a cover's accent is expressed in. Plain data, so
 /// a consumer converts it to whatever color type its toolkit wants.
@@ -84,7 +86,10 @@ pub struct TrackInfo {
     pub title: String,
 }
 
-/// Decoded cover art: the thumbnail pixels, and what was derived from them.
+/// A cover the scan has digested: where it came from and what was derived from it. No pixels -- a
+/// consumer that wants the thumbnail reads it back from the cache with [`read_thumbnail`] (or hands
+/// its toolkit the path from [`cover_file`]), or keeps the encoded bytes that ride beside this on
+/// [`ScanEvent::Cover`]. Cheap enough to hold for every album in the library.
 #[derive(Clone)]
 pub struct CoverArt {
     /// Stable content-derived id (image file path + mtime).
@@ -92,9 +97,6 @@ pub struct CoverArt {
     /// The (absolute) image file this was decoded from, e.g. for pointing other programs at it
     /// and decoding a higher-resolution version on demand (see [`decode_cover`]).
     pub file: Arc<PathBuf>,
-    /// The thumbnail: [`THUMB`]²  RGBA. Ref-counted, so this stays the only in-memory copy however
-    /// many consumers hold it.
-    pub pixels: Arc<[u8]>,
     /// The cover's most distinct color, e.g. for theming the surroundings after it.
     pub accent: Rgb,
 }
@@ -118,7 +120,17 @@ pub enum ScanEvent {
     /// album's current `cover_id` still matches [`CoverArt::id`]: an album can outgrow a queued
     /// cover mid-scan (a later directory contributed more of its tracks), and the stale decode
     /// must not overwrite the winner.
-    Cover { albums: Vec<u64>, art: CoverArt },
+    Cover {
+        albums: Vec<u64>,
+        art: CoverArt,
+        /// The same thumbnail as the cache stores it, in [`THUMB_FORMAT`], for a consumer that would
+        /// rather hold a library's worth of covers encoded and decode one when it draws it: at these
+        /// sizes that is tens of megabytes against hundreds.
+        ///
+        /// Beside the art rather than within it, so that a consumer keeping the art -- which is
+        /// mostly a path and an id -- does not keep these as well without meaning to.
+        encoded: Arc<[u8]>,
+    },
     /// The scan is complete: every album has been reported. Albums absent from `album_ids` no
     /// longer exist and should be dropped.
     Done { album_ids: Vec<u64> },
@@ -135,16 +147,37 @@ pub struct ScanOptions {
     pub known_covers: HashSet<u64>,
     /// Where tags are cached between scans. `None` disables persistence.
     pub cache_file: Option<PathBuf>,
-    /// Directory holding the raw decoded thumbnails, keyed by cover id. Reading one back is a
-    /// plain file read -- no image decoding -- so warm launches are fast even in debug builds.
-    /// `None` disables the cache (always decode from source).
+    /// Directory holding the cached thumbnails, keyed by cover id. `None` disables the cache
+    /// (always decode from source). Name it with [`covers_dir`], so the edge is in the path.
     pub covers_dir: Option<PathBuf>,
+    /// The square edge to decode thumbnails to. A consumer's own business: what a grid of album
+    /// cards wants and what a terminal drawing half blocks wants differ by a factor of four, and
+    /// decoding to more than will be drawn is work thrown away twice -- once to produce it, once to
+    /// shrink past it.
+    pub thumb_edge: u32,
+    /// Directory holding the [`FULL`]-size covers, filled for every album the scan sees so that
+    /// showing one later is a read rather than a decode of the whole sleeve. `None` for a consumer
+    /// that never draws a cover larger than its thumbnail, which is not free to say: filling it
+    /// costs a decode per cover that has none, on a scan that would otherwise have skipped it.
+    pub full_covers_dir: Option<PathBuf>,
 }
 
-/// The thumbnail cache directory to use under `dir`: the edge size is in its name, so bumping
-/// [`THUMB`] starts a fresh directory rather than reading mismatched files.
-pub fn covers_dir(dir: &Path) -> PathBuf {
-    dir.join(format!("covers.{THUMB}"))
+/// The thumbnail cache directory to use under `dir` for thumbnails of `edge` pixels: the size is in
+/// the name, so asking for a different one starts a fresh directory rather than reading a cache of
+/// the wrong resolution.
+pub fn covers_dir(dir: &Path, edge: u32) -> PathBuf {
+    dir.join(format!("covers.{edge}"))
+}
+
+/// The file the cover with this id is cached as under `dir`, in `format`.
+///
+/// Named with the format's own extension so a file browser will open one: a cache nobody can look
+/// through is a cache nobody can check. It also means a change of format renames every entry, so
+/// the old ones are visibly stale rather than silently unreadable.
+pub fn cover_file(dir: &Path, id: u64, format: image::ImageFormat) -> PathBuf {
+    // The canonical extension first, so JPEG is `.jpg` and not `.jpeg`.
+    let extension = format.extensions_str().first().copied().unwrap_or("bin");
+    dir.join(format!("{id:016x}.{extension}"))
 }
 
 /// Bumped when [`SavedAlbum`] changes shape or meaning (like the id derivation); an old or
@@ -249,36 +282,104 @@ pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output
     }
 }
 
-/// Cover thumbnails are downscaled to fit this square (center-cropped, like the iPod did). Sized
-/// for the library grid; the now-playing view decodes a higher-resolution version on demand. Also
-/// the LOD placeholder the cover flow shows until full-res arrives. Deliberately trades a bit of
-/// full-screen sharpening subtlety for faster cover loading -- at launch, every thumbnail is read
-/// from disk, and this squares into that bill.
-pub const THUMB: u32 = 320;
+/// The format cached thumbnails are stored in.
+///
+/// QOI: lossless, so an accent colour read back is the one that was computed, and it decodes in tens
+/// of microseconds where a JPEG of the same picture takes hundreds. It is only about half the size of
+/// the raw pixels it replaced, where JPEG would be a fifteenth -- the trade is deliberate, since what
+/// is being cached is already small enough that decoding it dominates reading it.
+///
+/// Self-describing, so a cache file carries its own dimensions and nothing has to agree in advance
+/// about what size it should be.
+pub const THUMB_FORMAT: image::ImageFormat = image::ImageFormat::Qoi;
 
-/// The edge the GUI's cover flow decodes its focused covers to (see [`decode_cover`]), for when the
-/// window is run full-screen. Short of a true 4K-panel edge on
-/// purpose: it halves the per-cover memory and decode time versus 1024² while staying crisp enough
-/// that the difference isn't visible at the sizes the flow actually draws.
-pub const FULL: u32 = 900;
+/// Full-sized cover resolution (square), optimized for the cover flow (see [`decode_cover`]).
+///
+/// Originals are often 1024^2 px, but that's a bit more resolution than we need.
+/// With the GUI's "Player" view in full-screen, the center cover is about 50% of the display height.
+/// On a 4K/UHD display, that means the greatest cover resolution we could possibly benefit from is about 1080^2 px.
+/// But to my eyes, we only need about 75% of that to look crisp enough.
+pub const FULL: u32 = 800;
 
-/// Decodes a cover from its original artwork to `edge`²  RGBA, center-cropped like the thumbnails.
+/// What the full-size cover cache stores, and what [`load_full_cover`] reads back. See
+/// [`encode_full_cover`] for why this one is lossy where [`THUMB_FORMAT`] is not.
+pub const FULL_FORMAT: image::ImageFormat = image::ImageFormat::Jpeg;
+
+/// The quality [`encode_full_cover`] writes at, on JPEG's 1-100 scale. At 90 a cover is around
+/// 180 KB against 920 KB stored losslessly, and the whole library's covers come to some 130 MB.
+const FULL_QUALITY: u8 = 90;
+
+/// How many threads we'll spawn and keep around just for decoding cover art.
+const DECODER_THREAD_COUNT: usize = 4;
+
+/// How the decoded pixels come out. The two consumers want different things and neither can widen or
+/// narrow the other's for free, so it is the caller's to name: a toolkit wants an alpha channel to
+/// hand its renderer, while the thumbnail cache stores three bytes a pixel and is a third smaller on
+/// disk for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pixels {
+    Rgb,
+    Rgba,
+}
+
+impl Pixels {
+    /// Bytes per pixel, for sizing a buffer or checking one is what it claims to be.
+    pub const fn stride(self) -> usize {
+        match self {
+            Pixels::Rgb => 3,
+            Pixels::Rgba => 4,
+        }
+    }
+}
+
+/// A decode to run: the artwork, the square edge to fit it to, and what to hand back.
+type Request = (PathBuf, u32, Pixels, futures::channel::oneshot::Sender<Option<Vec<u8>>>);
+
+/// Decodes a cover from its original artwork to `edge`²  in `pixels`, center-cropped.
 ///
 /// The size is the caller's to choose, and should be the size it means to draw: resizing to a fixed
 /// intermediate and then again to the target would do the work twice and lose detail the once would
-/// have kept. Ref-counted, so passing the result around costs nothing.
-pub async fn decode_cover(file: PathBuf, edge: u32) -> Option<Arc<[u8]>> {
-    smol::unblock(move || match image::open(&file) {
-        Ok(img) => {
-            let rgba = img.resize_to_fill(edge, edge, image::imageops::FilterType::Triangle).into_rgba8().into_raw();
-            Some(Arc::<[u8]>::from(rgba))
-        }
-        Err(e) => {
-            log::warn!("could not decode cover {file:?}: {e}");
-            None
-        }
-    })
-    .await
+/// have kept.
+///
+/// Runs on a small pool of threads of its own rather than the blocking pool, because decoding holds
+/// the *whole* source image -- several tens of megabytes for a large sleeve -- and a pool that grows
+/// on demand will happily hold a hundred of them at once. Requests queue; the queue is cheap, the
+/// concurrency is what costs.
+pub async fn decode_cover(file: PathBuf, edge: u32, pixels: Pixels) -> Option<Vec<u8>> {
+    use futures::channel::oneshot;
+    static DECODER_THREADS: LazyLock<(channel::Sender<Request>, [thread::JoinHandle<()>; DECODER_THREAD_COUNT])> =
+        LazyLock::new(|| {
+            let (req_tx, req_rx) = channel::unbounded::<Request>();
+            let threads = std::array::from_fn(|_thread_ix| {
+                let req_rx = req_rx.clone();
+                thread::spawn(move || {
+                    while let Ok((file, edge, pixels, resp_tx)) = req_rx.recv_blocking() {
+                        let decoded = image::open(&file)
+                            .inspect_err(|e| log::warn!("could not decode cover {file:?}: {e}"))
+                            .ok()
+                            .map(|img| {
+                                let img = img.resize_to_fill(edge, edge, image::imageops::FilterType::Triangle);
+                                match pixels {
+                                    Pixels::Rgb => img.into_rgb8().into_raw(),
+                                    Pixels::Rgba => img.into_rgba8().into_raw(),
+                                }
+                            });
+                        if resp_tx.send(decoded).is_err() {
+                            // That's awful rude of them to hang up on us while we were serving their request,
+                            // but no big deal. We'll just go on and serve the next request.
+                        }
+                    }
+                })
+            });
+            (req_tx, threads)
+        });
+
+    let (resp_tx, resp_rx) = oneshot::channel();
+    let (req_tx, _) = &*DECODER_THREADS;
+    // Never blocks in practice: the channel is unbounded. Keep it that way, or this needs to become
+    // an await.
+    req_tx.send_blocking((file, edge, pixels, resp_tx)).expect("decoder threads should never exit on their own accord");
+    resp_rx.await.ok().flatten()
 }
 
 /// Scans `root`, streaming results as they are found. The stream ends after [`ScanEvent::Done`]
@@ -303,13 +404,13 @@ fn concurrency() -> usize {
 struct CacheEntry {
     mtime: SystemTime,
     size: u64,
-    title: String,
-    artist: String,
-    album: String,
+    title: Box<str>,
+    artist: Box<str>,
+    album: Box<str>,
     /// Empty when the file carries no ALBUMARTIST tag.
-    album_artist: String,
+    album_artist: Box<str>,
     /// Empty when the file carries no genre tag.
-    genre: String,
+    genre: Box<str>,
     /// The track's position within its album, when tagged (parsed leniently -- see [`number`]).
     track: Option<u32>,
     /// The disc the track belongs to on a multi-disc album, when tagged.
@@ -322,11 +423,11 @@ struct CacheEntry {
 /// title)`, where the artist is the ALBUMARTIST tag when present, else the track's own artist.
 /// The directory plays no part: same key means same album wherever the files live.
 fn album_key(entry: &CacheEntry) -> (&str, &str) {
-    let artist = match entry.album_artist.as_str() {
-        "" => entry.artist.as_str(),
+    let artist = match entry.album_artist.as_ref() {
+        "" => entry.artist.as_ref(),
         a => a,
     };
-    (artist, entry.album.as_str())
+    (artist, entry.album.as_ref())
 }
 
 /// The stable album id: [`album_key`], hashed.
@@ -472,9 +573,9 @@ impl Assembler {
             pending.tracks.push(PendingTrack {
                 disc: entry.disc,
                 track: entry.track,
-                genre: entry.genre.clone(),
+                genre: entry.genre.to_string(),
                 year: entry.year,
-                info: TrackInfo { path: path.clone(), title: entry.title.clone() },
+                info: TrackInfo { path: path.clone(), title: entry.title.to_string() },
             });
             *pending.contributions.entry(dir.to_path_buf()).or_default() += 1;
             self.dirty.insert(id);
@@ -660,31 +761,56 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
         drop(cover_tx); // lets the cover phase finish
     };
 
-    // Best-effort: make the thumbnail cache directory once, up front.
-    if let Some(dir) = &options.covers_dir {
+    // Best-effort: make the cache directories once, up front.
+    for dir in [&options.covers_dir, &options.full_covers_dir].into_iter().flatten() {
         let _ = smol::fs::create_dir_all(dir).await;
     }
     let covers_dir = options.covers_dir.as_deref();
+    let full_covers_dir = options.full_covers_dir.as_deref();
+    let thumb_edge = options.thumb_edge;
+    // Hands each cover on to the full-size phase once its thumbnail is out. Bounded, so a scan that
+    // outruns the decoding waits rather than queueing the whole library.
+    let (full_tx, full_rx) = channel::bounded::<(u64, Arc<PathBuf>)>(64);
     let covers_phase = async {
         // Pinned on the stack: the channel receiver (hence the whole chain) is not `Unpin`.
         let mut covers = std::pin::pin!(
             cover_rx
                 .map(|(ids, path, mtime)| {
                     let id = stable_id((&path, mtime));
-                    async move { (ids, id, load_cover(path, covers_dir, id).await) }
+                    async move { (ids, id, load_cover(path, covers_dir, id, thumb_edge).await) }
                 })
                 .buffer_unordered(concurrency())
         );
         while let Some((ids, id, cover)) = covers.next().await {
-            let Some((file, pixels, accent)) = cover else { continue };
-            let art = CoverArt { id, file: Arc::new(file), pixels, accent };
-            if tx.send(ScanEvent::Cover { albums: ids, art }).await.is_err() {
+            let Some((file, encoded, accent)) = cover else { continue };
+            let art = CoverArt { id, file: Arc::new(file), accent };
+            if full_covers_dir.is_some() && full_tx.send((id, Arc::clone(&art.file))).await.is_err() {
+                return;
+            }
+            if tx.send(ScanEvent::Cover { albums: ids, art, encoded }).await.is_err() {
                 return;
             }
         }
+        drop(full_tx); // lets the full-size phase finish
     };
 
-    futures::join!(read_tags_phase, covers_phase);
+    // The full-size covers, behind the thumbnails rather than in front of them: a thumbnail is what
+    // the grid is waiting for, and making one of these costs a decode of the whole sleeve. Its own
+    // phase for that reason -- doing it inside the phase above would put that decode between every
+    // album and the screen. Both share the one decoder pool, so this cannot widen the peak.
+    let full_covers_phase = async {
+        let mut jobs = std::pin::pin!(
+            full_rx
+                .map(|(id, file)| async move {
+                    let Some(dir) = full_covers_dir else { return };
+                    cache_full_cover((*file).clone(), cover_file(dir, id, FULL_FORMAT), FULL).await;
+                })
+                .buffer_unordered(concurrency())
+        );
+        while jobs.next().await.is_some() {}
+    };
+
+    futures::join!(read_tags_phase, covers_phase, full_covers_phase);
     let album_ids: Vec<u64> = asm.assembled.keys().copied().collect();
     log::info!("scan done: found {} albums ({n_parsed} files (re)parsed)", album_ids.len());
 
@@ -757,19 +883,19 @@ async fn read_dir_tags(job: &DirJob, cache: &Cache) -> (Vec<(PathBuf, CacheEntry
                     mtime: file.mtime,
                     size: file.size,
                     title: match tags.title.as_str() {
-                        "" => file.path.file_stem().unwrap_or_default().to_string_lossy().to_string(),
-                        _ => tags.title,
+                        "" => file.path.file_stem().unwrap_or_default().to_string_lossy().into(),
+                        _ => tags.title.into(),
                     },
                     artist: match tags.artist.as_str() {
-                        "" => "Unknown Artist".to_string(),
-                        _ => tags.artist,
+                        "" => "Unknown Artist".into(),
+                        _ => tags.artist.into(),
                     },
                     album: match tags.album.as_str() {
-                        "" => "Singles".to_string(),
-                        _ => tags.album,
+                        "" => "Singles".into(),
+                        _ => tags.album.into(),
                     },
-                    album_artist: tags.album_artist,
-                    genre: tags.genre,
+                    album_artist: tags.album_artist.into(),
+                    genre: tags.genre.into(),
                     track: tags.track,
                     disc: tags.disc,
                     year: tags.year,
@@ -845,57 +971,144 @@ async fn read_tags(path: &Path) -> Option<FileTags> {
     Some(tags)
 }
 
-/// Number of bytes in a cached thumbnail: [`THUMB`]²  RGB.
-const THUMB_RGB_LEN: usize = (THUMB * THUMB * 3) as usize;
-
-/// Reads one cached thumbnail by cover id, as [`THUMB`]²  RGBA: a plain file read and a widening, no
-/// image decoding. `None` when it was never cached, or the file is not the size it should be.
+/// Reads one cached thumbnail by cover id, as `edge`²  RGBA plus that edge. `None` when it was never
+/// cached or will not decode -- a torn write, or a file from before the format changed.
 ///
-/// For a consumer that would rather load thumbnails as it needs them than hold the whole library's
-/// worth at once -- [`scan`] hands them over as it goes, but nothing says they must be kept.
-pub async fn read_thumbnail(covers_dir: &Path, id: u64) -> Option<Arc<[u8]>> {
-    let rgb = smol::fs::read(covers_dir.join(format!("{id:016x}"))).await.ok()?;
-    (rgb.len() == THUMB_RGB_LEN).then(|| rgb_to_rgba(&rgb))
+/// How a consumer gets at the pixels: [`scan`] hands over where a cover is and what colour it is
+/// ([`CoverArt`]) plus the encoded bytes, never the decoded picture, so that holding the library's
+/// worth of covers is a choice rather than the default.
+pub async fn read_thumbnail(covers_dir: &Path, id: u64) -> Option<(Arc<[u8]>, u32)> {
+    let encoded = smol::fs::read(cover_file(covers_dir, id, THUMB_FORMAT)).await.ok()?;
+    let img = smol::unblock(move || image::load_from_memory_with_format(&encoded, THUMB_FORMAT).ok()).await?;
+    let edge = img.width().min(img.height());
+    Some((Arc::from(img.into_rgba8().into_raw()), edge))
 }
 
-/// Loads a cover thumbnail as [`THUMB`]²  RGBA, plus its accent color and absolute path. Reads the
-/// raw cached thumbnail when present -- a plain file read, no image decoding, so this is fast even
-/// in debug builds. Otherwise decodes and downscales the source on the blocking pool (parallel
-/// regardless of executor threads) and caches the result for next time.
-async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64) -> Option<(PathBuf, Arc<[u8]>, Rgb)> {
+/// Digests a cover: its absolute path, the thumbnail as the cache stores it (`edge`²  in
+/// [`THUMB_FORMAT`]), and its accent color. Reads the cached thumbnail when there is one, and
+/// otherwise decodes the original and caches the result. The decoded pixels are not handed back --
+/// the accent is all the scan needs them for, and a consumer that wants them has the cache.
+async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64, edge: u32) -> Option<(PathBuf, Arc<[u8]>, Rgb)> {
     // Absolute, so consumers (e.g. the MPRIS art URL) don't depend on our working directory.
     let file = smol::fs::canonicalize(path).await.ok()?;
-    let cache_path = covers_dir.map(|dir| dir.join(format!("{id:016x}")));
+    let cache_path = covers_dir.map(|dir| cover_file(dir, id, THUMB_FORMAT));
 
-    if let Some(dir) = covers_dir
-        && let Ok(rgb) = smol::fs::read(dir.join(format!("{id:016x}"))).await
-        && rgb.len() == THUMB_RGB_LEN
+    if let Some(cache_path) = &cache_path
+        && let Ok(encoded) = smol::fs::read(cache_path).await
     {
-        let accent = accent_color(&rgb);
-        return Some((file, rgb_to_rgba(&rgb), accent));
+        let encoded: Arc<[u8]> = Arc::from(encoded);
+        let decoding = Arc::clone(&encoded);
+        let rgb =
+            smol::unblock(move || image::load_from_memory_with_format(&decoding, THUMB_FORMAT).ok().map(|img| img.into_rgb8()))
+                .await
+                // A cache written for a different edge is not this scan's to use: it would be handed back as
+                // if it were what was asked for, and drawn at the wrong resolution ever after.
+                .filter(|rgb| rgb.width() == edge);
+        if let Some(rgb) = rgb {
+            return Some((file, encoded, accent_color(rgb.as_raw())));
+        }
     }
 
-    let decode_file = file.clone();
-    let rgb = smol::unblock(move || decode_thumbnail(&decode_file)).await?;
+    let rgb = decode_thumbnail(file.clone(), edge).await?;
+    let encoded = encode_thumbnail(&rgb, edge)?;
     if let Some(cache_path) = &cache_path
-        && let Err(e) = smol::fs::write(cache_path, &rgb).await
+        && let Err(e) = smol::fs::write(cache_path, &encoded).await
     {
         // Best-effort: a failed write just means we decode again next launch.
         log::warn!("could not cache thumbnail {cache_path:?}: {e}");
     }
     let accent = accent_color(&rgb);
-    Some((file, rgb_to_rgba(&rgb), accent))
+    Some((file, Arc::from(encoded), accent))
 }
 
-/// Decodes an image file and downscales it to [`THUMB`]²  RGB, center-cropped to a square.
-fn decode_thumbnail(file: &Path) -> Option<Vec<u8>> {
-    match image::open(file) {
-        Ok(img) => Some(img.resize_to_fill(THUMB, THUMB, image::imageops::FilterType::Triangle).into_rgb8().into_raw()),
-        Err(e) => {
-            log::warn!("could not decode cover {file:?}: {e}");
-            None
+/// Loads a cover at `edge`²  RGBA from `cache_path`, decoding the original artwork and caching the
+/// result when it holds nothing usable. `None` if the artwork will not decode.
+///
+/// The counterpart to [`read_thumbnail`] for the sizes a cover is *looked* at rather than picked
+/// from, and the reason to have a cache at these sizes at all: a sleeve is some 1700 pixels square,
+/// so decoding one costs about six times what decoding this does, and holds a buffer several times
+/// the size of the answer while it works. Both of those are paid on every miss.
+pub async fn load_full_cover(file: PathBuf, cache_path: Option<PathBuf>, edge: u32) -> Option<Arc<[u8]>> {
+    if let Some(cache_path) = &cache_path
+        && let Ok(encoded) = smol::fs::read(cache_path).await
+    {
+        let cached = smol::unblock(move || image::load_from_memory_with_format(&encoded, FULL_FORMAT).ok())
+            .await
+            // A cache written for another edge is not this caller's to use: it would be handed back
+            // as if it were what was asked for, and drawn at the wrong resolution ever after.
+            .filter(|img| img.width() == edge && img.height() == edge);
+        if let Some(img) = cached {
+            return Some(Arc::from(img.into_rgba8().into_raw()));
         }
     }
+
+    // RGB from the decoder, because that is what gets encoded; the caller's alpha is added last.
+    let rgb = decode_cover(file, edge, Pixels::Rgb).await?;
+    let rgba = rgb_to_rgba(&rgb);
+    if let Some(cache_path) = cache_path {
+        write_full_cover(rgb, edge, cache_path).await;
+    }
+    Some(rgba)
+}
+
+/// Puts this cover in the full-size cache if it is not there already, decoding the artwork if so.
+///
+/// What fills the cache for a library rather than for a screen: [`load_full_cover`] only ever asks
+/// for the cover it is about to draw, so left to it the cache holds wherever the listener has been.
+/// A scan is the one pass that sees every album, and it is holding the artwork's path anyway.
+pub async fn cache_full_cover(file: PathBuf, cache_path: PathBuf, edge: u32) {
+    // Existence is the whole question -- a readable entry of the wrong size is `load_full_cover`'s
+    // to notice and overwrite, and reading every cover back to check would defeat the point.
+    if smol::fs::metadata(&cache_path).await.is_ok() {
+        return;
+    }
+    let Some(rgb) = decode_cover(file, edge, Pixels::Rgb).await else { return };
+    write_full_cover(rgb, edge, cache_path).await;
+}
+
+/// Encodes `edge`²  RGB pixels into the full-size cache. Best-effort, like the thumbnails': a
+/// failure just means the cover is decoded from its artwork again next time.
+async fn write_full_cover(rgb: Vec<u8>, edge: u32, cache_path: PathBuf) {
+    smol::unblock(move || match encode_full_cover(&rgb, edge) {
+        Some(encoded) => {
+            if let Err(e) = std::fs::write(&cache_path, &encoded) {
+                log::warn!("could not cache cover {cache_path:?}: {e}");
+            }
+        }
+        None => log::warn!("could not encode cover {cache_path:?}"),
+    })
+    .await;
+}
+
+/// Encodes `edge`²  RGB pixels for the full-size cover cache.
+///
+/// Lossy, where the thumbnails' [`THUMB_FORMAT`] is not. At 768 square a lossless cover is the best
+/// part of a megabyte, which would make the cache cost about what the artwork it stands in for does
+/// and defeat the point; JPEG is a tenth of that. The artwork is already a JPEG, so this is a second
+/// generation of one, and the quality is set high enough that it does not show at the size the cover
+/// flow draws these.
+fn encode_full_cover(rgb: &[u8], edge: u32) -> Option<Vec<u8>> {
+    let img = image::RgbImage::from_raw(edge, edge, rgb.to_vec())?;
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, FULL_QUALITY).encode_image(&img).ok()?;
+    Some(encoded.into_inner())
+}
+
+/// Encodes `edge`²  RGB pixels for the cache. `None` if they will not encode, which would mean the
+/// buffer and the edge disagree.
+fn encode_thumbnail(rgb: &[u8], edge: u32) -> Option<Vec<u8>> {
+    let img = image::RgbImage::from_raw(edge, edge, rgb.to_vec())?;
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img).write_to(&mut encoded, THUMB_FORMAT).ok()?;
+    Some(encoded.into_inner())
+}
+
+/// Decodes an image file and downscales it to `edge`²  RGB, center-cropped to a square.
+///
+/// RGB, not RGBA: this is what the cache stores, and an alpha channel on a cover is a channel of
+/// 255s.
+async fn decode_thumbnail(file: PathBuf, edge: u32) -> Option<Vec<u8>> {
+    decode_cover(file, edge, Pixels::Rgb).await
 }
 
 /// Expands packed RGB triplets to fully opaque RGBA quartets. The cache stores RGB, a third
@@ -987,6 +1200,55 @@ async fn save_cache(path: &Path, cache: &Cache) {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The point of naming entries after their format is that a file browser opens them, which a
+    /// fallback extension would quietly undo.
+    #[test]
+    fn a_cached_cover_is_named_for_what_is_in_it() {
+        let dir = Path::new("/covers.220");
+        assert_eq!(cover_file(dir, 0x2b, THUMB_FORMAT), Path::new("/covers.220/000000000000002b.qoi"));
+        assert_eq!(cover_file(dir, 0x2b, FULL_FORMAT), Path::new("/covers.220/000000000000002b.jpg"));
+    }
+
+    /// A cover written to the cache comes back from it, and one written at another edge does not:
+    /// a cache entry is handed back as if it were what was asked for, so a wrong-sized one would be
+    /// drawn at the wrong resolution ever after rather than failing where it could be seen.
+    #[test]
+    fn a_cached_cover_is_reused_only_at_its_own_edge() {
+        const EDGE: u32 = 32;
+        let root = std::env::temp_dir().join(format!("phonoscule-full-cover-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let artwork = root.join("cover.png");
+        // Distinguishable from the cache entry below, so "which one came back" is answerable.
+        image::RgbImage::from_fn(EDGE * 2, EDGE * 2, |x, _| image::Rgb([(x * 4) as u8, 0, 0])).save(&artwork).unwrap();
+
+        let cached = |edge: u32| {
+            let rgb = image::RgbImage::from_pixel(edge, edge, image::Rgb([0, 255, 0])).into_raw();
+            let path = root.join(format!("cache.{edge}"));
+            std::fs::write(&path, encode_full_cover(&rgb, edge).expect("encodes")).unwrap();
+            path
+        };
+
+        let green = |pixels: &Arc<[u8]>| pixels[1] > 200 && pixels[0] < 60;
+
+        let hit = smol::block_on(load_full_cover(artwork.clone(), Some(cached(EDGE)), EDGE)).expect("decodes");
+        assert_eq!(hit.len() as u32, EDGE * EDGE * 4, "RGBA at the edge asked for");
+        assert!(green(&hit), "the cache entry, not the artwork");
+
+        // The wrong edge is ignored, and the artwork is decoded and written over it instead.
+        let wrong = cached(EDGE / 2);
+        let miss = smol::block_on(load_full_cover(artwork.clone(), Some(wrong.clone()), EDGE)).expect("decodes");
+        assert_eq!(miss.len() as u32, EDGE * EDGE * 4, "still RGBA at the edge asked for");
+        assert!(!green(&miss), "the artwork, not the cache entry of the wrong size");
+        // The cache now holds the right size, so this load is a hit -- on the artwork's colours
+        // rather than the green, and only approximately equal to the first load, this being JPEG.
+        let rewritten = smol::block_on(load_full_cover(artwork, Some(wrong), EDGE)).expect("decodes");
+        assert!(!green(&rewritten), "still the artwork");
+        let worst = rewritten.iter().zip(miss.iter()).map(|(a, b)| a.abs_diff(*b)).max().expect("not empty");
+        assert!(worst < 16, "within a re-encode of the first load, off by at most {worst}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     /// The album index round-trips everything but the runtime-only cover art.
     #[test]
@@ -1110,7 +1372,7 @@ mod test {
                         }
                         albums.push(*album);
                     }
-                    ScanEvent::Cover { albums: ids, art } => {
+                    ScanEvent::Cover { albums: ids, art, .. } => {
                         for album in albums.iter_mut().filter(|a| ids.contains(&a.id) && a.cover_id == Some(art.id)) {
                             album.cover = Some(art.clone());
                         }
@@ -1208,6 +1470,8 @@ mod test {
     /// Cache-less scan options for a test library at `root`.
     fn plain_options(root: &Path) -> ScanOptions {
         ScanOptions {
+            thumb_edge: 64,
+            full_covers_dir: None,
             root: root.to_path_buf(),
             priority: vec![],
             known_covers: Default::default(),
@@ -1257,7 +1521,12 @@ mod test {
             std::fs::create_dir_all(root.join(dir)).unwrap();
             std::fs::write(root.join(dir).join("t.wav"), wav_bytes(title, "Artist", "Spread", Some(track))).unwrap();
         }
-        let options = || ScanOptions { cache_file: Some(root.join("cache.json")), ..plain_options(&root) };
+        let options = || ScanOptions {
+            thumb_edge: 64,
+            full_covers_dir: None,
+            cache_file: Some(root.join("cache.json")),
+            ..plain_options(&root)
+        };
 
         // The cold scan primes the cache (its events may show the album growing).
         let mut albums = Vec::new();
@@ -1395,6 +1664,8 @@ mod test {
             known_covers: Default::default(),
             cache_file: Some(cache_file.clone()),
             covers_dir: None,
+            thumb_edge: 64,
+            full_covers_dir: None,
         };
 
         // Initial scan populates the cache.

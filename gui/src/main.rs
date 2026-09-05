@@ -34,15 +34,12 @@ use iced::keyboard;
 /// All fonts are embedded and pinned, so the application looks the same everywhere without the
 /// user installing anything: Iosevka for text, Font Awesome for symbols & icons (which would
 /// otherwise be at the mercy of the system's fallback fonts -- colored emoji and all).
+///
+/// Only the faces that are drawn: every text is the regular weight and upright, and every icon is
+/// Font Awesome's black. A face embedded and never asked for is parsed at boot and carried in the
+/// binary for nothing, at a megabyte and a half each; add one back here when a style starts using it.
 static FONTS_DATA: &[&[u8]] = &[
-    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-ExtraLight.ttf"),
-    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-ExtraLightItalic.ttf"),
     include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-Regular.ttf"),
-    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-Italic.ttf"),
-    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-SemiBold.ttf"),
-    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-SemiBoldItalic.ttf"),
-    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-ExtraBold.ttf"),
-    include_bytes!("../assets/font-iosevka/IosevkaFixedSS05-ExtraBoldItalic.ttf"),
     include_bytes!("../assets/font-awesome/Font Awesome 7 Free-Solid-900.otf"),
 ];
 

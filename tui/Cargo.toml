@@ -11,10 +11,12 @@ repository.workspace = true
 phonoscule = { path = "../phonoscule", features = ["config", "dirs", "library", "media", "player", "queue", "search", "session", "sort", "volume", "watcher"] }
 crossterm = "0.29.0"
 ratatui = "0.30.2"
-# `chafa-dyn` is one of its defaults and would need libchafa at build and run time; without it a
-# terminal that speaks no image protocol falls back to unicode half blocks.
-ratatui-image = { version = "11.0.6", default-features = false, features = ["image-defaults", "crossterm"] }
-image = "0.25.10"
+# Half blocks only (see the covers module), so none of its protocol backends are wanted -- and
+# `image-defaults` would drag in every image codec to decode files this player never opens.
+ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
+# No codecs: the player reads raw thumbnails the library already decoded, and shrinks them. It never
+# opens an encoded image.
+image = { version = "0.25.10", default-features = false }
 anyhow = "1.0"
 futures = "0.3.32"
 smol                 = { workspace = true }

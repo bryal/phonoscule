@@ -23,15 +23,20 @@
 //! the previous split (selection in the model, geometry mirrored out of the view, scroll offset
 //! mirrored out of the scrollable) needed three files to cooperate.
 //!
-//! The caller supplies each card's cover as an [`Element`] (image or fallback, plus any floating
-//! action bubbles), which the grid lays out to exactly the cover square; build it size-agnostic
-//! (`Fill`). Titles and artists are passed as strings and drawn by the grid.
+//! Titles, artists and covers are all passed as data and drawn by the grid, so a library of any size
+//! is one widget with one child: the action bubbles for the card under the cursor. Nothing else about
+//! a card is a widget, which is what makes the culling below worth anything -- a tree of a thousand
+//! covers is diffed, laid out and walked in full on every message iced delivers, however few of them
+//! are on screen.
 
 use iced::advanced::renderer::{self, Renderer as _};
 use iced::advanced::widget::{Operation, Tree, tree};
-use iced::advanced::{Clipboard, Layout, Shell, Text, Widget, layout, mouse, overlay, text, text::Renderer as _};
+use iced::advanced::{
+    Clipboard, Layout, Shell, Text, Widget, image, image::Renderer as _, layout, mouse, overlay, text, text::Renderer as _,
+};
 use iced::keyboard::{self, key::Named};
-use iced::{Border, Color, Element, Event, Length, Pixels, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{Border, Color, Element, Event, Length, Pixels, Point, Rectangle, Renderer, Size, Theme, Vector};
+use std::ops::Range;
 
 /// Horizontal padding around the grid, and spacing between cards within a row.
 const GRID_PADDING: f32 = 16.0;
@@ -58,6 +63,7 @@ const WHEEL_LINE: f32 = 60.0;
 pub fn album_grid<'a, Message>(on_play: fn(usize) -> Message, on_queue: fn(usize) -> Message) -> AlbumGrid<'a, Message> {
     AlbumGrid {
         cards: Vec::new(),
+        bubbles: None,
         top_clearance: 0.0,
         bottom_clearance: 0.0,
         on_play,
@@ -69,7 +75,10 @@ pub fn album_grid<'a, Message>(on_play: fn(usize) -> Message, on_queue: fn(usize
 }
 
 pub struct AlbumGrid<'a, Message> {
-    cards: Vec<Card<'a, Message>>,
+    cards: Vec<Card<'a>>,
+    /// The floating action bubbles, and the card they belong over. The grid's only child: they are
+    /// the one part of a card that is a widget, and only ever for the card under the cursor.
+    bubbles: Option<(usize, Element<'a, Message>)>,
     /// Space above the first row (also what scrolling a selection up leaves clear -- the floating
     /// tabs live there) and below the last (so it can scroll out from under the player bar, which
     /// also bounds "in view" from below).
@@ -105,16 +114,37 @@ impl<Message> Clone for Selection<Message> {
 }
 impl<Message> Copy for Selection<Message> {}
 
-struct Card<'a, Message> {
-    cover: Element<'a, Message>,
+struct Card<'a> {
+    cover: Cover,
     title: &'a str,
     artist: &'a str,
 }
 
+/// What fills a card's cover square. Both variants carry the album's accent, and the square is
+/// painted that colour before anything else: an artwork handle names a file the renderer decodes off
+/// the main thread the first time it is drawn, so a card scrolling into view fills in from its colour
+/// rather than from nothing while that lands.
+pub enum Cover {
+    /// The album's artwork, drawn to the square exactly -- which for the square thumbnails the cache
+    /// stores is what `ContentFit::Cover` would have arrived at anyway.
+    Art { handle: image::Handle, accent: Option<Color> },
+    /// No artwork, whether it has yet to be cached or the album has none: the accent tile with the
+    /// title over it, so a fresh launch shows the library as a colour mosaic that sharpens into
+    /// artwork. The accent comes from the index, long before any pixels do.
+    Tile(Option<Color>),
+}
+
 impl<'a, Message> AlbumGrid<'a, Message> {
-    pub fn push(mut self, cover: impl Into<Element<'a, Message>>, title: &'a str, artist: &'a str) -> Self {
-        self.cards.push(Card { cover: cover.into(), title, artist });
+    pub fn push(mut self, cover: Cover, title: &'a str, artist: &'a str) -> Self {
+        self.cards.push(Card { cover, title, artist });
         self
+    }
+
+    /// The action bubbles to float over the card at `ix`. Build them for the card the cursor is on
+    /// and no other: they are a mouse affordance, and every card that cannot show them is widgets
+    /// built and walked for nothing.
+    pub fn bubbles(self, ix: usize, bubbles: impl Into<Element<'a, Message>>) -> Self {
+        Self { bubbles: Some((ix, bubbles.into())), ..self }
     }
 
     pub fn top_clearance(self, clearance: f32) -> Self {
@@ -187,11 +217,11 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
     }
 
     fn children(&self) -> Vec<Tree> {
-        self.cards.iter().map(|card| Tree::new(&card.cover)).collect()
+        self.bubbles.iter().map(|(_, bubbles)| Tree::new(bubbles)).collect()
     }
 
     fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&self.cards.iter().map(|card| &card.cover).collect::<Vec<_>>());
+        tree.diff_children(&self.bubbles.iter().map(|(_, bubbles)| bubbles).collect::<Vec<_>>());
         let state = tree.state.downcast_mut::<State>();
         // An externalized selection is the source of truth: sync from it every render.
         if let Some(selection) = self.selection {
@@ -210,27 +240,27 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
         let size = limits.max();
         let geom = self.geom(size.width);
-        // Each cover is laid out to exactly its square (they're built size-agnostic), positioned
-        // at its unscrolled content coordinates; drawing translates by the scroll offset.
-        let covers = self
-            .cards
+        // The bubbles are laid out to exactly their card's cover square (they're built
+        // size-agnostic), positioned at its unscrolled content coordinates; drawing translates by
+        // the scroll offset.
+        let bubbles = self
+            .bubbles
             .iter_mut()
             .zip(&mut tree.children)
-            .enumerate()
-            .map(|(ix, (card, tree))| {
-                let square = geom.cover(ix);
+            .map(|((ix, bubbles), tree)| {
+                let square = geom.cover(*ix);
                 let limits = layout::Limits::new(square.size(), square.size());
-                card.cover.as_widget_mut().layout(tree, renderer, &limits).move_to(square.position())
+                bubbles.as_widget_mut().layout(tree, renderer, &limits).move_to(square.position())
             })
             .collect();
-        layout::Node::with_children(size, covers)
+        layout::Node::with_children(size, bubbles)
     }
 
     fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
         operation.container(None, layout.bounds());
         operation.traverse(&mut |operation| {
-            for ((card, tree), layout) in self.cards.iter_mut().zip(&mut tree.children).zip(layout.children()) {
-                card.cover.as_widget_mut().operate(tree, layout, renderer, operation);
+            for ((_, bubbles), (tree, layout)) in self.bubbles.iter_mut().zip(tree.children.iter_mut().zip(layout.children())) {
+                bubbles.as_widget_mut().operate(tree, layout, renderer, operation);
             }
         });
     }
@@ -274,17 +304,14 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
             None => mouse::Cursor::Unavailable,
         };
         let content_viewport = Rectangle { y: bounds.y + offset, ..bounds };
-        for ((card, tree), layout) in self.cards.iter_mut().zip(&mut tree.children).zip(layout.children()) {
-            card.cover.as_widget_mut().update(
-                tree,
-                event,
-                layout,
-                content_cursor,
-                renderer,
-                clipboard,
-                shell,
-                &content_viewport,
-            );
+        // Which card the cursor is on, straight from the geometry: the grid no longer has a node per
+        // card to hit-test against, and arithmetic beats walking them even when it did.
+        let hovered = || content_cursor.position().and_then(|at| geom.hit(at - Vector::new(bounds.x, bounds.y), n));
+
+        if let (Some((_, bubbles)), Some(tree), Some(layout)) =
+            (self.bubbles.as_mut(), tree.children.first_mut(), layout.children().next())
+        {
+            bubbles.as_widget_mut().update(tree, event, layout, content_cursor, renderer, clipboard, shell, &content_viewport);
         }
         if shell.is_event_captured() || !self.interactive {
             return;
@@ -296,7 +323,7 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                 // nothing when the cursor is over none. Reacting to actual cursor movement (not
                 // per-frame hit tests) keeps keyboard navigation stable while it scrolls content
                 // under a stationary mouse.
-                let hovered = layout.children().position(|cover| content_cursor.is_over(cover.bounds()));
+                let hovered = hovered();
                 if state.selected != hovered {
                     state.selected = hovered;
                     shell.request_redraw();
@@ -316,7 +343,7 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                 // it, but select anyway: a click can land without a preceding move (e.g. through a
                 // just-focused window).
                 if let Some(on_menu) = self.on_menu
-                    && let Some(ix) = layout.children().position(|cover| content_cursor.is_over(cover.bounds()))
+                    && let Some(ix) = hovered()
                 {
                     state.selected = Some(ix);
                     shell.publish(on_menu(ix));
@@ -383,30 +410,25 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
     ) -> mouse::Interaction {
         let bounds = layout.bounds();
         let state = tree.state.downcast_ref::<State>();
-        let offset = state.offset.clamp(0.0, self.geom(bounds.width).max_offset(self.cards.len(), bounds.height));
+        let geom = self.geom(bounds.width);
+        let offset = state.offset.clamp(0.0, geom.max_offset(self.cards.len(), bounds.height));
         let content_cursor = match cursor.position_over(bounds) {
             Some(position) => mouse::Cursor::Available(position + Vector::new(0.0, offset)),
             None => mouse::Cursor::Unavailable,
         };
         let content_viewport = Rectangle { y: bounds.y + offset, ..bounds };
 
-        let from_children = self
-            .cards
-            .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
-            .map(|((card, tree), layout)| {
-                card.cover.as_widget().mouse_interaction(tree, layout, content_cursor, &content_viewport, renderer)
-            })
-            .max()
-            .unwrap_or_default();
+        let from_bubbles = match (self.bubbles.as_ref(), tree.children.first(), layout.children().next()) {
+            (Some((_, bubbles)), Some(tree), Some(layout)) => {
+                bubbles.as_widget().mouse_interaction(tree, layout, content_cursor, &content_viewport, renderer)
+            }
+            _ => mouse::Interaction::None,
+        };
 
         // A pointer over any cover, since clicking it selects.
-        if from_children == mouse::Interaction::None && layout.children().any(|cover| content_cursor.is_over(cover.bounds())) {
-            mouse::Interaction::Pointer
-        } else {
-            from_children
-        }
+        let over_cover =
+            content_cursor.position().and_then(|at| geom.hit(at - Vector::new(bounds.x, bounds.y), self.cards.len())).is_some();
+        if from_bubbles == mouse::Interaction::None && over_cover { mouse::Interaction::Pointer } else { from_bubbles }
     }
 
     fn draw(
@@ -432,12 +454,17 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
         // Hoisted out of the closure below: `fill_text` needs the renderer mutably.
         let font = renderer.default_font();
 
+        // Only the cards on screen: a library is thousands of them and a screen holds a few dozen.
+        let shown = geom.visible(offset, bounds.height, self.cards.len());
+        let origin = Vector::new(bounds.x, bounds.y);
+
         renderer.with_layer(visible, |renderer| {
             renderer.with_translation(Vector::new(0.0, -offset), |renderer| {
-                for (ix, ((card, tree), layout)) in self.cards.iter().zip(&tree.children).zip(layout.children()).enumerate() {
-                    // Every card rect derives from its laid-out cover square, so the draw can't
-                    // disagree with the layout.
-                    let cover = layout.bounds();
+                for ix in shown {
+                    let card = &self.cards[ix];
+                    // Every card rect derives from its cover square, the same one layout and
+                    // keyboard navigation work from, so none of the three can disagree.
+                    let cover = geom.cover(ix) + origin;
                     let cell =
                         Rectangle { x: cover.x - CARD_PAD, y: cover.y - CARD_PAD, width: geom.side, height: geom.card_h() };
                     if cell.intersection(&content_viewport).is_none() {
@@ -455,7 +482,46 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                             Color { a: 0.5, ..theme.extended_palette().primary.weak.color },
                         );
                     }
-                    card.cover.as_widget().draw(tree, renderer, theme, defaults, layout, content_cursor, &content_viewport);
+                    // The accent tile first, under whatever else the square gets (see [`Cover`]).
+                    // Dimmed, so the title over a bare tile stays readable on any accent.
+                    let (Cover::Art { accent, .. } | Cover::Tile(accent)) = &card.cover;
+                    let background = match accent {
+                        Some(c) => Color { r: 0.55 * c.r, g: 0.55 * c.g, b: 0.55 * c.b, a: 1.0 },
+                        None => theme.extended_palette().background.weak.color,
+                    };
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: cover,
+                            border: Border { radius: 2.0.into(), ..Border::default() },
+                            ..renderer::Quad::default()
+                        },
+                        background,
+                    );
+                    match &card.cover {
+                        // Clipped to the square it is drawn to: the two agree for square artwork,
+                        // and a cover that is not square is cropped rather than let out of its card.
+                        Cover::Art { handle, .. } => {
+                            renderer.draw_image(image::Image::new(handle.clone()).snap(true), cover, cover);
+                        }
+                        Cover::Tile(_) => {
+                            renderer.fill_text(
+                                Text {
+                                    content: card.title.to_owned(),
+                                    bounds: cover.size(),
+                                    size: Pixels(16.0),
+                                    line_height: text::LineHeight::default(),
+                                    font,
+                                    align_x: text::Alignment::Center,
+                                    align_y: iced::alignment::Vertical::Center,
+                                    shaping: text::Shaping::Advanced,
+                                    wrapping: text::Wrapping::default(),
+                                },
+                                cover.center(),
+                                defaults.text_color,
+                                cover,
+                            );
+                        }
+                    }
 
                     // Title and artist, in the fixed blocks the card height is computed from. The
                     // clip rects enforce the two-line/one-line limits.
@@ -491,6 +557,12 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                         artist,
                     );
                 }
+                // Over the card they belong to, and after it, so nothing is drawn on top of them.
+                if let (Some((_, bubbles)), Some(tree), Some(layout)) =
+                    (self.bubbles.as_ref(), tree.children.first(), layout.children().next())
+                {
+                    bubbles.as_widget().draw(tree, renderer, theme, defaults, layout, content_cursor, &content_viewport);
+                }
             });
         });
     }
@@ -507,16 +579,12 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
         let state = tree.state.downcast_ref::<State>();
         let offset = state.offset.clamp(0.0, self.geom(bounds.width).max_offset(self.cards.len(), bounds.height));
         let translation = translation - Vector::new(0.0, offset);
-        let children = self
-            .cards
-            .iter_mut()
-            .zip(&mut tree.children)
-            .zip(layout.children())
-            .filter_map(|((card, tree), layout)| {
-                card.cover.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
-            })
-            .collect::<Vec<_>>();
-        (!children.is_empty()).then(|| overlay::Group::with_children(children).overlay())
+        let (Some((_, bubbles)), Some(tree), Some(layout)) =
+            (self.bubbles.as_mut(), tree.children.first_mut(), layout.children().next())
+        else {
+            return None;
+        };
+        bubbles.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
     }
 }
 
@@ -588,6 +656,19 @@ impl Geom {
         }
     }
 
+    /// The album whose cover square holds `point`, given in the same unscrolled content coordinates
+    /// [`cover`](Self::cover) returns. The gaps between cards, and the text below one, belong to no
+    /// album: this is the cover square and not the card.
+    fn hit(&self, point: Point, n: usize) -> Option<usize> {
+        let row = ((point.y - self.top) / self.pitch()).floor();
+        let col = ((point.x - GRID_PADDING) / (self.side + GRID_SPACING)).floor();
+        if row < 0.0 || col < 0.0 || col >= self.cols as f32 {
+            return None;
+        }
+        let ix = row as usize * self.cols + col as usize;
+        (ix < n && self.cover(ix).contains(point)).then_some(ix)
+    }
+
     /// How far the grid can scroll: the content height (clearances included) beyond the viewport.
     fn max_offset(&self, n: usize, view_h: f32) -> f32 {
         let rows = n.div_ceil(self.cols.max(1));
@@ -602,6 +683,23 @@ impl Geom {
         // offset.
         let row = (((offset - self.top - self.card_h()) / self.pitch()).floor() + 1.0).max(0.0) as usize;
         row.min((n - 1) / self.cols) * self.cols
+    }
+
+    /// The albums touching the viewport, as an index range. What the grid walks per frame instead of
+    /// all of them: a library is thousands of cards and a screen holds a few dozen, and every
+    /// traversal that visits one it cannot show is time spent on nothing.
+    ///
+    /// A row either side of the viewport is included, so a card is laid out and hit-testable just
+    /// before it is scrolled into view.
+    fn visible(&self, offset: f32, view_h: f32, n: usize) -> Range<usize> {
+        if n == 0 {
+            return 0..0;
+        }
+        let first_row = ((offset - self.top) / self.pitch()).floor().max(0.0) as usize;
+        let last_row = ((offset + view_h - self.top) / self.pitch()).ceil().max(0.0) as usize;
+        let start = first_row.saturating_sub(1) * self.cols;
+        let end = ((last_row + 1) * self.cols).min(n);
+        start.min(n)..end
     }
 
     /// The scroll offset that brings the given row fully into view, or `None` if it already is.
@@ -656,6 +754,51 @@ mod test {
     // tab clearance above and the player bar below.
     const GEOM: Geom = Geom { cols: COLS, side: 168.0, top: 60.0, bottom: 152.0 };
     const VIEW_H: f32 = 800.0;
+
+    /// The culled traversals hit-test and lay out only this range, so anything it wrongly excludes
+    /// becomes a card that cannot be hovered or clicked. It must therefore err wide, never narrow.
+    #[test]
+    fn the_visible_range_covers_everything_on_screen() {
+        // Every album whose card overlaps the viewport, found the slow way.
+        let on_screen = |offset: f32| -> Vec<usize> {
+            (0..N)
+                .filter(|&ix| {
+                    let top = GEOM.top + (ix / COLS) as f32 * GEOM.pitch();
+                    top + GEOM.card_h() > offset && top < offset + VIEW_H
+                })
+                .collect()
+        };
+        for offset in [0.0, 100.0, 255.0, 400.0, GEOM.max_offset(N, VIEW_H)] {
+            let shown = GEOM.visible(offset, VIEW_H, N);
+            for ix in on_screen(offset) {
+                assert!(shown.contains(&ix), "album {ix} is on screen at offset {offset} but outside {shown:?}");
+            }
+            assert!(shown.end <= N, "at offset {offset}, {shown:?} runs past the {N} albums there are");
+        }
+        assert_eq!(GEOM.visible(0.0, VIEW_H, 0), 0..0, "no albums, nothing to walk");
+    }
+
+    /// Hovering and clicking both ask the geometry which card the cursor is on, so a card this
+    /// misses cannot be selected or opened at all.
+    #[test]
+    fn the_cursor_lands_on_the_card_it_is_over() {
+        let hit = |x: f32, y: f32| GEOM.hit(Point::new(x, y), N);
+        for ix in [0, 4, 5, 12] {
+            let square = GEOM.cover(ix);
+            assert_eq!(hit(square.center_x(), square.center_y()), Some(ix), "the middle of card {ix}");
+            assert_eq!(hit(square.x, square.y), Some(ix), "its top-left corner");
+        }
+        // The card pad and the row spacing belong to no album, and neither does the text below one.
+        let first = GEOM.cover(0);
+        assert_eq!(hit(first.x - 1.0, first.center_y()), None, "the pad left of the first card");
+        assert_eq!(hit(first.center_x(), first.y + first.height + 1.0), None, "the title block below it");
+        assert_eq!(hit(first.center_x(), 0.0), None, "the clearance above the grid");
+        // Past the last column is a miss, not a wrap onto the next row's first card.
+        let last_col = GEOM.cover(COLS - 1);
+        assert_eq!(hit(last_col.x + last_col.width + 8.0, last_col.center_y()), None, "right of the last column");
+        // Row 2 holds albums 10..=12 of the 13 there are; the two empty cells sit over nothing.
+        assert_eq!(hit(GEOM.cover(13).center_x(), GEOM.cover(13).center_y()), None, "past the last album");
+    }
 
     #[test]
     fn horizontal_selection_is_linear_and_clamped() {

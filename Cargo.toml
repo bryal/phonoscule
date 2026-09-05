@@ -13,5 +13,21 @@ log = { version = "0.4.33", features = ["max_level_trace", "release_max_level_de
 embedded-io = "0.7.1"
 embedded-io-async = "0.7.0"
 embedded-io-adapters = { version = "0.7.0", features = ["futures-03"] }
+futures = "0.3.34"
 smol = "2.0"
 simple_logger = "5.2"
+
+# The `release` build we want to measure, plus the debug info a sampling profiler needs. Sample it
+# with `RUSTFLAGS="-C force-frame-pointers=yes"`; see docs/performance.md.
+[profile.profiling]
+inherits = "release"
+debug = "limited"
+
+# The decoder's hot path spans six of its modules, which the default sixteen codegen units optimise
+# separately. Only this package, since the rest of the graph showed no gain and iced and wgpu are slow
+# to link. Cargo ignores a dependency's own profile, so it has to be asked for here.
+[profile.release.package.opuscule]
+codegen-units = 1
+
+[profile.profiling.package.opuscule]
+codegen-units = 1

@@ -131,13 +131,15 @@ fn drain(root: PathBuf) -> Vec<Album> {
             known_covers: Default::default(),
             cache_file: None,
             covers_dir: None,
+            thumb_edge: 256,
+            full_covers_dir: None,
         };
         let mut albums: Vec<Album> = Vec::new();
         let mut stream = std::pin::pin!(library::scan(options));
         while let Some(event) = stream.next().await {
             match event {
                 ScanEvent::Album(album) => albums.push(*album),
-                ScanEvent::Cover { albums: ids, art } => {
+                ScanEvent::Cover { albums: ids, art, .. } => {
                     for album in albums.iter_mut().filter(|a| ids.contains(&a.id)) {
                         album.cover = Some(art.clone());
                     }

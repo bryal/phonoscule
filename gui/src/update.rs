@@ -13,6 +13,7 @@ use phonoscule::library::{self, Album};
 use phonoscule::queue::{self, Grouping, Scope};
 use phonoscule::sort::SortOrder;
 use phonoscule::{media, player, session};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -175,8 +176,14 @@ pub enum Msg {
     /// SeekChanged/SeekReleased instead, since a drag is a stream of absolute fractions).
     Seek(Seek),
     /// A high-resolution cover finished decoding (`None` if the decode failed), to be stored in the
-    /// global high-res cache (see `ensure_hires`).
+    /// high-res cache (see `ensure_covers`).
     HiResLoaded {
+        id: u64,
+        pixels: Option<Arc<[u8]>>,
+    },
+    /// A thumbnail was read back from the cache for the cover flow (`None` if there was none to
+    /// read), to be stored in the thumbnail cache (see `ensure_covers`).
+    ThumbLoaded {
         id: u64,
         pixels: Option<Arc<[u8]>>,
     },
@@ -277,17 +284,21 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             app.albums.insert(ix, *album);
             refresh_filter(app);
         }
-        Msg::Library(library::ScanEvent::Cover { albums, art }) => {
+        Msg::Library(library::ScanEvent::Cover { albums, art, .. }) => {
             // Only albums whose current cover choice this art satisfies take it: an album can
             // outgrow a queued cover mid-scan (see `ScanEvent::Cover`), and the stale decode must
             // not overwrite the winner -- neither on the album nor on its queue items.
             let accepted: Vec<u64> =
                 app.albums.iter().filter(|a| albums.contains(&a.id) && a.cover_id == Some(art.id)).map(|a| a.id).collect();
-            if !accepted.is_empty() {
-                // The handle for these pixels, made exactly once (see `App::covers`). It wraps the
-                // scan's bitmap rather than copying it, so this costs an id and a refcount.
-                let pixels = bytes::Bytes::from_owner(art.pixels.clone());
-                app.covers.insert(art.id, iced::widget::image::Handle::from_rgba(library::THUMB, library::THUMB, pixels));
+            if !accepted.is_empty()
+                && let Some(dir) = &app.covers_dir
+            {
+                // A handle naming the cached file, not holding pixels (see `App::thumbnails`). The
+                // scan has just written or verified that file, so it is there to be read -- barring a
+                // write it could not make (it says so in the log), which leaves that card on its
+                // accent until the next launch's scan writes it again.
+                let path = library::cover_file(dir, art.id, library::THUMB_FORMAT);
+                app.thumbnails.insert(art.id, iced::widget::image::Handle::from_path(path));
             }
             for album in app.albums.iter_mut().filter(|a| accepted.contains(&a.id)) {
                 album.cover = Some(art.clone());
@@ -301,11 +312,17 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 item.accent = Some(color(art.accent));
             }
             // The playing track's cover art may just have arrived -- notably right after boot,
-            // when a restored queue's covers all hydrate through the scan. Re-publish it, and
-            // (re)fill the cover flow's high-res window that TrackStarted found coverless.
+            // when a restored queue's covers all hydrate through the scan. Re-publish it.
             if app.queue.get(app.current).is_some_and(|item| accepted.contains(&item.album_id)) {
                 publish_media(app);
-                return ensure_hires(app);
+            }
+            // Any queued album's cover arriving can complete the flow's windows, and only the
+            // album it arrived for. A scan hydrates the queue one album at a time, so an
+            // `ensure_covers` run before its neighbours' covers exist skips them and nothing asks
+            // again -- which left the window with whatever had happened to arrive by then. Cheap to
+            // repeat: a resident or in-flight cover makes the query a no-op.
+            if app.queue.iter().any(|item| accepted.contains(&item.album_id)) {
+                return ensure_covers(app);
             }
         }
         Msg::Library(library::ScanEvent::Done { album_ids }) => {
@@ -323,7 +340,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 .chain(app.queue.iter().filter_map(|i| i.cover.as_ref()))
                 .map(|c| c.id)
                 .collect();
-            app.covers.retain(|id, _| live.contains(id));
+            app.thumbnails.retain(|id, _| live.contains(id));
             app.scan = ScanState::Complete;
             refresh_filter(app);
             // Persist the settled album list for the next launch's instant grid -- only when this
@@ -413,7 +430,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             if !items.is_empty() {
                 app.send(player::Cmd::Append { tracks: entries(&items) });
                 app.queue.extend(items);
-                return save_playlist(app);
+                return Task::batch([ensure_covers(app), save_playlist(app)]);
             }
         }
         Msg::OpenPicker(subject) => return open_picker(app, subject),
@@ -506,7 +523,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 app.queue.push(item);
                 // Step onto the next track, so successive presses queue an album run.
                 let step = menu_step(app, MenuDir::Down);
-                return Task::batch([step, save_playlist(app)]);
+                return Task::batch([step, ensure_covers(app), save_playlist(app)]);
             }
         }
         Msg::MenuPlay => {
@@ -567,7 +584,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             if let Some(item) = track_item(app, album, track) {
                 app.send(player::Cmd::Append { tracks: entries(std::slice::from_ref(&item)) });
                 app.queue.push(item);
-                return save_playlist(app);
+                return Task::batch([ensure_covers(app), save_playlist(app)]);
             }
         }
         Msg::Player(event) => match event {
@@ -582,9 +599,9 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 // the whole idle gap (which would jump the animation far in a single step).
                 app.last_frame = Instant::now();
                 publish_media(app);
-                // The playing album moved: ensure the cover flow's high-res window around it, and
-                // remember the new position for the next restore.
-                return Task::batch([ensure_hires(app), save_player(app)]);
+                // The playing album moved: ensure the cover flow's windows around it, and remember
+                // the new position for the next restore.
+                return Task::batch([ensure_covers(app), save_player(app)]);
             }
             player::Event::Progress(t) => {
                 // While a seek is settling, ignore reports until playback reaches (roughly) the
@@ -716,10 +733,11 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::Seek(seek) => do_seek(app, seek),
-        // The cache absorbs its own query's result: memoized if it decoded, forgotten if it
-        // failed. Kept even if the window has moved past this album -- a later hop back is then
-        // instant, and the LRU bound retires it in time regardless.
+        // A cache absorbs its own query's result: memoized if it loaded, forgotten if it failed.
+        // Kept even if the window has moved past this album -- a later hop back is then instant,
+        // and the LRU bound retires it in time regardless.
         Msg::HiResLoaded { id, pixels } => app.hires.complete(id, pixels),
+        Msg::ThumbLoaded { id, pixels } => app.thumbs.complete(id, pixels),
         Msg::Frame(now) => {
             // Clamp to ~one frame: after an idle stretch (frames only run while animating) the
             // gap since the last frame would otherwise lurch every animation forward at once.
@@ -777,7 +795,7 @@ fn queue_album(app: &mut App, ix: usize) -> Task<Msg> {
     let items = queue_items(album);
     app.send(player::Cmd::Append { tracks: entries(&items) });
     app.queue.extend(items);
-    save_playlist(app)
+    Task::batch([ensure_covers(app), save_playlist(app)])
 }
 
 /// Snapshots the queue's tracks to disk, fire-and-forget (see the playlist module). Returned by
@@ -828,7 +846,7 @@ fn shuffle_queue(app: &mut App, grouping: Grouping, scope: Scope) -> Task<Msg> {
         }
     }
     app.anim_pos = flow_target(app);
-    Task::batch([save_playlist(app), save_player(app)])
+    Task::batch([ensure_covers(app), save_playlist(app), save_player(app)])
 }
 
 /// Resolves a grid message's index (into the filtered list) to a real album index, or `None` for
@@ -954,11 +972,11 @@ fn menu_step(app: &mut App, dir: MenuDir) -> Task<Msg> {
     widget::operate(widget::operation::scrollable::snap_to(widget::Id::new(TRACK_MENU_SCROLL_ID), to))
 }
 
-/// Warms the global high-res cache with the cover of the album at `ix` (see `HiResCache::query`);
-/// idempotent, so callers fire it on any hint that the album is about to play.
+/// Warms the high-res cache with the cover of the album at `ix` (see [`query_hires`]); idempotent,
+/// so callers fire it on any hint that the album is about to play.
 fn preload_cover(app: &mut App, ix: usize) -> Task<Msg> {
     match app.albums.get(ix).and_then(|a| a.cover.as_ref()).map(|c| (c.id, c.file.clone())) {
-        Some((id, file)) => app.hires.query(id, file),
+        Some((id, file)) => query_hires(app, id, &file),
         None => Task::none(),
     }
 }
@@ -1021,15 +1039,17 @@ fn next_album(app: &App) {
     }
 }
 
-/// Options for a periodic re-scan: skip re-decoding all the cover art we already hold. No cover
-/// priority -- the covers that matter are long loaded by now.
+/// Options for a periodic re-scan: skip re-digesting all the cover art we already know. No cover
+/// priority -- the covers that matter are long known by now.
 fn rescan_options(app: &App) -> library::ScanOptions {
     library::ScanOptions {
         root: app.conf.music_dir.clone(),
         priority: vec![],
         known_covers: app.albums.iter().filter_map(|a| a.cover.as_ref().map(|c| c.id)).collect(),
         cache_file: paths::tag_cache_file(),
-        covers_dir: paths::covers_dir(),
+        covers_dir: app.covers_dir.clone(),
+        thumb_edge: paths::THUMB_EDGE,
+        full_covers_dir: app.full_covers_dir.clone(),
     }
 }
 
@@ -1053,35 +1073,76 @@ fn publish_media(app: &App) {
 }
 
 /// How many album runs on each side of the playing one the cover flow ensures are held in the
-/// high-res cache (plus the current run itself). Asymmetric because skipping forward is more common
-/// than back. There is no separate eviction here: covers that fall outside this span stay in the
-/// global cache until its LRU bound retires them (see [`HiResCache`](crate::model::HiResCache)), so
-/// a short hop back finds them still resident and instant.
-const ENSURE_PREV: usize = 8;
-const ENSURE_NEXT: usize = 10;
+/// high-res cache (plus the current run itself).
+///
+/// The flow draws further out than this -- covers stay in it to `VISIBLE_RANGE`, half again as far.
+/// Those ride on their thumbnails, which is the point: a cover six places out is faded most of the
+/// way to nothing and tilted away, and there is no resolution to make out. Anything nearer that has
+/// not arrived yet is a read and a small decode away, a few milliseconds, since the covers are on
+/// disk (see [`library::load_full_cover`]).
+///
+/// There is no separate eviction here: covers that fall outside this span stay in the cache until
+/// its LRU bound retires them (see [`CoverCache`](crate::model::CoverCache)), so a short hop back
+/// finds them still resident and instant.
+pub const ENSURE_PREV: usize = 5;
+pub const ENSURE_NEXT: usize = 5;
 
-/// Queries the high-res cache for the covers around the playing album, so it decodes the ones it
-/// doesn't already hold and keeps the on-screen window hot in its LRU. The cache owns all the
-/// fetch-or-decode bookkeeping (see [`HiResCache::query`](crate::model::HiResCache::query)); this
-/// just declares the window. Returns the batch of resulting decode tasks (empty if all resident).
-fn ensure_hires(app: &mut App) -> Task<Msg> {
+/// How many album runs on each side of the playing one the cover flow ensures are held in the
+/// thumbnail cache: everything it draws, so a cover past the high-res window still has its
+/// thumbnail to show rather than a bare accent tile. Derived from the flow's own reach so the two
+/// cannot drift apart.
+pub const THUMB_SPAN: usize = crate::coverflow::VISIBLE_RANGE as usize;
+
+/// Queries the cover caches for the covers around the playing album -- thumbnails for everything
+/// the flow draws, high-res inside the narrower window -- so they load the ones they don't already
+/// hold and keep the on-screen span hot in their LRUs. The caches own the dedup bookkeeping (see
+/// [`CoverCache::query`](crate::model::CoverCache::query)); this just declares the windows. Returns
+/// the batch of resulting load tasks (empty if all resident).
+///
+/// Called wherever the queue's runs change around the flow: a track change, a cover arriving, and
+/// every append or reorder -- those give the playing album new neighbours without reopening a
+/// track, so nothing else would ask for their covers.
+fn ensure_covers(app: &mut App) -> Task<Msg> {
     let runs = album_runs(&app.queue);
     if runs.is_empty() {
         return Task::none();
     }
     let center = run_of(&runs, app.current);
-    let last = runs.len() - 1;
-    let lo = center.saturating_sub(ENSURE_PREV);
-    let hi = (center + ENSURE_NEXT).min(last);
+    let lo = center.saturating_sub(THUMB_SPAN);
+    let hi = (center + THUMB_SPAN).min(runs.len() - 1);
 
     let mut tasks = Vec::new();
-    for run in &runs[lo..=hi] {
-        // Copy the id and ref-count the path out of the queue borrow before querying the cache.
-        if let Some((id, file)) = app.queue.get(run.start).and_then(|it| it.cover.as_ref()).map(|c| (c.id, c.file.clone())) {
-            tasks.push(app.hires.query(id, file));
+    for (ix, run) in (lo..=hi).zip(&runs[lo..=hi]) {
+        // Copy the id and ref-count the path out of the queue borrow before querying the caches.
+        let Some((id, file)) = app.queue.get(run.start).and_then(|it| it.cover.as_ref()).map(|c| (c.id, c.file.clone())) else {
+            continue;
+        };
+        tasks.push(query_thumb(app, id));
+        let in_hires_window = if ix < center { center - ix <= ENSURE_PREV } else { ix - center <= ENSURE_NEXT };
+        if in_hires_window {
+            tasks.push(query_hires(app, id, &file));
         }
     }
     Task::batch(tasks)
+}
+
+/// Asks the high-res cache for cover `id`, decoding it from its artwork `file` (or reading it back
+/// from the full-size cache) when the cache holds nothing for it yet.
+fn query_hires(app: &mut App, id: u64, file: &Arc<PathBuf>) -> Task<Msg> {
+    let cache_path = app.full_covers_dir.as_ref().map(|dir| library::cover_file(dir, id, library::FULL_FORMAT));
+    let load = library::load_full_cover((**file).clone(), cache_path, library::FULL);
+    app.hires.query(id, Task::perform(load, move |pixels| Msg::HiResLoaded { id, pixels }))
+}
+
+/// Asks the thumbnail cache for cover `id`, reading it back from the thumbnail cache directory when
+/// the cache holds nothing for it yet. A thumbnail that is not there, or not at the edge this player
+/// caches at, is no thumbnail: the flow falls back to the accent tile for it.
+fn query_thumb(app: &mut App, id: u64) -> Task<Msg> {
+    let Some(dir) = app.covers_dir.clone() else { return Task::none() };
+    let load = async move {
+        library::read_thumbnail(&dir, id).await.filter(|&(_, edge)| edge == paths::THUMB_EDGE).map(|(pixels, _)| pixels)
+    };
+    app.thumbs.query(id, Task::perform(load, move |pixels| Msg::ThumbLoaded { id, pixels }))
 }
 
 /// How close a reported position must be to a pending seek's target to count as "arrived", after

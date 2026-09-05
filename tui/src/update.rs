@@ -34,8 +34,6 @@ pub enum Msg {
     Media(media::Control),
     /// Time to look over the music directory again.
     Rescan,
-    /// A cover finished loading and encoding (see the covers module).
-    Cover(covers::Load),
     /// Play the selected album, replacing the queue.
     PlaySelected,
     /// Append the selected album to the queue.
@@ -111,9 +109,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             None => After::Idle,
         },
         Msg::Resize => {
-            // Every cover was encoded for the area it was drawn in, and none of those areas survive
-            // a resize.
-            model.covers.clear();
+            // Nothing to invalidate: each pane's memo notices its area changed and rebuilds.
             After::Redraw
         }
         Msg::Log(entry) => {
@@ -183,10 +179,6 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             model.repeat = model.repeat.cycled();
             model.send(player::Cmd::SetRepeat(model.repeat));
             model.dirty_player = true;
-            After::Redraw
-        }
-        Msg::Cover(load) => {
-            model.covers.absorb(load);
             After::Redraw
         }
         Msg::Search(first) => {
@@ -388,14 +380,14 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
         },
         Msg::Player(event) => player_event(model, event),
         Msg::Library(library::ScanEvent::Album(album)) => absorb_album(model, *album),
-        Msg::Library(library::ScanEvent::Cover { albums, art }) => {
+        Msg::Library(library::ScanEvent::Cover { albums, art, encoded }) => {
             // Only albums whose current cover choice this art satisfies take it: an album can
             // outgrow a queued cover mid-scan, and the stale decode must not overwrite the winner.
             // The pixels are not kept: a library's worth of them is hundreds of megabytes, and they
             // are on disk in the thumbnail cache, to be read back a few at a time as covers are
             // shown. What is worth keeping is the accent colour, which stands in for artwork that
             // has not been loaded yet and costs twelve bytes.
-            model.covers.learn_file(art.id, art.file.clone());
+            model.covers.learn(art.id, art.file.clone(), encoded);
             let mut applied = false;
             for album in model.albums.iter_mut().filter(|a| albums.contains(&a.id) && a.cover_id == Some(art.id)) {
                 model.index_dirty |= album.accent != Some(art.accent);
@@ -455,8 +447,15 @@ fn player_event(model: &mut Model, event: player::Event) -> After {
                 return After::Idle;
             }
             model.pending_seek = None;
+            let shown = model.pos.as_secs();
             model.pos = pos;
-            After::Redraw
+            // The position only ever reaches the screen as whole seconds (`view::fmt_time`), so a
+            // report inside the second already drawn has nothing to add. Assigned above either way, so
+            // `publish_media` and a relative seek still see a current position.
+            match pos.as_secs() == shown {
+                true => After::Idle,
+                false => After::Redraw,
+            }
         }
         player::Event::PlayState(state) => {
             model.play_state = state;
@@ -621,30 +620,6 @@ pub fn reconcile(model: &mut Model) {
         let Model { albums, queue, .. } = model;
         crate::model::hydrate(albums, queue);
     }
-    pin_covers(model);
-}
-
-/// Names the covers that must stay cached: around the browser's cursor for thumbnails, and around
-/// the playing album in the queue for the high-resolution ones. Loading them is the view's business,
-/// which is where the size they must be encoded for is known.
-fn pin_covers(model: &mut Model) {
-    let row = model.selected_row();
-    let first = row.saturating_sub(covers::PIN_RADIUS);
-    let thumbs: Vec<u64> = (first..=row + covers::PIN_RADIUS).filter_map(|row| model.album_at(row)?.cover_id).collect();
-    model.covers.pin(thumbs, full_window(model));
-}
-
-/// The albums whose high-resolution covers are worth having ready: the playing one, and its
-/// neighbours in the queue.
-pub fn full_window(model: &Model) -> Vec<u64> {
-    let albums = model.queue_albums();
-    let Some(playing) = model.playing().map(|item| item.album_id) else { return vec![] };
-    let Some(at) = albums.iter().position(|&id| id == playing) else { return vec![] };
-    let first = at.saturating_sub(covers::FULL_BEHIND);
-    albums[first..(at + covers::FULL_AHEAD + 1).min(albums.len())]
-        .iter()
-        .filter_map(|&id| model.albums.iter().find(|album| album.id == id)?.cover_id)
-        .collect()
 }
 
 /// Tells the OS what is playing. Fire and forget: the media worker coalesces a burst of these down
@@ -695,16 +670,31 @@ pub fn save_session(model: &mut Model) -> Vec<Pin<Box<dyn Future<Output = ()> + 
     writes
 }
 
-/// Options for the boot scan.
-pub fn scan_options(model: &Model) -> library::ScanOptions {
+/// Which scan this is, which decides what covers are worth asking for again.
+pub enum Scan {
+    /// At startup. Claims nothing: learning where each album's artwork lives is what it is for.
+    Boot,
+    /// The watcher's, or the periodic one.
+    Rescan,
+}
+
+/// Options for a scan.
+pub fn scan_options(model: &Model, phase: Scan) -> library::ScanOptions {
     library::ScanOptions {
         root: model.conf.music_dir.clone(),
         priority: vec![],
-        // Nothing is claimed as known: the scan reads each thumbnail back from its own cache in a
-        // few tens of microseconds, and its accent is worth having even when the pixels are not.
-        known_covers: Default::default(),
+        // Re-reading a known cover costs a file read, an RGBA expansion and an accent histogram, all
+        // to hand back a path we hold and an accent the index already persisted.
+        known_covers: match phase {
+            Scan::Boot => Default::default(),
+            Scan::Rescan => model.covers.known(),
+        },
         cache_file: paths::tag_cache_file(),
         covers_dir: paths::covers_dir(),
+        thumb_edge: covers::COVER_EDGE,
+        // Half blocks never want more pixels than the thumbnail has, so this would be a decode per
+        // cover for something nothing here draws.
+        full_covers_dir: None,
     }
 }
 
@@ -992,7 +982,7 @@ mod test {
 
         // Restored with no library at all: the paths are all there is to show.
         let conf = phonoscule::config::Conf::new("tui", "/music".into());
-        let covers = crate::covers::Covers::new(ratatui_image::picker::Picker::halfblocks(), None);
+        let covers = crate::covers::Covers::new(None);
         let engine = player::start(player::Client { name: "restore-test".into(), description: String::new() });
         let mut model = Model::restored(conf, covers, engine, vec![], restored);
         assert_eq!(model.queue.len(), paths.len());

@@ -32,8 +32,26 @@ pub const PLAYBACK_SAMPLE_RATE: u32 = 48000;
 
 type OutSample = Stereo<PcmS16Le>;
 
-/// Frames decoded and written to the sink per loop iteration.
-const CHUNK: usize = 512;
+/// Frames decoded and written to the sink per loop iteration. Also how often commands are looked at,
+/// so it caps how long a pause or seek waits to be noticed: 43 ms at [`PLAYBACK_SAMPLE_RATE`].
+const CHUNK: usize = 2048;
+
+/// Loop iterations between [`Event::Progress`] reports.
+///
+/// The rate is stated this way round because the check runs once per iteration, so a chunk boundary
+/// is the only moment a report can happen: asking for a rate directly means asking for one of
+/// `sample_rate / CHUNK / n` and silently getting the nearest. See [`progress_hz`].
+const PROGRESS_EVERY_CHUNKS: u32 = 1;
+
+/// What [`PROGRESS_EVERY_CHUNKS`] works out to for a stream of `sample_rate`: 23.4 Hz for 48 kHz
+/// audio, and the most this loop can report at all.
+///
+/// Every report costs a consumer a frame, so this is as fast as it is because a continuously drawn
+/// seek bar looks visibly steppy below it. A consumer drawing the position as whole seconds ignores
+/// most of these -- see how the terminal player gates its redraws.
+pub fn progress_hz(sample_rate: u32) -> f64 {
+    sample_rate as f64 / (CHUNK as u32 * PROGRESS_EVERY_CHUNKS) as f64
+}
 
 /// A queue entry: the track, and the album it belongs to as an opaque grouping key (equal keys on
 /// adjacent entries form an album run) -- what repeat-album advancement walks.
@@ -305,7 +323,7 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
         let mut pos = source.fast_forward(start_at).await.unwrap_or(0);
         start_at = 0;
         let _ = events.send(Event::Progress(t_of(pos))).await;
-        let mut prev_status_pos = pos;
+        let mut chunks_since_report = 0;
 
         loop {
             let maybe_cmd = match buffered.take() {
@@ -344,7 +362,7 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
                     match source.seek_samples(target).await {
                         Some(new_pos) => {
                             pos = new_pos;
-                            prev_status_pos = pos;
+                            chunks_since_report = 0;
                             if events.send(Event::Progress(t_of(pos))).await.is_err() {
                                 return;
                             }
@@ -379,13 +397,24 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
                 PlayState::Paused => continue,
                 PlayState::Playing => (),
             }
-            let Some(n) = source.read_samples(&mut buf).await else {
-                // Plain +1 regardless of the repeat mode: repeating a broken track would loop the
-                // error forever.
-                log::error!("error while decoding {path:?}, skipping to next track");
-                ix += 1;
-                continue 'next_track;
-            };
+            // Fill the buffer rather than writing whatever one read returned: a decoder hands back at
+            // most what is left of its current frame, and writes are expensive enough that being cut
+            // short at every frame boundary cost more than the decoding did.
+            let mut n = 0;
+            while n < buf.len() {
+                let Some(read) = source.read_samples(&mut buf[n..]).await else {
+                    // Plain +1 regardless of the repeat mode: repeating a broken track would loop the
+                    // error forever.
+                    log::error!("error while decoding {path:?}, skipping to next track");
+                    ix += 1;
+                    continue 'next_track;
+                };
+                // A short read is a frame boundary; only nothing at all is the end of the track.
+                if read == 0 {
+                    break;
+                }
+                n += read;
+            }
             if n == 0 {
                 // The track ended on its own: the repeat mode decides what plays next.
                 ix = next_track_ix(&queue, ix, repeat);
@@ -394,13 +423,12 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
             sink.write(&buf[..n]); // blocks until the device takes the chunk - this is our pacing
             pos += n as u64;
 
-            let progress_updates_per_sec = 16;
-            let progress_interval = sample_rate as u64 / progress_updates_per_sec;
-            if pos < prev_status_pos || pos - prev_status_pos > progress_interval {
+            chunks_since_report += 1;
+            if chunks_since_report >= PROGRESS_EVERY_CHUNKS {
+                chunks_since_report = 0;
                 if events.send(Event::Progress(t_of(pos))).await.is_err() {
                     return;
                 }
-                prev_status_pos = pos;
             }
         }
     }

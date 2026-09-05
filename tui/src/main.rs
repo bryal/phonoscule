@@ -4,7 +4,6 @@
 //! with the playing album's cover art shown through whatever image protocol the terminal speaks.
 //! Follows the model/update/view architecture; this file boots it and runs the event loop.
 
-mod cache;
 mod covers;
 mod keys;
 mod logger;
@@ -40,23 +39,8 @@ Options:
 
 ";
 
-/// This player's own config settings, listed after the shared ones.
-fn config_help_tui() -> String {
-    format!(
-        "
-  [app.tui]
-    image-protocol
-               Draw cover art with this terminal image protocol rather than
-               asking the terminal which it speaks. One of:
-               {}. Optional; `halfblocks` needs
-               no protocol at all and works anywhere.
-",
-        covers::PROTOCOL_NAMES,
-    )
-}
-
 fn help() -> String {
-    format!("{HELP}{}{}\n{}", config::config_help(APP), config_help_tui(), keys::HELP)
+    format!("{HELP}{}\n{}", config::config_help(APP), keys::HELP)
 }
 
 fn main() {
@@ -93,7 +77,6 @@ fn run() -> anyhow::Result<()> {
     // Before the terminal is taken over, so failures here print normally.
     let logs = logger::start();
     let conf = smol::block_on(config::load(APP, arg_conf_path))?;
-    let forced_protocol = conf.app_str("image-protocol")?.map(str::to_owned);
     let index = smol::block_on(library::load_index(paths::album_index_file()));
     let restored = smol::block_on(session::load(paths::playlist_file(), paths::player_file()));
 
@@ -106,8 +89,7 @@ fn run() -> anyhow::Result<()> {
         name: "phonoscule-tui".into(),
         description: "Terminal application based on the Phonoscule music player library".into(),
     });
-    let picker = covers::picker(forced_protocol.as_deref());
-    let covers = covers::Covers::new(picker, paths::covers_dir());
+    let covers = covers::Covers::new(paths::covers_dir());
     let model = Model::restored(conf, covers, engine, index, restored);
     // The query's bytes went out behind ratatui's back, and a terminal that did not understand them
     // will have printed them; wipe the screen before the first frame. Through the backend, whose
@@ -136,7 +118,7 @@ async fn event_loop(
         forward(model.engine.events.clone().map(Msg::Player), tx.clone()),
         forward(media.events.clone().map(Msg::Media), tx.clone()),
         forward(model.mixer.events.clone().map(Msg::VolumeChanged), tx.clone()),
-        forward(library::scan(update::scan_options(&model)).map(Msg::Library), tx.clone()),
+        forward(library::scan(update::scan_options(&model, update::Scan::Boot)).map(Msg::Library), tx.clone()),
         // The music directory noticed changing, and a slow poll behind it in case it never is.
         forward(watcher::debounce(changes, quiet).map(|()| Msg::Rescan), tx.clone()),
         forward(every(RESCAN_INTERVAL).map(|()| Msg::Rescan), tx.clone()),
@@ -174,9 +156,6 @@ async fn event_loop(
         if redraw {
             update::reconcile(&mut model);
             terminal.draw(|frame| view::view(frame, &mut model))?;
-            // Drawing is what discovers which covers are wanted, and at what size, so the loads it
-            // asked for are started once the frame is out.
-            load_covers(&mut model, &tx);
         }
         update::publish_media(&model, &media);
         for write in update::save_session(&mut model) {
@@ -202,19 +181,6 @@ fn every(interval: Duration) -> impl futures::Stream<Item = ()> + Send {
 }
 
 /// Starts the cover loads the last frame asked for. Each runs on the executor and lands back as a
-/// message, so the few milliseconds of resizing and encoding never hold up a keypress.
-fn load_covers(model: &mut Model, tx: &channel::Sender<Msg>) {
-    let dir = model.covers.dir();
-    let layout = model.covers.layout();
-    for request in model.covers.take_wanted() {
-        let (picker, dir, layout, tx) = (model.covers.picker.clone(), dir.clone(), layout.clone(), tx.clone());
-        smol::spawn(async move {
-            let load = covers::load(picker, dir, layout, request).await;
-            let _ = tx.send(Msg::Cover(load)).await;
-        })
-        .detach();
-    }
-}
 
 /// How long messages are absorbed before drawing. Enough to swallow a burst whole, short enough that
 /// a scan's steady stream of albums still yields a frame several times a second.
@@ -233,7 +199,7 @@ fn apply(model: &mut Model, msg: Msg, tx: &channel::Sender<Msg>) -> bool {
         After::Rescan => {
             // Detached rather than held: a rescan ends on its own, and there is nothing to cancel it
             // for -- the next one is only started once this has reported it is done.
-            let scan = library::scan(update::scan_options(model)).map(Msg::Library);
+            let scan = library::scan(update::scan_options(model, update::Scan::Rescan)).map(Msg::Library);
             forward(scan, tx.clone()).detach();
             true
         }

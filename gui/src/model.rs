@@ -154,12 +154,17 @@ pub struct App {
     pub mixer: volume::VolumeControl,
     pub watcher: watcher::Watcher,
     pub conf: Conf,
-    /// An iced image handle per loaded cover, by [`library::CoverArt::id`]. Built once, when the
-    /// cover arrives: a handle gets a fresh id each time it is made, so building them per frame
-    /// would have the renderer re-upload every visible cover's texture every frame. They wrap the
-    /// scan's ref-counted bitmaps rather than copying them, and are pruned with the albums holding
-    /// them (see the `Done` scan event).
-    pub covers: HashMap<u64, iced::widget::image::Handle>,
+    /// An iced image handle per cached thumbnail, by [`library::CoverArt::id`]: a path into the
+    /// thumbnail cache, not pixels. The renderer decodes one the first time a card on screen draws
+    /// it and lets it go when none does, so what is resident tracks what is visible rather than what
+    /// the library has (see `Cover` in the grid). Pruned with the albums holding them (see the `Done`
+    /// scan event). Without a cache directory there is nothing to name, and the grid stays tiles.
+    pub thumbnails: HashMap<u64, iced::widget::image::Handle>,
+    /// Where the thumbnail cache is, for naming those handles and for [`thumbs`](Self::thumbs);
+    /// `None` when there is no cache directory to be had.
+    pub covers_dir: Option<PathBuf>,
+    /// Where the full-size cover cache is, for [`hires`](Self::hires).
+    pub full_covers_dir: Option<PathBuf>,
     /// The configured UI scale factor (`[app.gui] scaling`, already clamped -- see `main`): the
     /// baseline Ctrl+= resets [`scale`](Self::scale) to.
     pub scaling: f32,
@@ -226,10 +231,15 @@ pub struct App {
     /// echoes of earlier values still in flight must not yank it back.
     pub pending_volume: Option<f32>,
     /// High-resolution cover art (FULL² RGBA) for the now-playing cover flow. The flow keeps a
-    /// small window around `current` resident (see `ensure_hires`), but this cache outlives that
+    /// small window around `current` resident (see `ensure_covers`), but this cache outlives that
     /// window: it retains recently-played covers under an LRU bound, so hopping back to an album
     /// played moments ago shows its full-res cover instantly instead of decoding again.
-    pub hires: HiResCache,
+    pub hires: CoverCache,
+    /// Thumbnails (THUMB_EDGE² RGBA) for the cover flow's outer covers, the ones past the high-res
+    /// window: it draws them small, tilted and fading, and a thumbnail is all the resolution there
+    /// is to see. Read back from the thumbnail cache for a span around `current` (see
+    /// `ensure_covers`); the grid never looks here, its covers are the renderer's to decode.
+    pub thumbs: CoverCache,
     /// Animated Cover Flow position, chasing `current`.
     pub anim_pos: f32,
     /// The backdrop glow transitions between two album states: `glow_from` -> `glow_to` as
@@ -250,63 +260,76 @@ pub struct GlowState {
     pub center: (f32, f32),
 }
 
-/// How many decoded high-res covers [`HiResCache`] keeps. At FULL² RGBA (~3 MiB each) this bounds
-/// its footprint near 240 MiB -- and only a session that plays that many *distinct* albums reaches
-/// it; a typical one holds far fewer. Enough to blanket a favorite genre or playlist, so bouncing
-/// among its albums never re-decodes a cover.
-pub const HIRES_CAP: usize = 80;
-
-/// A least-recently-used cache of decoded high-res covers (FULL² RGBA), shared across every album
-/// that plays. Demand-driven in the style of a query-compilation cache: callers [`query`] a cover
-/// and the cache fetches-or-decodes behind the scenes, memoizing the result; there is no manual
-/// get-then-insert. It holds the covers around the current album and a good many recently-played
-/// others, up to [`HIRES_CAP`], so revisiting an album is instant. Bitmaps are `Arc<[u8]>`, so a
-/// cached cover and the cover flow's copy of it are one allocation, not two.
+/// How many decoded high-res covers the [`hires`](App::hires) cache keeps.
 ///
-/// [`query`]: HiResCache::query
-pub struct HiResCache {
+/// Note that these uncompressed covers weigh in at 2.44 MiB each for 800² RGBA.
+/// If you do the math, you'll realize it gets quite expensive quite quickly.
+/// So we want the smallest capacity we can get away with and still have a good UX.
+///
+/// The prefetched window plus a little, and derived from it so it cannot silently fall below: a cap
+/// under the window would have each move evict a cover the same move just asked for. The slack is
+/// what a short hop back finds still resident. It used to be far wider, which was worth it when
+/// coming back meant decoding a whole sleeve again; now that the covers are on disk it buys a few
+/// milliseconds for a couple of megabytes apiece.
+pub const HIRES_CAP: usize = crate::update::ENSURE_PREV + 1 + crate::update::ENSURE_NEXT + 3;
+
+/// How many decoded thumbnails the [`thumbs`](App::thumbs) cache keeps: the cover flow's whole
+/// visible span (see `ensure_covers`) and a little, on the same reasoning as [`HIRES_CAP`]. Under
+/// 200 KB each, so the slack is cheap -- but bounded all the same, since these are the very pixels
+/// the library used to be held decoded for, one per album.
+pub const THUMBS_CAP: usize = 2 * crate::update::THUMB_SPAN + 1 + 4;
+
+/// A least-recently-used cache of decoded covers by [`library::CoverArt::id`], one per size the
+/// cover flow draws (see [`App::hires`] and [`App::thumbs`]). Demand-driven in the style of a
+/// query-compilation cache: callers [`query`] a cover and the load runs behind the scenes,
+/// memoizing the result; there is no manual get-then-insert. Bitmaps are `Arc<[u8]>`, so a cached
+/// cover and the cover flow's copy of it are one allocation, not two.
+///
+/// [`query`]: CoverCache::query
+pub struct CoverCache {
     /// `id -> (pixels, tick when last used)`. A monotonic tick, not a wall clock, orders entries
     /// for eviction -- the update loop's state transitions are pure and have no clock to read.
     entries: HashMap<u64, (Arc<[u8]>, u64)>,
-    /// Cover ids whose decode is in flight, so a repeated [`query`](Self::query) doesn't launch a
-    /// second decode of the same cover.
+    /// Cover ids whose load is in flight, so a repeated [`query`](Self::query) doesn't launch a
+    /// second one for the same cover.
     pending: HashSet<u64>,
     tick: u64,
+    /// How many covers are kept; past it, the least recently used goes.
+    cap: usize,
 }
 
-impl HiResCache {
-    pub fn new() -> Self {
-        HiResCache { entries: HashMap::new(), pending: HashSet::new(), tick: 0 }
+impl CoverCache {
+    pub fn new(cap: usize) -> Self {
+        CoverCache { entries: HashMap::new(), pending: HashSet::new(), tick: 0, cap }
     }
 
-    /// Demands the high-res cover for `id`, decoded from `file`. Query-compilation style: if it's
-    /// already cached this just promotes it in the LRU (the view reads the pixels via [`peek`]);
-    /// otherwise the decode runs behind the scenes and lands back through [`complete`], which
-    /// memoizes it. Deduplicated -- a cover already resident or already decoding yields
+    /// Demands the cover for `id`. Query-compilation style: if it's already cached this just
+    /// promotes it in the LRU (the view reads the pixels via [`peek`]) and `load` is dropped unrun;
+    /// otherwise `load` is returned to be run, and must land back through [`complete`], which
+    /// memoizes it. Deduplicated -- a cover already resident or already loading yields
     /// [`Task::none`] -- so callers can query their whole window every album move without tracking
     /// what's loaded or in flight.
     ///
-    /// [`peek`]: HiResCache::peek
-    /// [`complete`]: HiResCache::complete
-    pub fn query(&mut self, id: u64, file: Arc<PathBuf>) -> Task<Msg> {
-        // Resident: promote and done. Already decoding: let the in-flight decode land. (`touch`
+    /// [`peek`]: CoverCache::peek
+    /// [`complete`]: CoverCache::complete
+    pub fn query(&mut self, id: u64, load: Task<Msg>) -> Task<Msg> {
+        // Resident: promote and done. Already loading: let the in-flight load land. (`touch`
         // short-circuits the `insert`, so a resident cover is never marked pending.)
         if self.touch(id) || !self.pending.insert(id) {
             return Task::none();
         }
-        let file = (*file).clone();
-        Task::perform(library::decode_cover(file, library::FULL), move |pixels| Msg::HiResLoaded { id, pixels })
+        load
     }
 
-    /// Absorbs the result of a [`query`](Self::query)'s decode: clears the in-flight mark and, on
-    /// success, memoizes the cover (evicting the least-recently-used if now over [`HIRES_CAP`]). A
-    /// failed decode (`None`) simply leaves the cover on its thumbnail.
+    /// Absorbs the result of a [`query`](Self::query)'s load: clears the in-flight mark and, on
+    /// success, memoizes the cover (evicting the least-recently-used if now over the cap). A failed
+    /// load (`None`) simply leaves the cover at the tier below.
     pub fn complete(&mut self, id: u64, pixels: Option<Arc<[u8]>>) {
         self.pending.remove(&id);
         let Some(pixels) = pixels else { return };
         self.tick += 1;
         self.entries.insert(id, (pixels, self.tick));
-        while self.entries.len() > HIRES_CAP {
+        while self.entries.len() > self.cap {
             // The cap is small and inserts are infrequent (one per album entering the window), so a
             // linear scan for the oldest beats maintaining a separate ordered index.
             let Some((&oldest, _)) = self.entries.iter().min_by_key(|(_, (_, used))| *used) else { break };
@@ -335,12 +358,6 @@ impl HiResCache {
     }
 }
 
-impl Default for HiResCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Album>) -> impl Fn() -> (App, Task<Msg>) {
     move || {
         let (media, media_worker) = media::start("Phonoscule", "phonoscule");
@@ -352,7 +369,7 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             media,
             mixer: volume::start(),
             watcher: watcher::start(&conf.music_dir),
-            covers: HashMap::new(),
+            thumbnails: HashMap::new(),
             scaling,
             scale: scaling,
             conf: conf.clone(),
@@ -379,7 +396,10 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             album_scroll: 0.0,
             volume: None,
             pending_volume: None,
-            hires: HiResCache::new(),
+            covers_dir: paths::covers_dir(),
+            full_covers_dir: paths::full_covers_dir(),
+            hires: CoverCache::new(HIRES_CAP),
+            thumbs: CoverCache::new(THUMBS_CAP),
             anim_pos: 0.0,
             glow_from: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
             glow_to: GlowState { color: iced::Color::BLACK, center: glow_center(0) },
@@ -428,6 +448,14 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             // A restored session opens where it left off: on the player, ready to resume.
             app.view = View::Player;
         }
+        // The scan makes these too, but the first cover it is asked for (see `ensure_covers`) can
+        // arrive before it gets to that; the miss then decodes and writes into a directory that must
+        // already exist.
+        for dir in [&app.covers_dir, &app.full_covers_dir].into_iter().flatten() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                log::warn!("could not create the cover cache {dir:?}: {e}");
+            }
+        }
         let options = library::ScanOptions {
             root: conf.music_dir.clone(),
             // Dress the restored queue's covers first, outward from the playing album: they're
@@ -435,7 +463,9 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             priority: cover_priority(&app.queue, app.current),
             known_covers: Default::default(),
             cache_file: paths::tag_cache_file(),
-            covers_dir: paths::covers_dir(),
+            covers_dir: app.covers_dir.clone(),
+            thumb_edge: paths::THUMB_EDGE,
+            full_covers_dir: app.full_covers_dir.clone(),
         };
         let scan = Task::run(library::scan(options), Msg::Library);
         // Run the media worker for the whole session, on iced's executor; it pushes to the OS and
@@ -700,7 +730,7 @@ mod test {
     /// query does) makes an entry the freshest, so the window survives while colder covers go.
     #[test]
     fn evicts_the_least_recently_used() {
-        let mut cache = HiResCache::new();
+        let mut cache = CoverCache::new(HIRES_CAP);
         for id in 0..HIRES_CAP as u64 {
             cache.complete(id, Some(pixels(0)));
         }
@@ -718,7 +748,7 @@ mod test {
     /// `query`, via `touch`, promotes -- once per album move, not once per frame).
     #[test]
     fn peek_does_not_promote() {
-        let mut cache = HiResCache::new();
+        let mut cache = CoverCache::new(HIRES_CAP);
         for id in 0..HIRES_CAP as u64 {
             cache.complete(id, Some(pixels(0)));
         }
@@ -733,7 +763,7 @@ mod test {
     /// thumbnail -- and lets a later query retry it rather than being deduplicated forever.
     #[test]
     fn failed_decode_stores_nothing_and_reopens_the_query() {
-        let mut cache = HiResCache::new();
+        let mut cache = CoverCache::new(HIRES_CAP);
         cache.pending.insert(9);
         cache.complete(9, None);
         assert!(cache.peek(9).is_none());

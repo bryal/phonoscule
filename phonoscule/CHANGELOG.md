@@ -53,6 +53,15 @@ time, behind interfaces that were already platform-neutral.
 - **`config`** - the default config path comes from `dirs`, and `config_help`
   names it as the platform spells it.
 
+**`library`: cover art without the pixels.** `CoverArt` no longer carries the
+decoded thumbnail (`thumbnail_pixels` and `edge` are gone); it is the cover's
+id, its artwork file and its accent colour, cheap enough to hold for every album.
+The thumbnail itself comes from the cache - `read_thumbnail`, or the encoded
+bytes still riding beside the art on `ScanEvent::Cover` - so holding a library's
+worth decoded is a consumer's choice rather than what the scan hands it. The scan
+no longer widens every cached thumbnail to RGBA either, which was the largest
+transient allocation of a warm rescan.
+
 
 v0.3.0 (2026-07-26)
 ------------------------------------------------------------
