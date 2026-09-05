@@ -1,6 +1,6 @@
 //! Rendering the model: the library browser and the player (Cover Flow) views.
 
-use crate::album_grid::album_grid;
+use crate::album_grid::{Cover, album_grid};
 use crate::background;
 use crate::coverflow::{FlowCover, cover_flow};
 use crate::model::{
@@ -9,11 +9,10 @@ use crate::model::{
 };
 use crate::update::Msg;
 use iced::widget::{
-    Space, button, center, column, container, hover, image, mouse_area, opaque, responsive, row, scrollable, slider, stack,
-    text, text_input,
+    Space, button, center, column, container, hover, mouse_area, opaque, responsive, row, scrollable, slider, stack, text,
+    text_input,
 };
 use iced::{Border, Center, Color, Element, Fill, Padding, Theme, color};
-use phonoscule::library::Album;
 use phonoscule::player;
 use phonoscule::queue::{Grouping, Scope};
 use phonoscule::sort::SortOrder;
@@ -304,10 +303,21 @@ fn library_view(app: &App) -> Element<'_, Msg> {
             .interactive(app.modal.is_none());
         // The grid shows the filtered view of the library; its cell indices (which every grid
         // message carries) are indices into `app.filtered`.
-        for (cell, &ix) in app.filtered.iter().enumerate() {
+        for &ix in &app.filtered {
             let album = &app.albums[ix];
-            let thumb = album.cover.as_ref().and_then(|c| app.thumbnails.get(&c.id));
-            grid = grid.push(album_cover(cell, album, thumb, app.selected == Some(cell)), &album.title, &album.artist);
+            let accent = album.accent.map(crate::model::color);
+            let cover = match album.cover.as_ref().and_then(|c| app.thumbnails.get(&c.id)) {
+                Some(handle) => Cover::Art { handle: handle.clone(), accent },
+                None => Cover::Tile(accent),
+            };
+            grid = grid.push(cover, &album.title, &album.artist);
+        }
+        // The bubbles go over the selected card, which under a mouse is the one the cursor is on --
+        // and `hover` shows them only if it really is, so an arrow-key selection shows none. A
+        // rescan can shrink the list under the selection; the grid clamps its own copy, this one
+        // must not point the bubbles at a card that is no longer there.
+        if let Some(cell) = app.selected.filter(|&cell| cell < app.filtered.len()) {
+            grid = grid.bubbles(cell, album_bubbles(cell));
         }
         let mut layers: Vec<Element<'_, Msg>> = vec![grid.into()];
         if app.filtered.is_empty() {
@@ -543,65 +553,28 @@ const TAB_BAR_HEIGHT: f32 = 60.0;
 /// The grid's top clearance when the top bar wraps to two rows (tabs above, filter tools below).
 const TWO_ROW_BAR_HEIGHT: f32 = 96.0;
 
-/// An album's cover element for the grid: the artwork (or a fallback tile) with the floating
-/// action bubbles over it. Size-agnostic -- the grid lays it out to exactly its cover square; it
-/// also draws the card's texts and the selection backdrop itself.
-fn album_cover<'a>(ix: usize, album: &'a Album, handle: Option<&image::Handle>, hovered: bool) -> Element<'a, Msg> {
-    let cover: Element<'a, Msg> = match handle {
-        Some(handle) => image(handle.clone()).width(Fill).height(Fill).content_fit(iced::ContentFit::Cover).into(),
-        // No pixels (not loaded yet, or the album has none): a tile tinted by the album's accent
-        // color when the index knows it -- a zeroth level of detail below the thumbnail, so a
-        // fresh launch shows the library as a color mosaic that sharpens into artwork. Dimmed, so
-        // the title stays readable on any accent.
-        None => {
-            let accent = album.accent.map(crate::model::color);
-            container(text(&album.title).size(16).center())
-                .center(Fill)
-                .style(move |theme| match accent {
-                    Some(c) => container::Style {
-                        background: Some(iced::Background::Color(Color {
-                            r: 0.55 * c.r,
-                            g: 0.55 * c.g,
-                            b: 0.55 * c.b,
-                            a: 1.0,
-                        })),
-                        border: iced::border::rounded(2.0),
-                        ..container::Style::default()
-                    },
-                    None => container::rounded_box(theme),
-                })
-                .into()
-        }
-    };
-    // Action bubbles along the cover's right edge, shown only while hovering the cover. Entering
-    // the play bubble preloads the high-res cover, hiding its decode behind the hover-to-click gap;
-    // the list bubble opens the album's track menu (as do right-click and Enter -- see the grid).
-    //
-    // Built for the hovered card alone. `hover` only ever draws them over the card the cursor is on,
-    // and the grid reports exactly that card as the selection, so the rest were three buttons, three
-    // styled containers and three boxed style closures apiece that could never be seen -- twelve
-    // thousand widgets on a library of this size, on every message iced delivers. A keyboard-moved
-    // selection builds them too and still shows nothing, because `hover` asks the cursor.
-    let bubbles: Element<'a, Msg> = match hovered {
-        false => Space::new().into(),
-        true => {
-            let play = text(FA_PLAY).font(font_awesome_solid()).size(12);
-            let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(14);
-            let tracks = text(FA_LIST).font(font_awesome_solid()).size(11);
-            container(
-                column![
-                    mouse_area(bubble(container(play).center(Fill), Msg::PlayAlbum(ix))).on_enter(Msg::PreloadAlbum(ix)),
-                    bubble(container(enqueue).center(Fill), Msg::QueueAlbum(ix)),
-                    bubble(container(tracks).center(Fill), Msg::OpenTrackMenu(ix)),
-                ]
-                .spacing(6),
-            )
-            .align_right(Fill)
-            .padding(8)
-            .into()
-        }
-    };
-    hover(cover, bubbles)
+/// The action bubbles along one card's right edge: play the album, queue it, or open its track menu
+/// (as do right-click and Enter -- see the grid). Entering the play bubble preloads the high-res
+/// cover, hiding its decode behind the hover-to-click gap.
+///
+/// Size-agnostic -- the grid lays it out to exactly the card's cover square. Wrapped in `hover` over
+/// empty space, which is what decides they are seen at all: the selection follows the keyboard as
+/// well as the mouse, and these are a mouse affordance.
+fn album_bubbles(ix: usize) -> Element<'static, Msg> {
+    let play = text(FA_PLAY).font(font_awesome_solid()).size(12);
+    let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(14);
+    let tracks = text(FA_LIST).font(font_awesome_solid()).size(11);
+    let bubbles = container(
+        column![
+            mouse_area(bubble(container(play).center(Fill), Msg::PlayAlbum(ix))).on_enter(Msg::PreloadAlbum(ix)),
+            bubble(container(enqueue).center(Fill), Msg::QueueAlbum(ix)),
+            bubble(container(tracks).center(Fill), Msg::OpenTrackMenu(ix)),
+        ]
+        .spacing(6),
+    )
+    .align_right(Fill)
+    .padding(8);
+    hover(Space::new().width(Fill).height(Fill), bubbles)
 }
 
 /// A small round action button, floating over content.
