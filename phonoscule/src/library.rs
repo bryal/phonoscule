@@ -1115,7 +1115,7 @@ async fn decode_thumbnail(file: PathBuf, edge: u32) -> Option<Vec<u8>> {
 /// smaller on disk.
 fn rgb_to_rgba(rgb: &[u8]) -> Arc<[u8]> {
     let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
-    for px in rgb.chunks_exact(3) {
+    for px in rgb.as_chunks::<3>().0 {
         rgba.extend_from_slice(px);
         rgba.push(u8::MAX);
     }
@@ -1128,7 +1128,7 @@ pub fn accent_color(rgb: &[u8]) -> Rgb {
     // Histogram over a coarsely quantized (4 bits per channel) color space, accumulating exact
     // sums per bucket so the winner keeps its true shade.
     let mut buckets = vec![[0u64; 4]; 16 * 16 * 16];
-    for px in rgb.chunks_exact(3).step_by(7) {
+    for px in rgb.as_chunks::<3>().0.iter().step_by(7) {
         let (r, g, b) = (px[0] as u64, px[1] as u64, px[2] as u64);
         let bucket = &mut buckets[((r >> 4 << 8) | (g >> 4 << 4) | (b >> 4)) as usize];
         *bucket = [bucket[0] + 1, bucket[1] + r, bucket[2] + g, bucket[3] + b];

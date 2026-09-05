@@ -89,7 +89,7 @@ fn run() -> anyhow::Result<()> {
         name: "phonoscule-tui".into(),
         description: "Terminal application based on the Phonoscule music player library".into(),
     });
-    let covers = covers::Covers::new(paths::covers_dir());
+    let covers = covers::Covers::default();
     let model = Model::restored(conf, covers, engine, index, restored);
     // The query's bytes went out behind ratatui's back, and a terminal that did not understand them
     // will have printed them; wipe the screen before the first frame. Through the backend, whose
@@ -179,8 +179,6 @@ fn every(interval: Duration) -> impl futures::Stream<Item = ()> + Send {
         Some(((), ()))
     })
 }
-
-/// Starts the cover loads the last frame asked for. Each runs on the executor and lands back as a
 
 /// How long messages are absorbed before drawing. Enough to swallow a burst whole, short enough that
 /// a scan's steady stream of albums still yields a frame several times a second.

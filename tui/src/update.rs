@@ -982,7 +982,7 @@ mod test {
 
         // Restored with no library at all: the paths are all there is to show.
         let conf = phonoscule::config::Conf::new("tui", "/music".into());
-        let covers = crate::covers::Covers::new(None);
+        let covers = crate::covers::Covers::default();
         let engine = player::start(player::Client { name: "restore-test".into(), description: String::new() });
         let mut model = Model::restored(conf, covers, engine, vec![], restored);
         assert_eq!(model.queue.len(), paths.len());

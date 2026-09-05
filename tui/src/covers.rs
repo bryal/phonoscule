@@ -37,10 +37,8 @@ const CELL_ASPECT: u16 = 2;
 pub const COVER_EDGE: u32 = 128;
 
 /// Every cover the library has, and where each came from.
+#[derive(Default)]
 pub struct Covers {
-    /// Where the encoded covers are read from, or `None` if there is no cache directory -- in which
-    /// case covers never appear and the accent colours stand in for good.
-    covers_dir: Option<PathBuf>,
     /// Each cover's artwork file. Not for drawing -- half blocks never want more pixels than the
     /// cache holds -- but for pointing other programs at it (the desktop's now-playing art), and for
     /// telling a rescan which covers it need not read back.
@@ -50,15 +48,6 @@ pub struct Covers {
 }
 
 impl Covers {
-    pub fn new(covers_dir: Option<PathBuf>) -> Self {
-        Covers { covers_dir, files: HashMap::new(), encoded: HashMap::new() }
-    }
-
-    /// Where the encoded covers live, for whoever reads them.
-    pub fn dir(&self) -> Option<PathBuf> {
-        self.covers_dir.clone()
-    }
-
     /// Takes a cover the scan has reported: where its artwork lives, and the bytes to draw it from.
     pub fn learn(&mut self, cover_id: u64, file: Arc<PathBuf>, encoded: Arc<[u8]>) {
         self.files.insert(cover_id, file);
@@ -154,7 +143,7 @@ mod test {
     use super::*;
 
     fn covers() -> Covers {
-        let mut covers = Covers::new(Some(PathBuf::from("/covers")));
+        let mut covers = Covers::default();
         covers.learn(7, Arc::new("/cover.jpg".into()), test_cover_bytes());
         covers
     }

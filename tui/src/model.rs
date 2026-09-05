@@ -316,11 +316,6 @@ impl Model {
         }
     }
 
-    /// The album shown at `row`, if there is one.
-    pub fn album_at(&self, row: usize) -> Option<&Album> {
-        self.albums.get(*self.shown.get(row)?)
-    }
-
     /// Puts the selection on the album at `row`, clamped to the list.
     pub fn select_row(&mut self, row: usize) {
         let row = row.min(self.shown.len().saturating_sub(1));
@@ -330,17 +325,6 @@ impl Model {
     /// The queue item playing, if the queue isn't empty.
     pub fn playing(&self) -> Option<&QueueItem> {
         self.queue.get(self.current)
-    }
-
-    /// The queue's albums in order, one entry per run of tracks from the same album.
-    pub fn queue_albums(&self) -> Vec<u64> {
-        let mut albums = Vec::new();
-        for item in &self.queue {
-            if albums.last() != Some(&item.album_id) {
-                albums.push(item.album_id);
-            }
-        }
-        albums
     }
 
     /// The album a queue item belongs to, if it is still in the library.
@@ -459,9 +443,7 @@ mod testing {
             })
             .collect();
         let engine = player::start(player::Client { name: "phonoscule-tui-test".into(), description: String::new() });
-        // A thumbnail directory that need not exist: the tests ask what covers are wanted, and never
-        // run the loads that would read it.
-        let covers = Covers::new(Some("/covers".into()));
+        let covers = Covers::default();
         Model::restored(conf, covers, engine, albums, session::Restored::default())
     }
 }

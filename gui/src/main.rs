@@ -9,6 +9,9 @@
 // That costs the standard handles, which [`console::prepare`] sorts out before anything is printed -
 // including adopting the console of a shell that did start it, so a terminal run is unchanged.
 #![cfg_attr(windows, windows_subsystem = "windows")]
+// Proving a shader `Pipeline` is `Sync` walks wgpu's type graph deeper than the default limit of
+// 128, which rustc has started warning about ahead of making it an error.
+#![recursion_limit = "256"]
 
 mod album_grid;
 mod background;

@@ -20,7 +20,7 @@ fn main() {
 
     // Mirror of accent_color's internals (kept in sync by hand; this is a debugging aid).
     let mut buckets = vec![[0u64; 4]; 16 * 16 * 16];
-    for px in rgb.chunks_exact(3).step_by(7) {
+    for px in rgb.as_chunks::<3>().0.iter().step_by(7) {
         let (r, g, b) = (px[0] as u64, px[1] as u64, px[2] as u64);
         let bucket = &mut buckets[((r >> 4 << 8) | (g >> 4 << 4) | (b >> 4)) as usize];
         *bucket = [bucket[0] + 1, bucket[1] + r, bucket[2] + g, bucket[3] + b];
