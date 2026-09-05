@@ -3881,7 +3881,7 @@ dependencies = [
 
 [[package]]
 name = "phonoscule"
-version = "0.4.0-dev"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -3924,7 +3924,7 @@ dependencies = [
 
 [[package]]
 name = "phonoscule-gui"
-version = "1.2.0-dev"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3948,7 +3948,7 @@ dependencies = [
 
 [[package]]
 name = "phonoscule-tui"
-version = "1.1.0-dev"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "crossterm",

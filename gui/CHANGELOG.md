@@ -1,7 +1,7 @@
 # Changelog
 
 
-v1.2.0 (unreleased)
+v1.2.0 (2026-09-05)
 ------------------------------------------------------------
 
 - **Windows.** The player runs on Windows 10 and later, with everything it does

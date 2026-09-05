@@ -1,7 +1,7 @@
 # Changelog
 
 
-v0.4.0 (unreleased)
+v0.4.0 (2026-09-05)
 ------------------------------------------------------------
 
 **Windows support.** The framework was portable in its core and Linux-only the
