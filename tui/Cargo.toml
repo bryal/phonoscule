@@ -1,6 +1,6 @@
 [package]
 name = "phonoscule-tui"
-version = "1.1.0"
+version = "1.2.0-dev"
 description = "A TUI music player based on Phonoscule"
 authors.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-phonoscule = { version = "0.4.0", path = "../phonoscule", features = ["config", "dirs", "library", "media", "player", "queue", "search", "session", "sort", "volume", "watcher"] }
+phonoscule = { path = "../phonoscule", features = ["config", "dirs", "library", "media", "player", "queue", "search", "session", "sort", "volume", "watcher"] }
 crossterm = "0.29.0"
 ratatui = "0.30.2"
 # Half blocks only (see the covers module), so none of its protocol backends are wanted -- and
