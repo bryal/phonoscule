@@ -290,11 +290,15 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             // not overwrite the winner -- neither on the album nor on its queue items.
             let accepted: Vec<u64> =
                 app.albums.iter().filter(|a| albums.contains(&a.id) && a.cover_id == Some(art.id)).map(|a| a.id).collect();
-            if !accepted.is_empty() {
-                // The handle for these pixels, made exactly once (see `App::covers`). It wraps the
-                // scan's bitmap rather than copying it, so this costs an id and a refcount.
-                let pixels = bytes::Bytes::from_owner(art.thumbnail_pixels.clone());
-                app.thumbnails.insert(art.id, iced::widget::image::Handle::from_rgba(art.edge, art.edge, pixels));
+            if !accepted.is_empty()
+                && let Some(dir) = &app.covers_dir
+            {
+                // A handle naming the cached file, not holding pixels (see `App::thumbnails`). The
+                // scan has just written or verified that file, so it is there to be read -- barring a
+                // write it could not make (it says so in the log), which leaves that card on its
+                // accent until the next launch's scan writes it again.
+                let path = library::cover_file(dir, art.id, library::THUMB_FORMAT);
+                app.thumbnails.insert(art.id, iced::widget::image::Handle::from_path(path));
             }
             for album in app.albums.iter_mut().filter(|a| accepted.contains(&a.id)) {
                 album.cover = Some(art.clone());

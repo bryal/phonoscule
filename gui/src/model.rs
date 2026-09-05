@@ -154,11 +154,11 @@ pub struct App {
     pub mixer: volume::VolumeControl,
     pub watcher: watcher::Watcher,
     pub conf: Conf,
-    /// An iced image handle per loaded cover, by [`library::CoverArt::id`]. Built once, when the
-    /// cover arrives: a handle gets a fresh id each time it is made, so building them per frame
-    /// would have the renderer re-upload every visible cover's texture every frame. They wrap the
-    /// scan's ref-counted bitmaps rather than copying them, and are pruned with the albums holding
-    /// them (see the `Done` scan event).
+    /// An iced image handle per cached thumbnail, by [`library::CoverArt::id`]: a path into the
+    /// thumbnail cache, not pixels. The renderer decodes one the first time a card on screen draws
+    /// it and lets it go when none does, so what is resident tracks what is visible rather than what
+    /// the library has (see `Cover` in the grid). Pruned with the albums holding them (see the `Done`
+    /// scan event). Without a cache directory there is nothing to name, and the grid stays tiles.
     pub thumbnails: HashMap<u64, iced::widget::image::Handle>,
     /// Where the thumbnail cache is, for naming those handles and for [`thumbs`](Self::thumbs);
     /// `None` when there is no cache directory to be had.

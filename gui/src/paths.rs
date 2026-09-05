@@ -8,14 +8,14 @@
 
 use phonoscule::{dirs, library};
 
-/// The square edge covers are cached at: what an album card in the grid wants, and no more -- every
-/// one of them is held in memory at once, decoded, so a card costs `edge`² x 4 bytes for as long as
-/// the library has it.
+/// The square edge covers are cached at: what an album card in the grid wants, and no more. Only the
+/// covers on screen are decoded (see `Cover` in the grid), so this prices a decode and the cache on
+/// disk rather than what the whole library holds resident -- a card costs `edge`² x 4 bytes while it
+/// is drawn, and nothing once it has scrolled off.
 ///
 /// Cards stretch to fill their row, so a cover square is not one size: it is around 165 pixels on a
 /// window wide enough for six columns or more, and grows as columns drop out -- 205 at three, 248 at
-/// two. This covers everything down to a three-column window and upscales below that, which is the
-/// trade for holding the whole library: another 30 pixels of edge is another 40 MB resident.
+/// two. This covers everything down to a three-column window and upscales below that.
 ///
 /// It is on disk in the path, so changing it starts a fresh cache rather than reinterpreting the old
 /// one.
@@ -56,7 +56,7 @@ pub fn album_index_file() -> Option<PathBuf> {
     Some(cache_dir()?.join("albums.json"))
 }
 
-/// The cover thumbnails, one per album and all of them held decoded.
+/// The cover thumbnails, one per album, read back as the grid and the cover flow draw them.
 pub fn covers_dir() -> Option<PathBuf> {
     Some(library::covers_dir(&cache_dir()?, THUMB_EDGE))
 }

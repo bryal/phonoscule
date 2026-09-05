@@ -40,6 +40,16 @@ v1.2.0 (unreleased)
   changing the artwork. Linux desktops can use the SVG directly, and
   `Phonoscule.desktop` now names it rather than borrowing a themed stand-in.
 
+- **Less than half the memory.** The player held every album's thumbnail
+  decoded, on screen or not: 140 MB of a 731-album library's 313 MB resident.
+  Thumbnails are now read from the cache as cards scroll into view and let go as
+  they scroll out; the cover flow keeps a small window of them around the playing
+  album, like it already did for the full-size covers. Measured on the same
+  library, the same view, playing: 313 MB -> 142 MB.
+
+  Seven embedded Iosevka faces that no text ever asked for are gone from the
+  binary too, 11 MB of it.
+
 
 v1.1.0 (2026-07-21)
 ------------------------------------------------------------

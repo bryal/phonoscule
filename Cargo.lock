@@ -3928,7 +3928,6 @@ version = "1.2.0-dev"
 dependencies = [
  "anyhow",
  "bytemuck",
- "bytes",
  "embedded-io-adapters",
  "embedded-io-async",
  "futures",
