@@ -17,18 +17,20 @@ mod album_grid;
 mod background;
 mod console;
 mod coverflow;
+mod keys;
 mod model;
 mod paths;
 mod update;
 mod view;
 
+use keys::key_to_msg;
 use model::{App, Modal, View, boot, flow_target, glow_animating};
 use phonoscule::library;
 use phonoscule::{config, session, watcher};
 use smol::channel;
 use std::path::PathBuf;
 use std::time::Duration;
-use update::{Msg, key_to_msg, update};
+use update::{Msg, update};
 use view::{style, theme, view};
 
 use iced::Subscription;
