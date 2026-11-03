@@ -30,7 +30,8 @@ def main():
     ap.add_argument("--cols", type=int, default=200)
     ap.add_argument("--rows", type=int, default=50)
     # Keystrokes to send once the player is up, as a Python string escape: "\t" for Tab to switch
-    # views, " " to play or pause, "\x01" for Ctrl+A to queue everything shown.
+    # views, " " to play or pause, "\x1bp" for Alt+P to play everything shown. An Esc is sent
+    # together with the byte after it, as a terminal sends an Alt chord, so a bare Esc goes last.
     ap.add_argument("--keys", default="")
     ap.add_argument("--keys-after", type=float, default=3.0,
                     help="seconds to wait before sending keys, so the boot scan has settled")
@@ -83,8 +84,9 @@ def main():
         if os.waitpid(pid, os.WNOHANG)[0] == pid:
             break
         if sent < len(keys) and time.monotonic() >= keys_at:
-            os.write(master, keys[sent:sent + 1])
-            sent += 1
+            n = 2 if keys[sent] == 0x1B and sent + 1 < len(keys) else 1
+            os.write(master, keys[sent:sent + n])
+            sent += n
             keys_at = time.monotonic() + args.key_delay
         try:
             # Short timeout so the keystroke schedule is not stalled. Large read: a halfblocks cover

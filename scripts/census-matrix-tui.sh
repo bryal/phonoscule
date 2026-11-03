@@ -125,8 +125,8 @@ row "T1-library-paused"        200   50 ""      no
 row "T2-library-playing"       200   50 ""      yes
 row "T3-player-paused"         200   50 '\t'    no
 row "T4-player-playing"        200   50 '\t'    yes
-# Ctrl+A queues everything shown, plays, and switches view. MPRIS plays as a backstop.
-row "T5-player-playing-fullq"  200   50 '\x01'  yes  20
+# Alt+P plays everything shown and switches view. MPRIS plays as a backstop.
+row "T5-player-playing-fullq"  200   50 '\x1bp' yes  20
 row "T6-library-playing-80x24"  80   24 ""      yes
 
 echo "finished $(date -Is)"
