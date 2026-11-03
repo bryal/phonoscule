@@ -1,6 +1,7 @@
 //! Drawing the frame: a header, the body of whichever view is up, and a status line.
 
 use crate::covers::{self, CoverMemo, Covers};
+use crate::keys;
 use crate::model::{Focus, Model, Picker, ScanState, Subject, View};
 use phonoscule::library::Album;
 use phonoscule::player;
@@ -37,8 +38,30 @@ pub fn view(frame: &mut Frame, model: &mut Model) {
     match &model.focus {
         Focus::Picker(picker) => picker_overlay(frame, picker, body),
         Focus::Tracks(_) => track_overlay(frame, model, body),
+        Focus::Help(_) => help_overlay(frame, model, body),
         Focus::Albums | Focus::Search => (),
     }
+}
+
+/// The key list, over the body and centred in it, scrolled as far as the model says. Scrolling stops
+/// once the last line is in view, and the model is told so, so the way back up is as long as it looks.
+fn help_overlay(frame: &mut Frame, model: &mut Model, body: Rect) {
+    let Focus::Help(scroll) = &mut model.focus else { return };
+    let lines: Vec<Line> = keys::HELP.lines().map(Line::raw).collect();
+    let longest = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let width = (longest + 4).min(body.width);
+    let height = (lines.len() as u16 + 2).min(body.height);
+    let area = Rect { x: body.x + (body.width - width) / 2, y: body.y, width, height };
+    frame.render_widget(Clear, area);
+
+    let block = Block::bordered()
+        .title(" Keys ")
+        .title_bottom(Line::from(" esc to close ").right_aligned())
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    *scroll = (*scroll).min(lines.len().saturating_sub(inner.height as usize));
+    let offset = *scroll as u16;
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((offset, 0)), area);
 }
 
 /// An album's tracks, over the body: numbered, the selection highlighted, and a line naming what the
@@ -68,7 +91,7 @@ fn track_overlay(frame: &mut Frame, model: &mut Model, body: Rect) {
     let list = List::new(rows).highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     model.menu_list.select(Some(menu.selected));
     frame.render_stateful_widget(list, rows_area, &mut model.menu_list);
-    let keys = "↵ play  ⌥↵ queue  ^a album  ⌥a queue album";
+    let keys = "enter/^p play  ^e enqueue  alt+p album  alt+e enqueue album";
     frame.render_widget(Paragraph::new(Line::from(keys).fg(Color::DarkGray)), keys_area);
 }
 
@@ -78,13 +101,13 @@ fn track_overlay(frame: &mut Frame, model: &mut Model, body: Rect) {
 fn filter_line(frame: &mut Frame, model: &Model, area: Rect) {
     let searching = matches!(model.focus, Focus::Search);
     let mut spans = vec![
-        chip("^o", &model.sort.label(), true),
+        chip("1", &model.sort.label(), true),
         Span::raw("  "),
-        chip("^g", model.filter.genre.as_deref().unwrap_or("any genre"), model.filter.genre.is_some()),
+        chip("2", model.filter.genre.as_deref().unwrap_or("any genre"), model.filter.genre.is_some()),
         Span::raw("  "),
-        chip("^t", model.filter.artist.as_deref().unwrap_or("any artist"), model.filter.artist.is_some()),
+        chip("3", model.filter.artist.as_deref().unwrap_or("any artist"), model.filter.artist.is_some()),
         Span::raw("  "),
-        Span::raw("^a play  ").fg(Color::DarkGray),
+        Span::raw("alt+p play  ").fg(Color::DarkGray),
         Span::raw("^f ").fg(Color::DarkGray),
     ];
     match (searching, model.filter.search.is_empty()) {
@@ -145,6 +168,7 @@ fn header_line(frame: &mut Frame, model: &Model, area: Rect) {
         let label = Span::raw(view.label());
         spans.push(if view == model.view { label.bold().fg(Color::White) } else { label.fg(Color::DarkGray) });
     }
+    spans.push(Span::raw("   ? keys").fg(Color::DarkGray));
     // The volume belongs to the application rather than to either view, so it shows in both -- and
     // only once the mixer has said what it is.
     let volume = match model.volume {
@@ -526,7 +550,7 @@ fn total_time(model: &Model) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::model::{Model, browser};
+    use crate::model::{Focus, Model, browser};
     use crate::update::{Edge, Msg, update};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -534,6 +558,24 @@ mod test {
     /// Applies a message, discarding what it asks the event loop to do next.
     fn send(model: &mut Model, msg: Msg) {
         let _ = update(model, msg);
+    }
+
+    /// Scrolled past its end, the key list stops with its last line at the bottom, and says so to the
+    /// model, so one press back up moves it.
+    #[test]
+    fn the_key_list_stops_at_its_last_line() {
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let mut model = browser(1);
+        send(&mut model, Msg::OpenHelp);
+        send(&mut model, Msg::HelpScroll(isize::MAX));
+        terminal.draw(|frame| view(frame, &mut model)).unwrap();
+
+        let Focus::Help(scroll) = model.focus else { panic!("the key list should be open") };
+        let lines = crate::keys::HELP.lines().count();
+        assert!(scroll < lines - 1, "the scroll was clamped to what fits");
+        let last = crate::keys::HELP.lines().last().unwrap().trim();
+        let screen: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+        assert!(screen.contains(last), "the last line is in view");
     }
 
     /// Where the browser's list starts: below the header and the filter row.

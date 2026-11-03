@@ -40,7 +40,9 @@ Options:
 ";
 
 fn help() -> String {
-    format!("{HELP}{}\n{}", config::config_help(APP), keys::HELP)
+    let controls: String =
+        keys::HELP.lines().map(|line| if line.is_empty() { "\n".into() } else { format!("  {line}\n") }).collect();
+    format!("{HELP}{}\nControls:\n{controls}", config::config_help(APP))
 }
 
 fn main() {

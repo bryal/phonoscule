@@ -79,6 +79,8 @@ pub enum Focus {
     Picker(Picker),
     /// An album's tracks, to play or queue one at a time (see [`TrackMenu`]).
     Tracks(TrackMenu),
+    /// The key list, scrolled this many lines down.
+    Help(usize),
 }
 
 /// An open track menu: which album, by id so the browser re-sorting under it changes nothing, and

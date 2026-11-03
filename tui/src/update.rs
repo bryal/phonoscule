@@ -43,6 +43,12 @@ pub enum Msg {
     Prev,
     /// Seek by this much, forwards or back, within the playing track.
     Seek(i64),
+    /// Jump to the start of the playing album, or of the one before if playback is already there.
+    PrevAlbum,
+    /// Jump to the start of the next album in the queue.
+    NextAlbum,
+    /// Rest playback on the queue's first or last track, paused.
+    RestAt(Edge),
     /// Cycle the repeat mode.
     CycleRepeat,
     /// Start typing an album search, beginning with this character if typing is what opened it.
@@ -67,6 +73,10 @@ pub enum Msg {
     Pick,
     /// Leave whatever has focus, keeping what it has narrowed to.
     Done,
+    /// Show the key list.
+    OpenHelp,
+    /// Scroll the key list by this many lines, clamped.
+    HelpScroll(isize),
     /// Clear every filter, and leave the search or picker that was setting one.
     ClearFilters,
     /// Play, or queue, every album the filter lets through, in the order shown.
@@ -175,6 +185,38 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             seek(model, by);
             After::Redraw
         }
+        Msg::PrevAlbum => {
+            let start = album_start(&model.queue, model.current);
+            let target =
+                if start < model.current { Some(start) } else { start.checked_sub(1).map(|ix| album_start(&model.queue, ix)) };
+            if let Some(ix) = target {
+                model.send(player::Cmd::JumpTo(ix));
+            }
+            After::Idle
+        }
+        Msg::NextAlbum => {
+            let album = model.queue.get(model.current).map(|item| item.album_id);
+            let next = model.queue.iter().skip(model.current).position(|item| Some(item.album_id) != album);
+            if let Some(offset) = next {
+                model.send(player::Cmd::JumpTo(model.current + offset));
+            }
+            After::Idle
+        }
+        Msg::RestAt(edge) => {
+            let Some(last) = model.queue.len().checked_sub(1) else { return After::Idle };
+            model.current = match edge {
+                Edge::First => 0,
+                Edge::Last => last,
+            };
+            // Replacing the queue with itself reopens the track paused, as a restored session comes up.
+            model.send(player::Cmd::SetQueue {
+                tracks: entries(&model.queue),
+                start: model.current,
+                play: player::PlayState::Paused,
+            });
+            model.dirty_player = true;
+            After::Redraw
+        }
         Msg::CycleRepeat => {
             model.repeat = model.repeat.cycled();
             model.send(player::Cmd::SetRepeat(model.repeat));
@@ -200,8 +242,8 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 requery(model);
                 After::Redraw
             }
-            // Typing is for searching, and the track menu has nothing to search.
-            Focus::Albums | Focus::Tracks(_) => After::Idle,
+            // Typing is for searching, and neither the track menu nor the key list has anything to search.
+            Focus::Albums | Focus::Tracks(_) | Focus::Help(_) => After::Idle,
         },
         Msg::Rubout => match &mut model.focus {
             Focus::Search => {
@@ -214,7 +256,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 requery(model);
                 After::Redraw
             }
-            Focus::Tracks(_) => After::Idle,
+            Focus::Tracks(_) | Focus::Help(_) => After::Idle,
             // Rubbing out is editing the search, so it takes the keys there as typing does -- for
             // correcting a search after the keys have gone back to the list.
             Focus::Albums => {
@@ -225,7 +267,18 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             }
         },
         Msg::OpenPicker(subject) => {
+            model.view = View::Library;
             model.focus = Focus::Picker(open_picker(model, subject));
+            After::Redraw
+        }
+        Msg::OpenHelp => {
+            model.focus = Focus::Help(0);
+            After::Redraw
+        }
+        Msg::HelpScroll(delta) => {
+            let Focus::Help(scroll) = &mut model.focus else { return After::Idle };
+            let last = keys::HELP.lines().count().saturating_sub(1);
+            *scroll = scroll.saturating_add_signed(delta).min(last);
             After::Redraw
         }
         Msg::PickerMove(delta) => {
@@ -294,6 +347,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
                 model.queue = items;
                 model.current = 0;
                 model.view = View::Player;
+                model.focus = Focus::Albums;
                 model.dirty_playlist = true;
                 model.dirty_player = true;
                 After::Redraw
@@ -556,6 +610,12 @@ fn shown_items(model: &Model) -> Vec<QueueItem> {
         .collect()
 }
 
+/// Where the album run holding queue index `ix` starts.
+fn album_start(queue: &[QueueItem], ix: usize) -> usize {
+    let Some(album) = queue.get(ix).map(|item| item.album_id) else { return ix };
+    queue[..ix].iter().rposition(|item| item.album_id != album).map_or(0, |before| before + 1)
+}
+
 /// The selected album's tracks as queue items, or `None` if nothing is selected.
 fn album_items(model: &Model) -> Option<Vec<QueueItem>> {
     let album = model.acting_album()?;
@@ -702,9 +762,57 @@ pub fn scan_options(model: &Model, phase: Scan) -> library::ScanOptions {
 mod test {
     use super::*;
     use crate::model::browser;
+    use std::path::PathBuf;
 
     fn send(model: &mut Model, msg: Msg) {
         let _ = update(model, msg);
+    }
+
+    /// An album run starts after the last item of another album, or at the top of the queue.
+    #[test]
+    fn album_runs_start_where_the_album_changes() {
+        let item = |album_id| QueueItem { path: PathBuf::new(), album_id, title: String::new() };
+        let queue: Vec<QueueItem> = [7, 7, 8, 8, 8, 9].into_iter().map(item).collect();
+        assert_eq!(album_start(&queue, 1), 0);
+        assert_eq!(album_start(&queue, 2), 2, "a run's first item is its own start");
+        assert_eq!(album_start(&queue, 4), 2);
+        assert_eq!(album_start(&queue, 5), 5);
+    }
+
+    /// A digit opens its picker from the player too, bringing the library up to show it over.
+    #[test]
+    fn a_digit_opens_its_picker_from_the_player() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut model = browser(5);
+        send(&mut model, Msg::Show(View::Player));
+        send(&mut model, Msg::Key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE)));
+        assert_eq!(model.view, View::Library);
+        let Focus::Picker(picker) = &model.focus else { panic!("a picker should be open") };
+        assert_eq!(picker.subject, Subject::Genre);
+    }
+
+    /// Playing everything a search lets through hands the keys back from the search, so the player
+    /// that comes up answers them.
+    #[test]
+    fn playing_everything_shown_leaves_the_search() {
+        let mut model = browser(5);
+        send(&mut model, Msg::Search(Some('A')));
+        send(&mut model, Msg::PlayShown);
+        assert_eq!(model.view, View::Player);
+        assert!(matches!(model.focus, Focus::Albums));
+    }
+
+    /// The key list scrolls no further up than its first line.
+    #[test]
+    fn the_key_list_scrolls_within_itself() {
+        let mut model = browser(1);
+        send(&mut model, Msg::OpenHelp);
+        send(&mut model, Msg::HelpScroll(-3));
+        assert!(matches!(model.focus, Focus::Help(0)));
+        send(&mut model, Msg::HelpScroll(isize::MAX));
+        assert!(matches!(model.focus, Focus::Help(n) if n == keys::HELP.lines().count() - 1));
+        send(&mut model, Msg::Done);
+        assert!(matches!(model.focus, Focus::Albums));
     }
 
     /// Playing the selection replaces the queue with that album's tracks and shows the player.

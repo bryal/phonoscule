@@ -114,42 +114,45 @@ you should now be able to launch `phonoscule-tui` from the terminal.
 
 ## Controls
 
+Press **F1** or **?** for the list of keys, or run with `--help`.
 Letters carry no bindings of their own in the browser - typing searches - so everything
-else is a chord. Anywhere:
+else is a chord, a digit, or `?`. Anywhere:
 
 | Key | |
 | --- | --- |
 | **Space** | play / pause |
 | **Tab** / **Shift+Tab** | switch between the Library and Player views |
+| **Esc** | close what is open, or go back to the Library |
+| **F1** / **?** | show the keys |
 | **Ctrl+Q** / **Ctrl+C** | quit |
 | **Alt+R** | cycle the repeat mode (off, track, album, queue) |
 | **Ctrl+S** / **Ctrl+Z** | shuffle the whole queue, by album / by track |
 | **Alt+S** / **Alt+Z** | shuffle everything but what is playing, by album / by track |
 | **Ctrl+K** | clear the queue |
+| **Ctrl+Home** / **Ctrl+End** | rest at the queue's first / last track |
+
+Playing and enqueueing, in the Library: **P** plays and **E** enqueues;
+**Ctrl** takes the selection and **Alt** all that is shown.
+
+| Key | In the Library | In an album's tracks |
+| --- | --- | --- |
+| **Ctrl+P** / **Ctrl+E** | play / enqueue the selected album | play / enqueue the selected track |
+| **Alt+P** / **Alt+E** | play / enqueue every album shown | play / enqueue the whole album |
 
 In the Library:
 
 | Key | |
 | --- | --- |
 | **↑ ↓ PgUp PgDn Home End** | move the selection |
+| **Enter** | open the selected album's tracks |
 | **type anything** | search album titles, narrowing as you go |
 | **Backspace** | correct the search |
 | **Ctrl+F** | back to the search |
-| **Ctrl+G** / **Ctrl+T** / **Ctrl+O** | pick a genre / an artist / an order |
+| **1** / **2** / **3** | pick the order / a genre / an artist |
 | **Ctrl+W** | clear every filter |
-| **Enter** | open the selected album's tracks |
-| **Alt+Enter** | queue the selected album |
-| **Ctrl+A** / **Alt+A** | play / queue every album shown |
 
-In an album's tracks:
-
-| Key | |
-| --- | --- |
-| **↑ ↓ PgUp PgDn Home End** | move the selection |
-| **Enter** | play that track alone |
-| **Alt+Enter** | queue it, stepping onto the next |
-| **Ctrl+A** / **Alt+A** | play / queue the whole album |
-| **Esc** | close |
+In an album's tracks, **↑ ↓ PgUp PgDn Home End** move the selection
+and **Enter** plays that track alone.
 
 In a picker: **type** to search it, **↑ ↓** to move, **Enter** to take it, **Esc** to leave.
 Its first row clears the filter it sets.
@@ -161,6 +164,7 @@ In the Player:
 | **← →** | seek |
 | **↑ ↓** | volume |
 | **Home** / **End** | previous / next track |
+| **PgUp** / **PgDn** | previous / next album |
 
 ## License
 
