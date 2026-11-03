@@ -1,6 +1,25 @@
 # Changelog
 
 
+v1.3.0 (2026-11-03)
+------------------------------------------------------------
+
+- **Play and enqueue by letter.** Ctrl+Space, Alt+Space, Ctrl+Enter and
+  Alt+Enter are gone, replaced by P to play and E to enqueue, with the modifier
+  saying how much: Ctrl takes the selection, Alt everything shown. In the
+  Library, Ctrl+P plays the selected album and Alt+P every album the filters
+  show; in an album's track list, Ctrl+P plays the selected track and Alt+P the
+  whole album. They work in the Library only, so a stray chord in the Player
+  cannot replace the queue. The same keys do the same in `phonoscule-tui`.
+- **Filters by digit.** 1, 2 and 3 open the order, genre and artist pickers,
+  from either view.
+- **A list of the keys.** F1 or ? shows every binding, as does the new
+  "Keyboard shortcuts" entry in the actions menu; `--help` prints the same list.
+- **Ctrl+Q quits**, from anywhere, open dialogs included.
+- Alt chords typed while the search field has focus now reach their bindings
+  instead of typing a letter into the search.
+
+
 v1.2.0 (2026-09-05)
 ------------------------------------------------------------
 
