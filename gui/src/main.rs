@@ -14,6 +14,7 @@
 #![recursion_limit = "256"]
 
 mod album_grid;
+mod alt_passthrough;
 mod background;
 mod console;
 mod coverflow;
@@ -106,7 +107,9 @@ const CONFIG_HELP_GUI: &str = "
 ";
 
 fn help() -> String {
-    format!("{HELP}{}{CONFIG_HELP_GUI}", config::config_help(APP))
+    let controls: String =
+        keys::HELP.lines().map(|line| if line.is_empty() { "\n".into() } else { format!("  {line}\n") }).collect();
+    format!("{HELP}{}{CONFIG_HELP_GUI}\nControls:\n{controls}", config::config_help(APP))
 }
 
 fn main() {

@@ -1,11 +1,13 @@
 //! Rendering the model: the library browser and the player (Cover Flow) views.
 
 use crate::album_grid::{Cover, album_grid};
+use crate::alt_passthrough::alt_passthrough;
 use crate::background;
 use crate::coverflow::{FlowCover, cover_flow};
+use crate::keys;
 use crate::model::{
-    App, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, SEARCH_INPUT_ID, SORT_SCROLL_ID, ScanState, SortMenu,
-    TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of,
+    App, HELP_SCROLL_ID, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, SEARCH_INPUT_ID, SORT_SCROLL_ID,
+    ScanState, SortMenu, TRACK_MENU_SCROLL_ID, View, album_runs, glow_now, run_of,
 };
 use crate::update::Msg;
 use iced::widget::{
@@ -62,12 +64,13 @@ pub fn view(app: &App) -> Element<'_, Msg> {
         layers.push(container(bar).center_x(Fill).align_bottom(Fill).into());
     }
     // Modals float over everything (tabs and player bar included); the track menu and the filter
-    // picker belong to the library view, the actions menu to either.
+    // picker belong to the library view, the actions menu and the key list to either.
     let modal = match &app.modal {
         Some(Modal::Tracks(_)) if app.view == View::Library => track_menu_modal(app),
         Some(Modal::Actions) => Some(actions_modal(app)),
         Some(Modal::Picker(picker)) if app.view == View::Library => Some(picker_modal(picker)),
         Some(Modal::Sort(menu)) if app.view == View::Library => Some(sort_modal(menu, app)),
+        Some(Modal::Help) => Some(help_modal()),
         _ => None,
     };
     if let Some(modal) = modal {
@@ -292,7 +295,7 @@ fn library_view(app: &App) -> Element<'_, Msg> {
         let top_clearance = if top_bar_fits(app, size.width) { TAB_BAR_HEIGHT } else { TWO_ROW_BAR_HEIGHT };
         // The grid widget owns layout, scrolling, selection, and keyboard navigation (see
         // `album_grid`); the view supplies each card's cover element and its texts, and receives
-        // whole actions back (Alt+Space queues the selection, Ctrl+Space plays it). The selection is
+        // whole actions back (Ctrl+E queues the selection, Ctrl+P plays it). The selection is
         // externalized into the model so it survives view switches.
         let mut grid = album_grid(Msg::PlayAlbum, Msg::QueueAlbum)
             .top_clearance(top_clearance)
@@ -345,6 +348,8 @@ fn filter_tools(app: &App) -> Element<'_, Msg> {
     let artist = chip(app.filter.artist.as_deref().unwrap_or("All artists"), Msg::OpenPicker(PickerSubject::Artist));
     let search =
         text_input("Search albums…", &app.filter.search).id(SEARCH_INPUT_ID).on_input(Msg::SearchChanged).size(13).width(210);
+    // So Alt+P plays what the search found, rather than searching for a "p" too.
+    let search = alt_passthrough(search);
     let enabled = !app.filtered.is_empty();
     let play = text(FA_PLAY).font(font_awesome_solid()).size(13);
     let enqueue = text(FA_PLUS).font(font_awesome_solid()).size(15);
@@ -533,6 +538,7 @@ fn actions_modal(app: &App) -> Element<'_, Msg> {
         entry("Shuffle other tracks", "alt+z", Msg::Shuffle { grouping: Grouping::Tracks, scope: Scope::Others }),
         entry("Shuffle all tracks", "ctrl+z", Msg::Shuffle { grouping: Grouping::Tracks, scope: Scope::All }),
         entry("Clear playlist", "ctrl+k", Msg::ClearQueue),
+        entry("Keyboard shortcuts", "?", Msg::OpenHelp),
     ]
     .spacing(2);
     let panel = container(list).padding(12).width(280).style(|theme: &Theme| container::Style {
@@ -540,6 +546,23 @@ fn actions_modal(app: &App) -> Element<'_, Msg> {
         border: iced::Border { color: color!(0xffffff, 0.1), width: 1.0, radius: 10.0.into() },
         ..container::Style::default()
     });
+    opaque(mouse_area(center(opaque(panel))).on_press(Msg::CloseModal))
+}
+
+/// The key list: every binding, as `--help` prints it, in a panel that scrolls when the window is
+/// too short for it. Dismissal like the other modals.
+fn help_modal() -> Element<'static, Msg> {
+    let thin_scrollbar = scrollable::Scrollbar::new().width(3).margin(0).scroller_width(3);
+    // Clear of the scrollbar, which is drawn over the content.
+    let keys = container(text(keys::HELP).size(13)).padding(Padding { right: 12.0, ..Padding::ZERO });
+    let list = scrollable(keys).direction(scrollable::Direction::Vertical(thin_scrollbar)).id(HELP_SCROLL_ID);
+    let heading = text("Keys").size(14).style(text::secondary);
+    let panel =
+        container(column![heading, list].spacing(10)).padding(16).max_height(640).style(|theme: &Theme| container::Style {
+            background: Some(iced::Background::Color(Color { a: 0.97, ..theme.extended_palette().primary.weak.color })),
+            border: iced::Border { color: color!(0xffffff, 0.1), width: 1.0, radius: 10.0.into() },
+            ..container::Style::default()
+        });
     opaque(mouse_area(center(opaque(panel))).on_press(Msg::CloseModal))
 }
 

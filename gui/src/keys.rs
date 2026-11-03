@@ -1,37 +1,70 @@
 //! Key bindings: the one place a key press becomes a [`Msg`].
 //!
 //! Only keys no widget captured arrive here (see the keyboard subscription in `main`): the library
-//! grid handles its own navigation and selection actions, and a focused text field its typing.
-//! Kept as a single table so it can be made configurable without hunting through the views.
+//! grid handles its own navigation and its selection's play and enqueue, and a focused text field
+//! its typing. Kept as a single table so it can be made configurable without hunting through the
+//! views.
 
-use crate::model::{ModalKind, View};
+use crate::model::{ModalKind, PickerSubject, View};
 use crate::update::{MenuDir, Msg, QueueEdge, Seek, SeekDir, Zoom};
 use iced::keyboard::{Key, Modifiers, key::Named};
 use phonoscule::queue::{Grouping, Scope};
 use std::time::Duration;
 
+/// The bindings below, for `--help` and the in-app key list. Kept here rather than beside the
+/// argument handling so that changing a binding puts its description in front of whoever changed it.
+pub const HELP: &str = "\
+Anywhere
+  Space              Play or pause
+  Tab, Shift+Tab     Switch between the Library and Player views
+  Esc                Close what is open, or go back to the Library
+  F1, ?              Show these keys
+  Ctrl+Q             Quit
+  Alt+R              Cycle the repeat mode: off, track, album, queue
+  Ctrl+S, Ctrl+Z     Shuffle the whole queue: by album, by track
+  Alt+S, Alt+Z       Shuffle all but what is playing: by album, by track
+  Ctrl+K             Clear the queue
+  Ctrl+Home/End      Rest at the queue's first, last track
+  Ctrl+Plus, Ctrl+Minus
+                     Zoom in, out
+  Ctrl+=             Reset the zoom
+
+Play and enqueue, in the Library: P plays, E enqueues; Ctrl the selection, Alt all shown
+  Ctrl+P, Ctrl+E     The selected album, or in its tracks the selected track
+  Alt+P, Alt+E       Every album shown, or in its tracks the whole album
+
+Library
+  Arrows             Move the selection
+  Enter              Open the selected album's tracks
+  (any letter)       Search album titles
+  Ctrl+F             Back to the search
+  1, 2, 3            Pick the order, a genre, an artist
+  Tab, Shift+Tab     In the search or a picker, move along the filters
+  Ctrl+W             Clear every filter
+
+An album's tracks
+  Up/Down            Move the selection
+  Enter              Play the selected track alone
+
+A picker
+  (any letter)       Search what it holds
+  Up/Down            Move the selection
+  Enter              Take it; its first row clears the filter it sets
+
+Player
+  Left/Right         Seek
+  Up/Down            Volume
+  Home/End           Previous, next track
+  PgUp/PgDn          Previous, next album
+";
+
+/// How far one arrow press scrolls the key list, in logical pixels; a page key scrolls ten times as far.
+const HELP_STEP: f32 = 40.0;
+
 /// Translates a key press into a message for the current `view`, or `None` for keys we don't bind.
-/// Only keys no widget captured arrive here: the library grid handles its own navigation and
-/// selection actions internally (see `album_grid`), so this covers the global view switching, the
-/// playback-mode keys, and the player bindings. `repeat` marks auto-repeat from a held key:
-/// continuous actions honor it (seek/scrub, walking the queue), while one-shot ones don't (holding
-/// Space must not machine-gun play/pause). Alt/Logo pass through to the window manager, except
-/// Alt+Space: that is the queue-the-selection binding, freeing bare Space for the toggle.
-///
-/// Global: Space toggles play/pause (too central a function to belong to one view); Tab /
-/// Shift-Tab cycle the view tabs -- unless a filter input holds focus (the album search, or an
-/// open filter picker), in which case they move between the filter inputs instead, following the
-/// bar; Escape returns to the library; Alt+r cycles the repeat mode;
-/// Alt+s/Alt+z shuffle the other albums/tracks in behind
-/// the playing one (Ctrl instead of Alt shuffles literally everything); Ctrl+Home / Ctrl+End rest
-/// playback at the queue's first / last track, paused. With a modal open, Escape dismisses it, the track menu gets its
-/// own bindings, and everything else is suppressed. Ctrl+F brings up the library with the album
-/// search focused; Ctrl+W clears every filter (unfocusing its inputs). In the library: Ctrl+Enter plays and
-/// Alt+Enter queues everything the filter shows, and typing any plain character starts the album
-/// search. In the player: Left/Right seek by
-/// [`SEEK_STEP`], Up/Down nudge the volume by 5%, Home
-/// restarts the track (or steps back near the start), End steps to the next track, PageUp restarts
-/// the album (or steps to the previous one), PageDown jumps to the next album.
+/// `repeat` marks auto-repeat from a held key: continuous actions honor it (seek/scrub, walking the
+/// queue), while one-shot ones don't (holding Space must not machine-gun play/pause). With a modal
+/// open, it gets its own bindings and everything else is suppressed. See [`HELP`] for the bindings.
 pub fn key_to_msg(
     view: View,
     modal: Option<ModalKind>,
@@ -42,32 +75,60 @@ pub fn key_to_msg(
 ) -> Option<Msg> {
     /// How far a single Left/Right tap seeks.
     const SEEK_STEP: Duration = Duration::from_secs(5);
-    // Alt/Logo chords belong to the window manager -- all but the few we bind: Alt+Space, the
-    // Alt+s/Alt+z shuffles, and the Alt+r repeat cycle. Letters and typing keys carry no bare
-    // bindings, so plain typing stays free for a future type-to-search.
-    let alt_ours = modifiers.alt()
-        && (matches!(key, Key::Named(Named::Space) | Key::Named(Named::Enter))
-            || matches!(&key, Key::Character(c) if matches!(c.as_str(), "s" | "z" | "r")));
+    // Alt/Logo chords belong to the window manager -- all but the few we bind.
+    let alt_ours = modifiers.alt() && matches!(&key, Key::Character(c) if matches!(c.as_str(), "s" | "z" | "r" | "p" | "e"));
     if (modifiers.alt() && !alt_ours) || modifiers.logo() {
         return None;
     }
     let one_shot = |msg| if repeat { None } else { Some(msg) };
+    // Read off the resolved characters, since `?` and, on some layouts, the digits are shifted.
+    let question = !modifiers.control() && !modifiers.alt() && matches!(&modified_key, Key::Character(c) if c.as_str() == "?");
+
+    // Over whatever is up, and closed again by the key that opened it.
+    if key == Key::Named(Named::F1) || question {
+        return one_shot(if modal == Some(ModalKind::Help) { Msg::CloseModal } else { Msg::OpenHelp });
+    }
+    if modifiers.control() && matches!(&key, Key::Character(c) if c.as_str() == "q") {
+        return one_shot(Msg::Quit);
+    }
+    // In the order the filter bar shows them, so one picker can be swapped for the next.
+    let filter_dialog = || match &modified_key {
+        Key::Character(c) if !modifiers.control() && !modifiers.alt() => match c.as_str() {
+            "1" => one_shot(Msg::OpenSort),
+            "2" => one_shot(Msg::OpenPicker(PickerSubject::Genre)),
+            "3" => one_shot(Msg::OpenPicker(PickerSubject::Artist)),
+            _ => None,
+        },
+        _ => None,
+    };
+    // `(play, all)` for P or E held with exactly one of Ctrl and Alt: P plays and E enqueues, Ctrl
+    // takes the selection and Alt all that is shown.
+    let play_or_enqueue = match &key {
+        Key::Character(c) if modifiers.alt() != modifiers.control() && !modifiers.shift() => match c.as_str() {
+            "p" => Some((true, modifiers.alt())),
+            "e" => Some((false, modifiers.alt())),
+            _ => None,
+        },
+        _ => None,
+    };
 
     match modal {
         // The track menu is modal: it gets its own bindings and everything else is suppressed.
-        // Mirrors the grid's vocabulary one level down -- arrows move the selection, Alt+Space
-        // queues it, Ctrl+Space (or Enter, which opened the menu) plays it -- and Escape
-        // dismisses. Bare Space stays the global play/pause toggle even here.
+        // Mirrors the grid's one level down -- arrows move the selection, Enter (which opened the
+        // menu) plays it -- and Escape dismisses. Bare Space stays the global play/pause toggle.
         Some(ModalKind::Tracks) => {
-            return match (key, modifiers.control()) {
-                (Key::Named(Named::Escape), false) => one_shot(Msg::CloseModal),
-                (Key::Named(Named::ArrowUp), false) if modifiers.is_empty() => Some(Msg::MenuMove(MenuDir::Up)),
-                (Key::Named(Named::ArrowDown), false) if modifiers.is_empty() => Some(Msg::MenuMove(MenuDir::Down)),
-                // One queue per press: holding Alt+Space must not machine-gun the queue.
-                (Key::Named(Named::Space), false) if modifiers.alt() => one_shot(Msg::MenuQueue),
-                (Key::Named(Named::Space), false) if modifiers.is_empty() => one_shot(Msg::Toggle),
-                (Key::Named(Named::Space), true) => one_shot(Msg::MenuPlay),
-                (Key::Named(Named::Enter), false) if modifiers.is_empty() => one_shot(Msg::MenuPlay),
+            // One per press: holding Ctrl+E must not machine-gun the queue.
+            return match (play_or_enqueue, key) {
+                (Some((true, false)), _) => one_shot(Msg::MenuPlay),
+                (Some((false, false)), _) => one_shot(Msg::MenuQueue),
+                (Some((true, true)), _) => one_shot(Msg::MenuPlayAlbum),
+                (Some((false, true)), _) => one_shot(Msg::MenuQueueAlbum),
+                (None, _) if !modifiers.is_empty() => None,
+                (None, Key::Named(Named::Escape)) => one_shot(Msg::CloseModal),
+                (None, Key::Named(Named::ArrowUp)) => Some(Msg::MenuMove(MenuDir::Up)),
+                (None, Key::Named(Named::ArrowDown)) => Some(Msg::MenuMove(MenuDir::Down)),
+                (None, Key::Named(Named::Space)) => one_shot(Msg::Toggle),
+                (None, Key::Named(Named::Enter)) => one_shot(Msg::MenuPlay),
                 _ => None,
             };
         }
@@ -92,7 +153,8 @@ pub fn key_to_msg(
         }
         // The filter picker: its focused search field captures typing (and Enter, via on_submit);
         // arrows pass through it, so the list navigates while typing. Escape reaches here once the
-        // field is unfocused (the field captures the first press to unfocus itself).
+        // field is unfocused (the field captures the first press to unfocus itself), and so do
+        // the digits that swap to another picker.
         Some(ModalKind::Picker) => {
             return match key {
                 Key::Named(Named::Escape) if !modifiers.control() => one_shot(Msg::CloseModal),
@@ -107,11 +169,11 @@ pub fn key_to_msg(
                 Key::Named(Named::Tab) if !modifiers.control() && !modifiers.alt() => {
                     one_shot(Msg::CycleFilterInput { backwards: modifiers.shift() })
                 }
-                _ => None,
+                _ => filter_dialog(),
             };
         }
         // The sort picker: a fixed list, so no search field -- arrows move, Enter picks, and Tab
-        // walks the filter inputs like the other pickers. Escape and Ctrl+W dismiss.
+        // and the digits walk the filter inputs like the other pickers. Escape and Ctrl+W dismiss.
         Some(ModalKind::Sort) => {
             return match key {
                 Key::Named(Named::Escape) if !modifiers.control() => one_shot(Msg::CloseModal),
@@ -124,6 +186,19 @@ pub fn key_to_msg(
                 Key::Named(Named::Tab) if !modifiers.control() && !modifiers.alt() => {
                     one_shot(Msg::CycleFilterInput { backwards: modifiers.shift() })
                 }
+                _ => filter_dialog(),
+            };
+        }
+        // The key list: the arrows and page keys scroll it, Escape closes it, and play/pause holds.
+        Some(ModalKind::Help) => {
+            return match key {
+                _ if !modifiers.is_empty() => None,
+                Key::Named(Named::Escape) => one_shot(Msg::CloseModal),
+                Key::Named(Named::ArrowUp) => Some(Msg::HelpScroll(-HELP_STEP)),
+                Key::Named(Named::ArrowDown) => Some(Msg::HelpScroll(HELP_STEP)),
+                Key::Named(Named::PageUp) => Some(Msg::HelpScroll(-10.0 * HELP_STEP)),
+                Key::Named(Named::PageDown) => Some(Msg::HelpScroll(10.0 * HELP_STEP)),
+                Key::Named(Named::Space) => one_shot(Msg::Toggle),
                 _ => None,
             };
         }
@@ -145,9 +220,22 @@ pub fn key_to_msg(
         }
     }
 
+    // Everything the filter lets through, from the library, where it is on screen. Ctrl takes the
+    // grid's selection, which the grid binds itself: one reaching here found nothing selected.
+    match play_or_enqueue {
+        Some((true, true)) if view == View::Library => return one_shot(Msg::PlayAll),
+        Some((false, true)) if view == View::Library => return one_shot(Msg::QueueAll),
+        Some(_) => return None,
+        None => {}
+    }
+    // From the player too: they bring the library up.
+    if let Some(msg) = filter_dialog() {
+        return Some(msg);
+    }
+
     // View-independent navigation takes precedence over the per-view bindings below. Bare Space
-    // toggles play/pause in every view (an uncaptured Alt+Space -- no grid selection -- is a
-    // missed enqueue, not a toggle request).
+    // toggles play/pause in every view; Tab cycles the views, unless the album search has focus,
+    // where it walks the filter inputs (see `Msg::TabPressed`).
     match (&key, modifiers.shift(), modifiers.control()) {
         (Key::Named(Named::Space), false, false) if modifiers.is_empty() => return one_shot(Msg::Toggle),
         (Key::Named(Named::Tab), backwards, false) => return one_shot(Msg::TabPressed { backwards }),
@@ -169,15 +257,10 @@ pub fn key_to_msg(
     }
 
     match view {
-        // Play or queue every album the current filter lets through (the whole library when it
-        // is empty), in displayed order -- the keyboard forms of the filter bar's ▶/＋ buttons.
+        // Starting to type searches: the first character rides along to the field, which takes over
+        // (as the focused widget) for the rest. Letters can carry bindings only with a modifier,
+        // exactly so that this works. Repeats welcome -- held keys repeat in a text field.
         View::Library => match (key, modifiers.alt(), modifiers.control()) {
-            (Key::Named(Named::Enter), false, true) => one_shot(Msg::PlayAll),
-            (Key::Named(Named::Enter), true, false) => one_shot(Msg::QueueAll),
-            // Starting to type searches: the first character rides along to the field, which
-            // takes over (as the focused widget) for the rest. Letters can carry bindings only
-            // with a modifier, exactly so that this works. Repeats welcome -- held keys repeat
-            // in a text field.
             (Key::Character(c), false, false) => Some(Msg::SearchTyped(c.to_string())),
             _ => None,
         },
@@ -195,5 +278,66 @@ pub fn key_to_msg(
             Key::Named(Named::PageDown) => one_shot(Msg::NextAlbum),
             _ => None,
         },
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// A press of `typed` with `modifiers` held, on a layout where it is the key's own character.
+    fn press(view: View, modal: Option<ModalKind>, typed: &str, modifiers: Modifiers) -> Option<Msg> {
+        let key = Key::Character(typed.into());
+        key_to_msg(view, modal, key.clone(), key, modifiers, false)
+    }
+
+    /// The letter is the verb and the modifier the scope. Ctrl in the library is the grid's, which
+    /// binds it only while it has a selection.
+    #[test]
+    fn p_plays_e_enqueues_ctrl_takes_the_selection_alt_all_shown() {
+        let tracks = Some(ModalKind::Tracks);
+        assert!(matches!(press(View::Library, None, "p", Modifiers::ALT), Some(Msg::PlayAll)));
+        assert!(matches!(press(View::Library, None, "e", Modifiers::ALT), Some(Msg::QueueAll)));
+        assert!(press(View::Library, None, "p", Modifiers::CTRL).is_none(), "nothing selected for the grid to play");
+        assert!(press(View::Player, None, "p", Modifiers::ALT).is_none(), "the player shows none of the albums");
+
+        assert!(matches!(press(View::Library, tracks, "p", Modifiers::CTRL), Some(Msg::MenuPlay)));
+        assert!(matches!(press(View::Library, tracks, "e", Modifiers::CTRL), Some(Msg::MenuQueue)));
+        assert!(matches!(press(View::Library, tracks, "p", Modifiers::ALT), Some(Msg::MenuPlayAlbum)));
+        assert!(matches!(press(View::Library, tracks, "e", Modifiers::ALT), Some(Msg::MenuQueueAlbum)));
+    }
+
+    /// The digits open the filter dialogs from either view and from one another, and are read off
+    /// the character typed, so a layout that shifts them still has them.
+    #[test]
+    fn digits_open_the_filter_dialogs() {
+        let none = Modifiers::empty();
+        assert!(matches!(press(View::Library, None, "1", none), Some(Msg::OpenSort)));
+        assert!(matches!(press(View::Player, None, "2", none), Some(Msg::OpenPicker(PickerSubject::Genre))));
+        assert!(matches!(press(View::Library, Some(ModalKind::Sort), "3", none), Some(Msg::OpenPicker(PickerSubject::Artist))));
+
+        let azerty =
+            key_to_msg(View::Library, None, Key::Character("&".into()), Key::Character("1".into()), Modifiers::SHIFT, false);
+        assert!(matches!(azerty, Some(Msg::OpenSort)));
+        assert!(matches!(press(View::Library, None, "a", none), Some(Msg::SearchTyped(_))), "letters still search");
+    }
+
+    /// Ctrl+Q quits from anywhere, a modal included.
+    #[test]
+    fn ctrl_q_quits_under_a_modal() {
+        assert!(matches!(press(View::Library, Some(ModalKind::Tracks), "q", Modifiers::CTRL), Some(Msg::Quit)));
+        assert!(matches!(press(View::Player, Some(ModalKind::Help), "q", Modifiers::CTRL), Some(Msg::Quit)));
+    }
+
+    /// `?` and F1 open the key list over anything, and close it again.
+    #[test]
+    fn the_help_keys_toggle_the_key_list() {
+        let f1 =
+            |modal| key_to_msg(View::Player, modal, Key::Named(Named::F1), Key::Named(Named::F1), Modifiers::empty(), false);
+        assert!(matches!(press(View::Library, None, "?", Modifiers::SHIFT), Some(Msg::OpenHelp)));
+        assert!(matches!(press(View::Library, Some(ModalKind::Tracks), "?", Modifiers::SHIFT), Some(Msg::OpenHelp)));
+        assert!(matches!(press(View::Library, Some(ModalKind::Help), "?", Modifiers::SHIFT), Some(Msg::CloseModal)));
+        assert!(matches!(f1(None), Some(Msg::OpenHelp)));
+        assert!(matches!(f1(Some(ModalKind::Help)), Some(Msg::CloseModal)));
     }
 }

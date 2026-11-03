@@ -111,14 +111,20 @@ The application should then show up in your desktop environment's application la
 
 ## Controls
 
+Press **F1** or **?** for the list of keys, or run with `--help`.
+
 - **Space** - play / pause (from anywhere)
 - **Tab / Shift+Tab** - switch between the Library and Player views
-- In the Library: **type** to search albums, **Ctrl+F** to focus the search, **Ctrl+W**
-  to clear the filters; **Enter** opens an album's track list, and **Ctrl+Enter** /
-  **Alt+Enter** play / queue everything currently shown
-- On a selected album: **Ctrl+Space** plays it, **Alt+Space** queues it
+- **Esc** - close what is open, or go back to the Library; **Ctrl+Q** quits
+- Playing and enqueueing, in the Library: **P** plays and **E** enqueues; **Ctrl** takes the selection and
+  **Alt** all that is shown. In the Library, **Ctrl+P** / **Ctrl+E** play / enqueue the selected
+  album and **Alt+P** / **Alt+E** every album shown; in an album's tracks, the selected track and
+  the whole album
+- In the Library: **type** to search albums, **Ctrl+F** to focus the search, **1** / **2** / **3**
+  to pick the order / a genre / an artist, **Ctrl+W** to clear the filters;
+  **Enter** opens an album's track list
 - In the Player: **←/→** seek, **↑/↓** volume, **Home/End** previous/next track,
-  **PageUp/PageDown** previous/next album, **Ctrl+Home/End** jump to the queue's ends
+  **PageUp/PageDown** previous/next album; **Ctrl+Home/End** jump to the queue's ends from anywhere
 - **Alt+R** cycles the repeat mode; **Ctrl+S** / **Ctrl+Z** shuffle *all* albums / tracks;
   **Alt+S** / **Alt+Z** shuffle *other* albums / tracks;
   **Ctrl+K** clears the queue

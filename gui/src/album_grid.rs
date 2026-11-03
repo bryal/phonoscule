@@ -9,8 +9,7 @@
 //!   and the grid respects capture), so they act without the grid reacting.
 //! - Arrow-key navigation in two dimensions; when nothing is selected, an arrow key picks up the
 //!   first album in view. The selection is always scrolled fully into view, minimally.
-//! - Alt+Space queues the selected album and Ctrl+Space plays it, published via
-//!   `on_queue`/`on_play`; bare Space passes through to the global play/pause toggle.
+//! - Ctrl+E queues the selected album and Ctrl+P plays it, published via `on_queue`/`on_play`.
 //! - Left-clicking a cover, or Enter on the selection, asks for the album's track menu
 //!   (published via `on_menu`; the menu itself is the caller's).
 //!
@@ -34,7 +33,7 @@ use iced::advanced::widget::{Operation, Tree, tree};
 use iced::advanced::{
     Clipboard, Layout, Shell, Text, Widget, image, image::Renderer as _, layout, mouse, overlay, text, text::Renderer as _,
 };
-use iced::keyboard::{self, key::Named};
+use iced::keyboard::{self, Key, key::Named};
 use iced::{Border, Color, Element, Event, Length, Pixels, Point, Rectangle, Renderer, Size, Theme, Vector};
 use std::ops::Range;
 
@@ -84,9 +83,9 @@ pub struct AlbumGrid<'a, Message> {
     /// also bounds "in view" from below).
     top_clearance: f32,
     bottom_clearance: f32,
-    /// Play the album (replacing the queue): Ctrl+Space on the selection.
+    /// Play the album (replacing the queue): Ctrl+P on the selection.
     on_play: fn(usize) -> Message,
-    /// Append the album to the queue: Alt+Space on the selection.
+    /// Append the album to the queue: Ctrl+E on the selection.
     on_queue: fn(usize) -> Message,
     /// Ask for an album's track menu: left-clicking a cover, or Enter on the selection. The menu
     /// itself is the caller's business; the grid only reports the ask.
@@ -351,31 +350,28 @@ impl<Message> Widget<Message, Theme, Renderer> for AlbumGrid<'_, Message> {
                     shell.request_redraw();
                 }
             }
-            Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Named(named), modifiers, repeat, .. })
-                if n > 0 =>
-            {
-                let handled = match named {
-                    Named::ArrowLeft if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Left),
-                    Named::ArrowRight if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Right),
-                    Named::ArrowUp if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Up),
-                    Named::ArrowDown if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Down),
-                    // Bare Space is NOT the grid's: it passes through to the global play/pause
-                    // toggle. One album per press: holding must not machine-gun the queue.
-                    Named::Space if *modifiers == keyboard::Modifiers::ALT && !repeat => match state.selected {
-                        Some(ix) => {
-                            shell.publish((self.on_queue)(ix));
-                            true
+            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, repeat, .. }) if n > 0 => {
+                let handled = match key {
+                    Key::Named(Named::ArrowLeft) if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Left),
+                    Key::Named(Named::ArrowRight) if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Right),
+                    Key::Named(Named::ArrowUp) if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Up),
+                    Key::Named(Named::ArrowDown) if modifiers.is_empty() => self.step(state, geom, bounds.height, Dir::Down),
+                    // One album per press: holding must not machine-gun the queue.
+                    Key::Character(c) if *modifiers == keyboard::Modifiers::CTRL && !repeat => {
+                        let on_action = match c.as_str() {
+                            "p" => Some(self.on_play),
+                            "e" => Some(self.on_queue),
+                            _ => None,
+                        };
+                        match (on_action, state.selected) {
+                            (Some(on_action), Some(ix)) => {
+                                shell.publish(on_action(ix));
+                                true
+                            }
+                            _ => false,
                         }
-                        None => false,
-                    },
-                    Named::Space if *modifiers == keyboard::Modifiers::CTRL && !repeat => match state.selected {
-                        Some(ix) => {
-                            shell.publish((self.on_play)(ix));
-                            true
-                        }
-                        None => false,
-                    },
-                    Named::Enter if modifiers.is_empty() && !repeat => match (self.on_menu, state.selected) {
+                    }
+                    Key::Named(Named::Enter) if modifiers.is_empty() && !repeat => match (self.on_menu, state.selected) {
                         (Some(on_menu), Some(ix)) => {
                             shell.publish(on_menu(ix));
                             true

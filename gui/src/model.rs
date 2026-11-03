@@ -55,6 +55,8 @@ pub enum Modal {
     Picker(Picker),
     /// The sort-order picker (see [`SortMenu`]), opened from the filter bar's sort chip.
     Sort(SortMenu),
+    /// The key list.
+    Help,
 }
 
 impl Modal {
@@ -66,6 +68,7 @@ impl Modal {
             Modal::Actions => ModalKind::Actions,
             Modal::Picker(_) => ModalKind::Picker,
             Modal::Sort(_) => ModalKind::Sort,
+            Modal::Help => ModalKind::Help,
         }
     }
 }
@@ -76,6 +79,7 @@ pub enum ModalKind {
     Actions,
     Picker,
     Sort,
+    Help,
 }
 
 /// What a [`Picker`] picks a filter value for.
@@ -112,11 +116,14 @@ pub struct SortMenu {
 /// Widget id of the sort picker's scrollable, so keyboard navigation can snap it to the selection.
 pub const SORT_SCROLL_ID: &str = "sort-list";
 
+/// Widget id of the key list's scrollable, so the arrow keys can scroll it.
+pub const HELP_SCROLL_ID: &str = "help";
+
 /// Widget id of the filter bar's album search field, so Ctrl+F and type-to-search can focus it.
 pub const SEARCH_INPUT_ID: &str = "album-search";
 
 /// The open track menu: which album (an index into [`App::albums`]) and which of its tracks the
-/// keyboard selection sits on (Up/Down move it; Alt+Space queues, Ctrl+Space or Enter plays).
+/// keyboard selection sits on (Up/Down move it; Ctrl+E queues, Ctrl+P or Enter plays).
 #[derive(Debug, Clone, Copy)]
 pub struct TrackMenu {
     pub album: usize,

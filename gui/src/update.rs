@@ -1,9 +1,9 @@
 //! The messages, and how each of them changes the model.
 
 use crate::model::{
-    App, Filter, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, SEARCH_INPUT_ID, SORT_SCROLL_ID,
-    ScanState, SortMenu, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, color, current_album_id, current_glow, entries,
-    flow_target, glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
+    App, Filter, HELP_SCROLL_ID, Modal, PICKER_INPUT_ID, PICKER_SCROLL_ID, Picker, PickerSubject, QueueItem, SEARCH_INPUT_ID,
+    SORT_SCROLL_ID, ScanState, SortMenu, TRACK_MENU_SCROLL_ID, TrackMenu, View, album_runs, color, current_album_id,
+    current_glow, entries, flow_target, glow_blend, hydrate_queue, picker_matches, queue_items, refresh_filter, run_of,
 };
 use crate::paths;
 use iced::Task;
@@ -48,13 +48,13 @@ pub enum Msg {
     /// as a full "out of the filtering business" gesture mid-typing.
     ClearFilters,
     /// Play all albums matching the current filter, in their displayed order, replacing the
-    /// queue (the filter bar's ▶ button, or Ctrl+Enter in the library).
+    /// queue (the filter bar's ▶ button, or Alt+P).
     PlayAll,
     /// Append all albums matching the current filter, in their displayed order, to the queue
-    /// (the filter bar's ＋ button, or Alt+Enter in the library).
+    /// (the filter bar's ＋ button, or Alt+E).
     QueueAll,
-    /// Open the searchable filter picker for the given subject (a filter-bar chip), focusing its
-    /// search field.
+    /// Open the searchable filter picker for the given subject (a filter-bar chip, or 2 and 3),
+    /// focusing its search field and bringing up the library to show it over.
     OpenPicker(PickerSubject),
     /// Tab / Shift+Tab (`backwards`), outside a modal: cycle the views -- unless the album search
     /// field holds focus, in which case it moves between the filter inputs instead. Only the
@@ -68,7 +68,7 @@ pub enum Msg {
     CycleFilterInput {
         backwards: bool,
     },
-    /// Open the sort-order picker (the filter bar's sort chip).
+    /// Open the sort-order picker (the filter bar's sort chip, or 1), bringing up the library.
     OpenSort,
     /// Move the sort picker's keyboard selection one option up or down (arrow keys).
     SortMove(MenuDir),
@@ -95,6 +95,12 @@ pub enum Msg {
     OpenTrackMenu(usize),
     /// Open the player actions menu (the player bar's ellipsis button): shuffle and friends.
     OpenActionsMenu,
+    /// Show the key list (F1 or ?, or the actions menu).
+    OpenHelp,
+    /// Scroll the key list by this many logical pixels, down being positive.
+    HelpScroll(f32),
+    /// Close the window, ending the program (Ctrl+Q).
+    Quit,
     /// Dismiss whatever modal is up (Escape, or a click outside it).
     CloseModal,
     /// Cycle the repeat mode: off -> track -> album -> playlist -> off (Alt+r, and the
@@ -118,11 +124,15 @@ pub enum Msg {
     /// The cursor entered a track menu row: move the selection there, so the mouse and the arrow
     /// keys drive the same highlight.
     MenuHover(usize),
-    /// Append the track menu's selected track to the queue (Alt+Space), stepping the selection to the
+    /// Append the track menu's selected track to the queue (Ctrl+E), stepping the selection to the
     /// next track so successive presses queue an album run.
     MenuQueue,
-    /// Play the track menu's selected track, replacing the queue (Ctrl+Space or Enter).
+    /// Play the track menu's selected track, replacing the queue (Ctrl+P or Enter).
     MenuPlay,
+    /// Append the track menu's whole album to the queue (Alt+E), leaving the menu open.
+    MenuQueueAlbum,
+    /// Play the track menu's whole album, replacing the queue (Alt+P).
+    MenuPlayAlbum,
     /// Play a single track, replacing the queue with it (a play bubble in the track menu).
     PlayTrack {
         album: usize,
@@ -506,6 +516,18 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::OpenActionsMenu => app.modal = Some(Modal::Actions),
+        Msg::OpenHelp => {
+            app.modal = Some(Modal::Help);
+            // A field keeping focus under the list would take the keys meant for scrolling it.
+            use iced::advanced::widget;
+            return widget::operate(widget::operation::focusable::unfocus());
+        }
+        Msg::HelpScroll(dy) => {
+            use iced::advanced::widget;
+            let by = widget::operation::scrollable::AbsoluteOffset { x: 0.0, y: dy };
+            return widget::operate(widget::operation::scrollable::scroll_by(widget::Id::new(HELP_SCROLL_ID), by));
+        }
+        Msg::Quit => return iced::exit(),
         Msg::CloseModal => app.modal = None,
         Msg::MenuMove(dir) => return menu_step(app, dir),
         // No snap, unlike MenuMove: the cursor is already on the row it selected.
@@ -531,6 +553,17 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 if let Some(item) = track_item(app, menu.album, menu.selected) {
                     return play_items(app, vec![item]);
                 }
+            }
+        }
+        Msg::MenuQueueAlbum => {
+            if let Some(menu) = app.track_menu() {
+                return queue_album(app, menu.album);
+            }
+        }
+        Msg::MenuPlayAlbum => {
+            if let Some(menu) = app.track_menu() {
+                app.modal = None;
+                return play_album(app, menu.album);
             }
         }
         Msg::CycleRepeat => {
@@ -861,9 +894,10 @@ fn focus_search() -> Task<Msg> {
     widget::operate(widget::operation::focusable::focus(widget::Id::new(SEARCH_INPUT_ID)))
 }
 
-/// Opens the filter picker for `subject` and focuses its search field, so typing starts
-/// filtering immediately.
+/// Opens the filter picker for `subject` over the library and focuses its search field, so typing
+/// starts filtering immediately.
 fn open_picker(app: &mut App, subject: PickerSubject) -> Task<Msg> {
+    app.view = View::Library;
     let matches = picker_matches(app, subject, "");
     app.modal = Some(Modal::Picker(Picker { subject, query: String::new(), matches, selected: 0 }));
     use iced::advanced::widget;
@@ -905,10 +939,11 @@ fn picker_step(app: &mut App, dir: MenuDir) -> Task<Msg> {
     snap_list(PICKER_SCROLL_ID, fraction)
 }
 
-/// Opens the sort-order picker, its selection on the current order. No text field to focus (the
-/// option set is fixed), so unfocus any filter input, so the modal's keys reach it (see
-/// `key_to_msg`).
+/// Opens the sort-order picker over the library, its selection on the current order. No text field
+/// to focus (the option set is fixed), so unfocus any filter input, so the modal's keys reach it
+/// (see `key_to_msg`).
 fn open_sort(app: &mut App) -> Task<Msg> {
+    app.view = View::Library;
     let selected = SortOrder::ALL.iter().position(|&order| order == app.sort).unwrap_or(0);
     app.modal = Some(Modal::Sort(SortMenu { selected }));
     use iced::advanced::widget;
