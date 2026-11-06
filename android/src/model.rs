@@ -103,8 +103,6 @@ struct State {
     /// Where the listener last seeked to, until the engine reports a position near it. Reports
     /// already on their way when the seek was sent would otherwise drag the bar back.
     pending_seek: Option<Duration>,
-    /// [`Saf::failed_listings`] when the running scan started.
-    failures_before_scan: u64,
 }
 
 pub struct Core {
@@ -202,7 +200,6 @@ impl Core {
             scan_progress: None,
             rescan_queued: false,
             pending_seek: None,
-            failures_before_scan: 0,
         };
         Core {
             saf,
@@ -302,14 +299,8 @@ impl Core {
     }
 
     async fn run_scan(&self) {
-        // The scan takes a folder it cannot list for an empty one, and would forget the whole library. A provider
-        // still fetching the folder says so, as does a revoked grant.
-        if let Err(e) = self.saf.read_dir(Path::new(saf::ROOT)).await {
-            log::warn!("not scanning, as the music folder cannot be listed: {e}");
-            return;
-        }
         let options = {
-            let mut state = self.state();
+            let state = self.state();
             // A cover whose full-size copy is cached already, with its accent in the index, needs
             // nothing from its artwork. Telling the scan so saves decoding every sleeve again.
             let known_covers = state
@@ -319,7 +310,6 @@ impl Core {
                 .filter_map(|a| a.cover_id)
                 .filter(|&id| library::cover_file(&self.paths.full_covers, id, library::FULL_FORMAT).exists())
                 .collect();
-            state.failures_before_scan = self.saf.failed_listings();
             library::ScanOptions {
                 fs: Arc::clone(&self.saf) as Arc<dyn Fs>,
                 root: PathBuf::from(saf::ROOT),
@@ -344,17 +334,9 @@ impl Core {
         let mut state = self.state();
         match event {
             ScanEvent::Album(album) => {
-                let mut album = *album;
-                if let Some(ix) = state.albums.iter().position(|a| a.id == album.id) {
-                    let old = state.albums.remove(ix);
-                    // Accents come with covers, which a scan does not send again for one it knows.
-                    if old.cover_id == album.cover_id {
-                        album.accent = old.accent;
-                    }
+                if !library::upsert(&mut state.albums, *album) {
+                    return None;
                 }
-                let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
-                let ix = state.albums.partition_point(|a| key(a) <= key(&album));
-                state.albums.insert(ix, album);
                 drop(state);
                 self.note(|c| c.library = true);
                 None
@@ -377,15 +359,8 @@ impl Core {
                 self.note(|c| c.scanning = true);
                 None
             }
-            ScanEvent::Done { album_ids } => {
-                // A directory the scan could not list is not a directory that is gone: its albums stay
-                // until a scan that reads everything says otherwise.
-                if self.saf.failed_listings() == state.failures_before_scan {
-                    let found: HashSet<u64> = album_ids.into_iter().collect();
-                    state.albums.retain(|a| found.contains(&a.id));
-                } else {
-                    log::warn!("some of the music folder could not be listed, so no albums are dropped");
-                }
+            ScanEvent::Done { album_ids, complete } => {
+                library::drop_missing(&mut state.albums, &album_ids, complete);
                 let State { albums, queue, .. } = &mut *state;
                 hydrate(albums, queue);
                 let save = library::save_index(Some(self.paths.album_index.clone()), &state.albums);

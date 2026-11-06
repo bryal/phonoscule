@@ -8,7 +8,7 @@ use crate::model::{
 use crate::paths;
 use iced::Task;
 use iced::mouse::ScrollDelta;
-use phonoscule::library::{self, Album};
+use phonoscule::library;
 use phonoscule::queue::{self, Grouping, Scope};
 use phonoscule::sort::SortOrder;
 use phonoscule::{media, player, session};
@@ -252,45 +252,22 @@ impl Zoom {
 
 pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
     match msg {
-        Msg::Library(library::ScanEvent::Album(mut album)) => {
+        Msg::Library(library::ScanEvent::Album(album)) => {
             // Re-scans (and the boot scan reconciling the persisted index) re-report every album,
-            // the overwhelming majority unchanged: detect that first and drop the event on the
-            // floor. Thousands arrive in a burst on the main thread, and the per-event work below
-            // (hydration, sorted re-insert, a full filter refresh) is what used to hitch the UI
-            // for a beat on every rescan.
-            match app.albums.iter().position(|a| a.id == album.id) {
-                Some(ix) => {
-                    // `cover`/`accent` are runtime-only: scan events never carry them.
-                    let Album { id: _, title, artist, genre, year, cover_id, cover: _, accent: _, tracks } = &app.albums[ix];
-                    if *title == album.title
-                        && *artist == album.artist
-                        && *genre == album.genre
-                        && *year == album.year
-                        && *cover_id == album.cover_id
-                        && *tracks == album.tracks
-                    {
-                        return Task::none();
-                    }
-                    app.index_dirty = true;
-                    let old = app.albums.remove(ix);
-                    // Keep the already-loaded cover art when the cover is unchanged (the scanner
-                    // skips re-decoding and re-sending it); the accent follows the cover.
-                    if old.cover_id == album.cover_id {
-                        album.cover = old.cover;
-                        album.accent = old.accent;
-                    }
-                }
-                None => app.index_dirty = true,
+            // the overwhelming majority unchanged: those are dropped on the floor. Thousands arrive
+            // in a burst on the main thread, and the per-event work below (hydration, a full filter
+            // refresh) is what used to hitch the UI for a beat on every rescan.
+            let id = album.id;
+            if !library::upsert(&mut app.albums, *album) {
+                return Task::none();
             }
+            app.index_dirty = true;
             // A queue restored from disk carries only paths (placeholder tags, provisional album
             // keys) until the library reports its albums: hydrate matching items by path. Covers
             // not yet decoded follow by album id through the Cover events.
-            hydrate_queue(&mut app.queue, &album);
-            // Keep the browser sorted; scan order is nondeterministic (directories complete
-            // in parallel).
-            let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
-            let ix = app.albums.partition_point(|a| key(a) <= key(&album));
-            app.albums.insert(ix, *album);
+            if let Some(album) = app.albums.iter().find(|a| a.id == id) {
+                hydrate_queue(&mut app.queue, album);
+            }
             refresh_filter(app);
         }
         Msg::Library(library::ScanEvent::Cover { albums, art, .. }) => {
@@ -335,11 +312,8 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
             }
         }
         Msg::Library(library::ScanEvent::Progress(_)) => (),
-        Msg::Library(library::ScanEvent::Done { album_ids }) => {
-            let ids: std::collections::HashSet<u64> = album_ids.into_iter().collect();
-            let before = app.albums.len();
-            app.albums.retain(|album| ids.contains(&album.id));
-            app.index_dirty |= app.albums.len() != before;
+        Msg::Library(library::ScanEvent::Done { album_ids, complete }) => {
+            app.index_dirty |= library::drop_missing(&mut app.albums, &album_ids, complete);
             // Retire the handles of covers nothing shows any more: an album gone from the library,
             // or one whose artwork was replaced. The queue counts as a holder -- it outlives the
             // albums it was filled from.

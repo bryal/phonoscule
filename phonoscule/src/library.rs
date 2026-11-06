@@ -16,9 +16,9 @@
 //! Tags are cached persistently (validated by file mtime + size), so only new or changed files
 //! are actually opened; re-scans of an unchanged library cost directory reads and stats. Album
 //! and cover ids are stable content-derived hashes, so consumers can reconcile a re-scan against
-//! previous state: upsert albums by id as they arrive, keep already-loaded cover art when the
+//! previous state: [`upsert`] albums as they arrive, which keeps already-loaded cover art when the
 //! cover id is unchanged (pass it in [`ScanOptions::known_covers`] to skip its decoding
-//! entirely), and finally retain only [`ScanEvent::Done::album_ids`].
+//! entirely), and finally [`drop_missing`] those [`ScanEvent::Done`] did not find.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -142,8 +142,51 @@ pub enum ScanEvent {
     /// at most.
     Progress(ScanProgress),
     /// The scan is complete: every album has been reported. Albums absent from `album_ids` no
-    /// longer exist and should be dropped.
-    Done { album_ids: Vec<u64> },
+    /// longer exist and should be dropped, if the scan was `complete`: one that could not list
+    /// some directory says not, and an album it did not find may be in what it could not read.
+    /// [`drop_missing`] does that.
+    Done { album_ids: Vec<u64>, complete: bool },
+}
+
+/// Puts a scanned `album` into `albums`, which it keeps in order by artist and then title, in
+/// place of the album with the same id. That album's loaded art and accent carry over when the
+/// cover is the same, as a scan does not send them again. Returns whether anything changed: a
+/// rescan reports every album again, nearly all of them as they were.
+pub fn upsert(albums: &mut Vec<Album>, mut album: Album) -> bool {
+    if let Some(ix) = albums.iter().position(|a| a.id == album.id) {
+        // `cover` and `accent` are not the scan's to report, so they do not count as a change.
+        let Album { id: _, title, artist, genre, year, cover_id, cover: _, accent: _, tracks } = &albums[ix];
+        if *title == album.title
+            && *artist == album.artist
+            && *genre == album.genre
+            && *year == album.year
+            && *cover_id == album.cover_id
+            && *tracks == album.tracks
+        {
+            return false;
+        }
+        let old = albums.remove(ix);
+        if old.cover_id == album.cover_id {
+            album.cover = old.cover;
+            album.accent = old.accent;
+        }
+    }
+    let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
+    let ix = albums.partition_point(|a| key(a) <= key(&album));
+    albums.insert(ix, album);
+    true
+}
+
+/// Applies a scan's [`ScanEvent::Done`]: drops from `albums` those not in `album_ids`, unless the
+/// scan was not `complete`. Returns whether any went.
+pub fn drop_missing(albums: &mut Vec<Album>, album_ids: &[u64], complete: bool) -> bool {
+    if !complete {
+        return false;
+    }
+    let found: HashSet<u64> = album_ids.iter().copied().collect();
+    let before = albums.len();
+    albums.retain(|album| found.contains(&album.id));
+    albums.len() != before
 }
 
 /// The stages of a scan, in order. Covers load during and after [`ScanProgress::Reading`].
@@ -765,6 +808,8 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     let mut jobs = Vec::new();
     let mut covers = HashMap::new();
     let mut listed = 0;
+    // Directories that could not be listed, whose albums the scan cannot vouch for.
+    let mut unlisted_failed = 0;
     loop {
         while listing.len() < concurrency()
             && let Some(dir) = unlisted.pop()
@@ -780,7 +825,10 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
         }
         let Some((job, subdirs)) = listing.next().await else { break };
         unlisted.extend(subdirs);
-        let Some(mut job) = job else { continue };
+        let Some(mut job) = job else {
+            unlisted_failed += 1;
+            continue;
+        };
         listed += 1;
         if let Some(cover) = job.cover.take() {
             covers.insert(job.dir.clone(), cover);
@@ -904,12 +952,19 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     let album_ids: Vec<u64> = asm.assembled.keys().copied().collect();
     log::info!("scan done: found {} albums ({n_parsed} files (re)parsed)", album_ids.len());
 
+    if unlisted_failed > 0 {
+        log::warn!("{unlisted_failed} directories could not be listed, so the scan is not complete");
+        // Their files' tags are still good: keep them for the scan that can read them.
+        for (path, entry) in &cache.files {
+            fresh.entry(path.clone()).or_insert_with(|| entry.clone());
+        }
+    }
     if let Some(path) = &options.cache_file
         && (n_parsed > 0 || fresh.len() != cache.files.len())
     {
         save_cache(path, &Cache { version: CACHE_VERSION, files: fresh }).await;
     }
-    let _ = tx.send(ScanEvent::Done { album_ids }).await;
+    let _ = tx.send(ScanEvent::Done { album_ids, complete: unlisted_failed == 0 }).await;
 }
 
 /// Lists one directory: collects audio files with their stat data, spots a cover image, and
@@ -1478,8 +1533,8 @@ mod test {
                         }
                     }
                     ScanEvent::Progress(_) => (),
-                    ScanEvent::Done { album_ids } => {
-                        albums.retain(|a| album_ids.contains(&a.id));
+                    ScanEvent::Done { album_ids, complete } => {
+                        drop_missing(albums, &album_ids, complete);
                         break;
                     }
                 }
@@ -1649,6 +1704,60 @@ mod test {
         assert_eq!(reports, [2], "one report, already holding both discs' tracks");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A directory the scan cannot list is not a directory that is gone: the scan says it is not
+    /// complete, so its albums stay, until a scan that reads everything finds them gone.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_keeps_its_albums() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("phonoscule-unreadable-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (dir, title, album) in [("A", "One", "First"), ("B", "Uno", "Second")] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("t.wav"), wav_bytes(title, "Artist", album, Some(1))).unwrap();
+        }
+        let mut albums = Vec::new();
+        scan_and_apply(&mut albums, plain_options(&root));
+        assert_eq!(albums.len(), 2);
+
+        std::fs::set_permissions(root.join("B"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        scan_and_apply(&mut albums, plain_options(&root));
+        std::fs::set_permissions(root.join("B"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(albums.len(), 2, "the unreadable directory's album is kept");
+
+        std::fs::remove_dir_all(root.join("B")).unwrap();
+        scan_and_apply(&mut albums, plain_options(&root));
+        assert_eq!(albums.len(), 1, "the missing directory's album is dropped");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rescan reports every album again: [`upsert`] tells the unchanged ones apart, and keeps
+    /// an album's art where its cover is the same.
+    #[test]
+    fn upsert_keeps_unchanged_albums_and_their_art() {
+        let album = |title: &str, cover_id| Album {
+            id: 1,
+            title: title.into(),
+            artist: "Artist".into(),
+            genre: String::new(),
+            year: None,
+            cover_id,
+            cover: None,
+            accent: None,
+            tracks: Vec::new(),
+        };
+        let mut albums = Vec::new();
+        assert!(upsert(&mut albums, album("One", Some(7))));
+        albums[0].accent = Some(Rgb { r: 0.1, g: 0.2, b: 0.3 });
+        assert!(!upsert(&mut albums, album("One", Some(7))), "the same album again changes nothing");
+        assert!(upsert(&mut albums, album("Uno", Some(7))));
+        assert_eq!((albums.len(), albums[0].title.as_str()), (1, "Uno"));
+        assert!(albums[0].accent.is_some(), "the art stays with the cover");
+        assert!(upsert(&mut albums, album("Uno", Some(8))));
+        assert!(albums[0].accent.is_none(), "and goes with it");
     }
 
     /// Progress starts with the listing, which expects the directories that held music or held one
