@@ -101,18 +101,28 @@ object App {
         }
     }
 
-    /** Call on every return to the foreground. There is nothing to watch a folder with through SAF, so look again. */
+    /** Call on every return to the foreground. There is nothing to watch a folder with through SAF, so look again, and
+     * keep looking every few minutes until [pause]. */
     fun resume() {
         foreground = true
         // The grant can be revoked while the app is in the background. The same folder keeps its storage, which has
         // learned where the documents are.
         val restored = Storage.restore(context)
         if (restored?.tree != storage?.tree) storage = restored
-        if (storage != null) Core.scan()
+        main.removeCallbacks(this.rescan)
+        this.rescan.run()
     }
 
     fun pause() {
         foreground = false
+        main.removeCallbacks(this.rescan)
+    }
+
+    private val rescan: Runnable = object : Runnable {
+        override fun run() {
+            if (storage != null) command { Core.scan() }
+            main.postDelayed(this, RESCAN_MS)
+        }
     }
 
     /** Run `action` on a thread of its own, toasting rather than crashing if it fails. For commands, which are quick
@@ -178,5 +188,8 @@ object App {
     }
 
     private const val LIBRARY_CHANGE_MS = 300L
+
+    /** How often to rescan while a screen shows, as the desktop player does. */
+    private const val RESCAN_MS = 5 * 60 * 1000L
     private const val TAG = "phonoscule"
 }
