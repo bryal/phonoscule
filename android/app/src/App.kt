@@ -38,6 +38,10 @@ object App {
     var scanning by mutableStateOf(false)
         private set
 
+    /** How far the running scan has come, once it has said. */
+    var scanProgress: ScanProgress? = null
+        private set
+
     /** Bumped whenever the albums change, so lists showing them ask again. */
     var libraryVersion by mutableIntStateOf(0)
         private set
@@ -55,7 +59,7 @@ object App {
 
     private val playbackListeners = mutableListOf<(Playback) -> Unit>()
     private val queueListeners = mutableListOf<() -> Unit>()
-    private val scanEndListeners = mutableListOf<() -> Unit>()
+    private val scanListeners = mutableListOf<() -> Unit>()
 
     fun init(context: Context) {
         this.context = context
@@ -122,13 +126,13 @@ object App {
         if (storage != null) command { Core.scan() }
     }
 
-    /** Call `listener` on the main thread when a scan ends. */
-    fun onScanEnd(listener: () -> Unit) {
-        scanEndListeners.add(listener)
+    /** Call `listener` on the main thread whenever [scanning] or [scanProgress] changes. */
+    fun onScan(listener: () -> Unit) {
+        scanListeners.add(listener)
     }
 
-    fun removeScanEndListener(listener: () -> Unit) {
-        scanEndListeners.remove(listener)
+    fun removeScanListener(listener: () -> Unit) {
+        scanListeners.remove(listener)
     }
 
     /** Run `action` on a thread of its own, toasting rather than crashing if it fails. For commands, which are quick
@@ -160,9 +164,11 @@ object App {
     }
 
     private fun apply(notices: Notices) {
-        if (notices.scanning != scanning) {
+        if (notices.scanning != scanning || notices.scanProgress != scanProgress) {
+            if (notices.scanning && !scanning) ScanService.start(context)
             scanning = notices.scanning
-            if (scanning) ScanService.start(context) else for (listener in scanEndListeners.toList()) listener()
+            scanProgress = notices.scanProgress
+            for (listener in scanListeners.toList()) listener()
         }
         if (notices.queue) {
             queueVersion++

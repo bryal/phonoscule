@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use phonoscule::library::{Album, Rgb};
+use phonoscule::library::{self, Album, Rgb};
 use phonoscule::player::Repeat;
 use phonoscule::queue::{Grouping, Scope};
 use phonoscule::sort::SortOrder;
@@ -145,6 +145,8 @@ pub enum Response {
         queue: bool,
         /// Whether a scan is running.
         scanning: bool,
+        /// How far the running scan has come, once it has said.
+        scan_progress: Option<ScanProgress>,
         #[serde(with = "ids")]
         covers: Vec<u64>,
         /// What is playing, if that changed.
@@ -290,6 +292,38 @@ impl Playback {
     }
 }
 
+/// How far a scan has come: `done` of `total` in its `stage`. `total` is `None` when the scan cannot
+/// tell, and while listing only a guess, which `done` may pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanProgress {
+    pub stage: ScanStage,
+    pub done: usize,
+    pub total: Option<usize>,
+}
+
+/// The stages of [`library::ScanProgress`], in the protocol's spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanStage {
+    /// Listing the folders.
+    Listing,
+    /// Reading the tags in the folders holding music.
+    Reading,
+}
+
+impl ScanProgress {
+    fn of(progress: library::ScanProgress) -> Self {
+        match progress {
+            library::ScanProgress::Listing { listed, expected } => {
+                ScanProgress { stage: ScanStage::Listing, done: listed, total: expected }
+            }
+            library::ScanProgress::Reading { read, total } => {
+                ScanProgress { stage: ScanStage::Reading, done: read, total: Some(total) }
+            }
+        }
+    }
+}
+
 /// [`Repeat`], in the protocol's spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -376,6 +410,7 @@ pub fn dispatch(request: Request) -> anyhow::Result<Response> {
                 library: changes.library,
                 queue: changes.queue,
                 scanning: core.scanning(),
+                scan_progress: core.scan_progress().map(ScanProgress::of),
                 covers: changes.covers.into_iter().collect(),
                 playback: changes.playback.then(|| Playback::of(core.playback())),
             }

@@ -69,6 +69,7 @@ object Core {
             library = resp.getBoolean("library"),
             queue = resp.getBoolean("queue"),
             scanning = resp.getBoolean("scanning"),
+            scanProgress = resp.optObject("scan_progress")?.toScanProgress(),
             covers = resp.getJSONArray("covers").toLongs(),
             playback = resp.optObject("playback")?.toPlayback(),
         )
@@ -202,6 +203,12 @@ private fun JSONObject.toPlayback() = Playback(
 )
 
 // `optString` and friends read a JSON null as the string "null", or as zero.
+private fun JSONObject.toScanProgress() = ScanProgress(
+    stage = ScanStage.entries.first { it.wire == getString("stage") },
+    done = getInt("done"),
+    total = optIntOrNull("total"),
+)
+
 private fun JSONObject.optObject(name: String): JSONObject? = if (isNull(name)) null else getJSONObject(name)
 
 private fun JSONObject.optStringOrNull(name: String): String? = if (isNull(name)) null else getString(name)
@@ -248,9 +255,22 @@ data class Notices(
     val library: Boolean,
     val queue: Boolean,
     val scanning: Boolean,
+    val scanProgress: ScanProgress?,
     val covers: List<Long>,
     val playback: Playback?,
 )
+
+/** How far a scan has come: `done` of `total` in its `stage`. `total` is null when the scan cannot tell, and while
+ * listing only a guess, which `done` may pass. */
+data class ScanProgress(val stage: ScanStage, val done: Int, val total: Int?)
+
+enum class ScanStage(val wire: String) {
+    /** Listing the folders. */
+    LISTING("listing"),
+
+    /** Reading the tags in the folders holding music. */
+    READING("reading"),
+}
 
 /** `accent` is the cover's most distinct colour as 0xRRGGBB. */
 data class AlbumSummary(

@@ -72,7 +72,7 @@ pub struct Changes {
     pub queue: bool,
     /// What is playing, whether it is, or how far in.
     pub playback: bool,
-    /// Whether a scan has started or finished.
+    /// Whether a scan has started, got further, or finished.
     pub scanning: bool,
     /// Albums whose cover can now be had, or has changed.
     pub covers: HashSet<u64>,
@@ -97,6 +97,8 @@ struct State {
     repeat: Repeat,
     sort: SortOrder,
     scanning: bool,
+    /// How far the running scan has come, once it has said.
+    scan_progress: Option<library::ScanProgress>,
     rescan_queued: bool,
     /// Where the listener last seeked to, until the engine reports a position near it. Reports
     /// already on their way when the seek was sent would otherwise drag the bar back.
@@ -195,6 +197,7 @@ impl Core {
             repeat: restored.repeat,
             sort: restored.sort.unwrap_or(INITIAL_SORT),
             scanning: false,
+            scan_progress: None,
             rescan_queued: false,
             pending_seek: None,
             failures_before_scan: 0,
@@ -264,6 +267,7 @@ impl Core {
                 loop {
                     smol::block_on(self.run_scan());
                     let mut state = self.state();
+                    state.scan_progress = None;
                     if !std::mem::take(&mut state.rescan_queued) {
                         state.scanning = false;
                         break;
@@ -276,6 +280,11 @@ impl Core {
 
     pub fn scanning(&self) -> bool {
         self.state().scanning
+    }
+
+    /// How far the running scan has come, once it has said.
+    pub fn scan_progress(&self) -> Option<library::ScanProgress> {
+        self.state().scan_progress
     }
 
     async fn run_scan(&self) {
@@ -346,6 +355,12 @@ impl Core {
                     c.library = true;
                     c.covers.extend(albums);
                 });
+                None
+            }
+            ScanEvent::Progress(progress) => {
+                state.scan_progress = Some(progress);
+                drop(state);
+                self.note(|c| c.scanning = true);
                 None
             }
             ScanEvent::Done { album_ids } => {
