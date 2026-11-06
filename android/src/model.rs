@@ -275,7 +275,11 @@ impl Core {
             .name("phonoscule-scan".into())
             .spawn(move || {
                 loop {
-                    smol::block_on(self.run_scan());
+                    // Caught, so that a scan that fails still ends, and another can start. The panic hook has logged it.
+                    let scan = std::panic::AssertUnwindSafe(|| smol::block_on(self.run_scan()));
+                    if std::panic::catch_unwind(scan).is_err() {
+                        log::error!("the scan failed, and the library is as it was before it");
+                    }
                     let mut state = self.state();
                     state.scan_progress = None;
                     if !std::mem::take(&mut state.rescan_queued) {
