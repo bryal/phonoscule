@@ -46,7 +46,6 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
@@ -419,20 +418,6 @@ private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, 
     }
 }
 
-/** A compact chip that turns a filter on and off. Put it where the minimum touch target is turned off, or Material pads
- * it out to one. */
-@Composable
-fun FilterToggle(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = {
-            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        },
-        modifier = modifier.height(CHIP_HEIGHT),
-    )
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AlbumCard(album: AlbumSummary, onClick: () -> Unit) {
@@ -557,7 +542,6 @@ private fun ChooseFolder(onChooseFolder: () -> Unit) {
 /** How long the pull-to-refresh indicator spins on a pull alone, should the core never say it started scanning. */
 private const val PULL_GRACE_MS = 1000L
 
-private val CHIP_HEIGHT = 28.dp
 val CHIP_GAP = 6.dp
 private val FILTER_NAME_WIDTH = 104.dp
 
