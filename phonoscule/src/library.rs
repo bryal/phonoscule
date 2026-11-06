@@ -756,17 +756,31 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
             cache.files.keys().flat_map(|file| file.ancestors().skip(1).take_while(|dir| dir.starts_with(&options.root)));
         dirs.collect::<HashSet<_>>().len()
     });
+    // Several directories are listed at once: through a provider like Android's, a listing is
+    // mostly waiting on another process.
+    let started = Instant::now();
     let mut pacer = ProgressPacer::default();
-    let mut dirs = vec![options.root];
+    let mut unlisted = vec![options.root];
+    let mut listing = stream::FuturesUnordered::new();
     let mut jobs = Vec::new();
     let mut covers = HashMap::new();
     let mut listed = 0;
-    while let Some(dir) = dirs.pop() {
+    loop {
+        while listing.len() < concurrency()
+            && let Some(dir) = unlisted.pop()
+        {
+            listing.push(async move {
+                let mut subdirs = Vec::new();
+                (dir_job(fs, &dir, &mut subdirs).await, subdirs)
+            });
+        }
         let progress = ScanProgress::Listing { listed, expected };
         if pacer.due(&progress) && tx.send(ScanEvent::Progress(progress)).await.is_err() {
             return;
         }
-        let Some(mut job) = dir_job(fs, &dir, &mut dirs).await else { continue };
+        let Some((job, subdirs)) = listing.next().await else { break };
+        unlisted.extend(subdirs);
+        let Some(mut job) = job else { continue };
         listed += 1;
         if let Some(cover) = job.cover.take() {
             covers.insert(job.dir.clone(), cover);
@@ -775,6 +789,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
             jobs.push(job);
         }
     }
+    log::info!("listed {listed} directories in {:.1?}", started.elapsed());
 
     // Order the jobs so covers stream in usefully: prioritized albums first (in their given
     // order), then the way the grid sorts (artist, then album title) so the visible top of an
@@ -783,13 +798,15 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     // (a cache miss) fall back to their name, which usually approximates the artist anyway.
     let rank: HashMap<u64, usize> = options.priority.iter().enumerate().map(|(rank, &id)| (id, rank)).collect();
     jobs.sort_by_cached_key(|job| {
-        job.files.first().and_then(|file| cache.files.get(&file.path)).map_or_else(
+        let (rank, artist, album) = job.files.first().and_then(|file| cache.files.get(&file.path)).map_or_else(
             || (usize::MAX, job.dir.file_name().unwrap_or_default().to_string_lossy().to_lowercase(), String::new()),
             |entry| {
                 let (artist, album) = album_key(entry);
                 (rank.get(&album_id(entry)).copied().unwrap_or(usize::MAX), artist.to_lowercase(), album.to_lowercase())
             },
-        )
+        );
+        // The walk finds directories in no particular order, so ties must not fall back on it.
+        (rank, artist, album, job.dir.clone())
     });
 
     let mut asm = Assembler::new(&jobs, &cache, covers, options.known_covers);
