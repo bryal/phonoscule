@@ -25,9 +25,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.roundToInt
+import kotlin.math.sign
 import kotlin.math.sin
 import kotlin.math.tan
 import kotlinx.coroutines.CoroutineScope
@@ -77,19 +79,22 @@ fun rememberTrackScroll(tracks: IntRange, playing: Int?, onPlay: (Int) -> Unit):
 }
 
 /** Moves `scroll` along the album's tracks a track per name's width dragged sideways, as if the names were pulled along
- * under the pick, so a drag rightwards picks earlier tracks; on letting go, plays the one it comes to. Vertical drags
- * and taps are left to what is beneath. */
+ * under the pick, so a drag rightwards picks earlier tracks; on letting go, plays the one it comes to. A quick flick
+ * that has not come to another track steps to the next one along, and none carries on further. Vertical drags and taps
+ * are left to what is beneath. */
 fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll) {
     val tracker = VelocityTracker()
     // Where the drag has taken the pick. Kept here, since a snap launched for one move has not necessarily landed by
     // the next.
     var target = 0f
+    var from = 0
     var pitch = 1f
     detectHorizontalDragGestures(
         onDragStart = {
             scroll.dragging = true
             tracker.resetTracking()
             target = scroll.position.value
+            from = scroll.picked
             pitch = TRACK_PITCH.toPx()
             scroll.stop()
         },
@@ -104,8 +109,11 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
             scroll.dragging = false
             val range = scroll.tracks
             if (range.isEmpty()) return@detectHorizontalDragGestures
-            val velocity = tracker.calculateVelocity().x / pitch
-            scroll.settle((target - velocity * FLING_SECONDS).roundToInt().coerceIn(range), -velocity)
+            val velocity = tracker.calculateVelocity().x
+            val to = target.roundToInt()
+            val flicked = to == from && abs(velocity) > FLICK_SPEED.toPx()
+            // Rightwards is towards earlier tracks.
+            scroll.settle((if (flicked) to - velocity.sign.toInt() else to).coerceIn(range))
         },
         onDragCancel = {
             scroll.dragging = false
@@ -217,7 +225,7 @@ private val ICICLE_MARGIN = 8.dp
 /** The most of the height a name hangs before it is cut short. */
 private const val ICICLE_LENGTH = 0.42f
 
-/** How far ahead of where a fling lets go its momentum carries, in seconds at the speed it let go at. */
-private const val FLING_SECONDS = 0.15f
+/** How fast, per second, a drag must be going when it lets go to step on a track it has not reached. */
+private val FLICK_SPEED = 300.dp
 
 private val SETTLE = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
