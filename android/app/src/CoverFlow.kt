@@ -185,7 +185,9 @@ fun VerticalCoverFlow(
  * the tilted pose of the stacks; beyond that it slides along its stack. */
 private class Flow(width: Float, val height: Float) {
     private val cx = width / 2
-    private val cy = height / 2
+
+    // Below the middle, leaving the top to the stack the track names hang over.
+    private val cy = height * 0.6f
 
     /** The middle cover's edge in pixels. */
     val coverPx = min(width * 0.9f, height * 0.56f)
