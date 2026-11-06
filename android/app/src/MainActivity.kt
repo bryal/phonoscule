@@ -59,7 +59,6 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    // Nothing tells the app about music synced in from elsewhere, so look again every time it comes to the foreground.
     override fun onResume() {
         super.onResume()
         App.resume()
