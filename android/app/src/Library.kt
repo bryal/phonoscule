@@ -23,8 +23,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,7 +58,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -165,8 +171,11 @@ fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: (
                     }
                 }
             } else {
+                val grid = rememberLazyGridState()
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(140.dp),
+                    modifier = Modifier.scrollBar(grid),
+                    state = grid,
                     contentPadding = PaddingValues(12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -178,6 +187,34 @@ fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: (
 
         NowPlayingBar(onOpenPlayer)
     }
+}
+
+/** A thin bar down the right edge of the grid, always shown, for where the view is in the whole of it and how much of it
+ * shows. Rows are taken to be of equal height, as the album cards are. */
+private fun Modifier.scrollBar(state: LazyGridState): Modifier = this.drawWithContent {
+    drawContent()
+    val info = state.layoutInfo
+    val items = info.visibleItemsInfo
+    if (items.isEmpty()) return@drawWithContent
+    val columns = items.maxOf { it.column } + 1
+    val rows = (info.totalItemsCount + columns - 1) / columns
+    val stride = items.first().size.height + info.mainAxisItemSpacing
+    val content = rows * stride - info.mainAxisItemSpacing + info.beforeContentPadding + info.afterContentPadding
+    val viewport = info.viewportSize.height
+    if (content <= viewport) return@drawWithContent
+    val scrolled = state.firstVisibleItemIndex / columns * stride + state.firstVisibleItemScrollOffset
+    val fraction = (scrolled.toFloat() / (content - viewport)).coerceIn(0f, 1f)
+
+    val margin = SCROLL_BAR_MARGIN.toPx()
+    val width = SCROLL_BAR_WIDTH.toPx()
+    val track = size.height - 2 * margin
+    val thumb = (track * viewport / content).coerceAtLeast(SCROLL_BAR_MIN.toPx()).coerceAtMost(track)
+    drawRoundRect(
+        color = Color.White.copy(alpha = SCROLL_BAR_ALPHA),
+        topLeft = Offset(size.width - margin - width, margin + (track - thumb) * fraction),
+        size = Size(width, thumb),
+        cornerRadius = CornerRadius(width / 2),
+    )
 }
 
 @Composable
@@ -348,3 +385,8 @@ private fun ChooseFolder(onChooseFolder: () -> Unit) {
 
 /** How long the pull-to-refresh indicator spins on a pull alone, should the core never say it started scanning. */
 private const val PULL_GRACE_MS = 1000L
+
+private val SCROLL_BAR_WIDTH = 3.dp
+private val SCROLL_BAR_MARGIN = 3.dp
+private val SCROLL_BAR_MIN = 24.dp
+private const val SCROLL_BAR_ALPHA = 0.22f
