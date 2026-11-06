@@ -32,25 +32,31 @@ so enabling none of them leaves the portable core exactly as it is.
 | Feature | Module | What it brings |
 | --- | --- | --- |
 | `config` | `config` | A `phonoscule.toml` config file, for players that want one. |
+| `dirs` | `dirs` | The platform's directories for settings, state and caches. |
+| `fs` | `fs` | Reading the music through something other than plain paths, such as Android's Storage Access Framework. |
 | `library` | `library` | Scanning a music directory into albums, with a tag cache and cover thumbnails. |
 | `sort` | `sort` | Album ordering. |
-| `player` | `player` | The play-queue engine and its audio output. |
+| `search` | `search` | Fuzzy text ranking, for searching a library. |
+| `queue` | `queue` | Shuffling a play queue, and finding its album runs. |
+| `sink` | `sink` | Audio output. |
+| `player` | `player` | The play-queue engine, playing through `sink`. |
 | `volume` | `volume` | Per-application volume through the OS mixer. |
 | `session` | `session` | Persisting the queue and the state around it across runs. |
 | `watcher` | `watcher` | Watching the music directory for changes. |
-| `mpris` | `mpris` | An MPRIS server: media keys and desktop now-playing. |
+| `media` | `media`, `mpris`, `smtc` | Media keys and desktop now-playing. |
 
-These want `std` and, mostly, a filesystem;
-`player` and `volume` speak PulseAudio, `mpris` speaks D-Bus.
+These want `std` and, mostly, a filesystem.
+`sink` speaks PulseAudio on Linux, WASAPI on Windows and AAudio on Android;
+`volume` speaks PulseAudio or the Windows mixer, and `media` D-Bus or the Windows media controls.
 Each module's documentation says what it needs.
 
 ## Example applications
 
-The repository this crate lives in contains three players built on this library,
-using more of the pieces above the further down you go:
+The repository this crate lives in contains four players built on this library:
 
 - `phonoscule-gui`, the graphical reference application - see [`gui/README.md`](../gui/README.md).
 - `phonoscule-tui`, its terminal counterpart - see [`tui/README.md`](../tui/README.md).
+- An Android app, reading the music through `fs` - see [`android/README.md`](../android/README.md).
 - `phonoscule-cli`, a minimal example that plays the files named on its command line.
   It uses the core alone: no library scan, no config file, no session.
 
