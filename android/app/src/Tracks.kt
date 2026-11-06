@@ -182,7 +182,7 @@ private fun Icicle(column: String, lit: Boolean, style: TextStyle) {
 private val TRACK_PITCH = 28.dp
 
 /** How far apart the characters of a name stand, down its column. */
-private val ICICLE_LINE = 17.sp
+private val ICICLE_LINE = 14.sp
 
 /** The most of the height a name hangs before it is cut short. */
 private const val ICICLE_LENGTH = 0.42f
