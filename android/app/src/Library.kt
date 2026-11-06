@@ -42,13 +42,11 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.InputChip
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -390,7 +388,7 @@ private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, 
         if (picked.isEmpty()) {
             Text(
                 "All",
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.End,
                 modifier = Modifier.weight(1f),
@@ -402,19 +400,21 @@ private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, 
                 horizontalArrangement = Arrangement.spacedBy(CHIP_GAP, Alignment.End),
             ) {
                 items(picked.sortedWith(String.CASE_INSENSITIVE_ORDER), key = { it }) { value ->
-                    InputChip(
-                        selected = true,
+                    CompactChip(
+                        value,
+                        filled = true,
                         onClick = { onPick(picked - value) },
-                        label = { Text(value, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        trailingIcon = { Icon(Icons.Default.Clear, contentDescription = "Unpick $value") },
+                        trailingIcon = Icons.Default.Clear,
+                        trailingDescription = "Unpick $value",
                     )
                 }
             }
         }
-        AssistChip(
+        CompactChip(
+            filter.title,
+            filled = false,
             onClick = onOpen,
-            label = { Text(filter.title) },
-            leadingIcon = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = null) },
+            leadingIcon = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
             modifier = Modifier.width(FILTER_NAME_WIDTH),
         )
     }
@@ -545,7 +545,7 @@ private fun ChooseFolder(onChooseFolder: () -> Unit) {
 private const val PULL_GRACE_MS = 1000L
 
 val CHIP_GAP = 6.dp
-private val FILTER_NAME_WIDTH = 104.dp
+private val FILTER_NAME_WIDTH = 84.dp
 
 private val SCROLL_BAR_WIDTH = 3.dp
 private val SCROLL_BAR_MARGIN = 3.dp

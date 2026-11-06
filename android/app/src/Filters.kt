@@ -4,7 +4,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -12,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -34,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -82,21 +84,23 @@ fun FilterScreen(filter: Filter, picked: List<String>, onPick: (List<String>) ->
             verticalArrangement = Arrangement.spacedBy(CHIP_GAP),
         ) {
             item {
-                PickerChip(
+                CompactChip(
                     "All",
-                    selected = picked.isEmpty(),
+                    filled = picked.isEmpty(),
                     onClick = {
                         onPick(emptyList())
                         onBack()
                     },
                     onLongClick = { onPick(emptyList()) },
+                    role = Role.Checkbox,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
             items(options, key = { it }) { option ->
                 val selected = option in picked
-                PickerChip(
+                CompactChip(
                     option,
-                    selected,
+                    filled = selected,
                     onClick = {
                         if (selected) {
                             onPick(picked - option)
@@ -106,35 +110,65 @@ fun FilterScreen(filter: Filter, picked: List<String>, onPick: (List<String>) ->
                         }
                     },
                     onLongClick = { onPick(if (selected) picked - option else picked + option) },
+                    role = Role.Checkbox,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }
     }
 }
 
-/** A value to pick, drawn as Material's filter chip, which has no long press: filled while picked, outlined while
- * not. It fills its width, and is compact, as a page of them is many. */
+/** A chip as Material draws one, filled or outlined, but compact: 28dp tall, padded 8dp, and its text a size smaller.
+ * Material's own pad their contents twice as much, which clips a label in a narrow chip, and have no long press.
+ *
+ * The leading icon is tinted as the chip's accent; the trailing one, as its text, says `trailingDescription`. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PickerChip(label: String, selected: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+fun CompactChip(
+    label: String,
+    filled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    role: Role = Role.Button,
+    leadingIcon: ImageVector? = null,
+    trailingIcon: ImageVector? = null,
+    trailingDescription: String? = null,
+) {
     val colors = MaterialTheme.colorScheme
     Surface(
         shape = FilterChipDefaults.shape,
-        color = if (selected) colors.secondaryContainer else Color.Transparent,
-        contentColor = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
-        border = if (selected) null else BorderStroke(1.dp, colors.outlineVariant),
-        modifier = Modifier.fillMaxWidth().height(CHIP_HEIGHT),
+        color = if (filled) colors.secondaryContainer else Color.Transparent,
+        contentColor = if (filled) colors.onSecondaryContainer else colors.onSurfaceVariant,
+        border = if (filled) null else BorderStroke(1.dp, colors.outlineVariant),
+        modifier = modifier.height(CHIP_HEIGHT),
     ) {
-        Box(
-            contentAlignment = Alignment.CenterStart,
+        Row(
             modifier = Modifier
                 .fillMaxSize()
-                .combinedClickable(role = Role.Checkbox, onClick = onClick, onLongClick = onLongClick)
-                .padding(horizontal = 12.dp),
+                .combinedClickable(role = role, onClick = onClick, onLongClick = onLongClick)
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (leadingIcon != null) {
+                Icon(leadingIcon, contentDescription = null, tint = colors.primary, modifier = Modifier.size(CHIP_ICON))
+            }
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                // Not a weight: in a row that scrolls, a chip has no width of its own to share out.
+                modifier = Modifier.widthIn(max = CHIP_TEXT_MAX),
+            )
+            if (trailingIcon != null) {
+                Icon(trailingIcon, contentDescription = trailingDescription, modifier = Modifier.size(CHIP_ICON))
+            }
         }
     }
 }
 
 private val CHIP_HEIGHT = 28.dp
+private val CHIP_ICON = 16.dp
+private val CHIP_TEXT_MAX = 220.dp
