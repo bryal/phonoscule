@@ -15,7 +15,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,7 +34,6 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -45,8 +43,8 @@ data class FlowCover(val cover: Long?, val accent: Int?)
 /** The desktop player's Cover Flow, stood on end: the queue's albums stacked above and below the playing one, tilted
  * away like the pages of a flip book, receding and fading with distance.
  *
- * Drag to browse. Tap a cover in the stacks to bring it to the middle, tap the middle one to play it, or, if it is
- * playing already, to pause or resume. Left alone after browsing, the flow drifts back to what is playing. */
+ * The album the flow comes to rest on plays, as on the desktop: drag or fling to another, or tap one in the stacks.
+ * Tap the playing album to pause or resume. */
 @Composable
 fun VerticalCoverFlow(
     covers: List<FlowCover>,
@@ -63,17 +61,17 @@ fun VerticalCoverFlow(
     val currentCount by rememberUpdatedState(covers.size)
     val scope = rememberCoroutineScope()
     var dragging by remember { mutableStateOf(false) }
-    // Bumped whenever the listener lets go, restarting the wait before drifting back.
-    var browsed by remember { mutableIntStateOf(0) }
     var coverPx by remember { mutableStateOf(1f) }
 
     LaunchedEffect(playing) {
         if (!dragging && playing >= 0) position.animateTo(playing.toFloat(), SETTLE)
     }
-    LaunchedEffect(browsed) {
-        if (browsed == 0) return@LaunchedEffect
-        delay(DRIFT_BACK_MS)
-        if (!dragging && currentPlaying >= 0) position.animateTo(currentPlaying.toFloat(), SETTLE)
+
+    /** Bring cover `ix` to the middle, and play it unless it plays already. */
+    fun settle(ix: Int, velocity: Float = 0f) {
+        if (currentCount == 0) return
+        scope.launch { position.animateTo(ix.toFloat(), SETTLE, initialVelocity = velocity) }
+        if (ix != currentPlaying) currentOnPlay(ix)
     }
 
     // Pixels for the covers within reach, loaded as the flow moves: the nearest at full size, the rest smaller.
@@ -123,14 +121,11 @@ fun VerticalCoverFlow(
                     onDragEnd = {
                         dragging = false
                         val velocity = tracker.calculateVelocity().y / (coverPx * DRAG_PER_COVER)
-                        val rest = (target - velocity * FLING_SECONDS).roundToInt().coerceIn(0, last())
-                        scope.launch { position.animateTo(rest.toFloat(), SETTLE, initialVelocity = -velocity) }
-                        browsed++
+                        settle((target - velocity * FLING_SECONDS).roundToInt().coerceIn(0, last()), -velocity)
                     },
                     onDragCancel = {
                         dragging = false
-                        scope.launch { position.animateTo(target.roundToInt().coerceIn(0, last()).toFloat(), SETTLE) }
-                        browsed++
+                        settle(target.roundToInt().coerceIn(0, last()))
                     },
                 )
             }
@@ -138,14 +133,7 @@ fun VerticalCoverFlow(
                 detectTapGestures { tap ->
                     val flow = Flow(size.width.toFloat(), size.height.toFloat())
                     val hit = flow.hitTest(currentCount, position.value, tap) ?: return@detectTapGestures
-                    when {
-                        hit != position.value.roundToInt() -> {
-                            scope.launch { position.animateTo(hit.toFloat(), SETTLE) }
-                            browsed++
-                        }
-                        hit == currentPlaying -> currentOnToggle()
-                        else -> currentOnPlay(hit)
-                    }
+                    if (hit == currentPlaying) currentOnToggle() else settle(hit)
                 }
             },
     ) {
@@ -292,8 +280,5 @@ private const val FLING_SECONDS = 0.3f
 
 /** How far past either end the flow can be dragged before it stops giving. */
 private const val OVERSCROLL = 0.4f
-
-/** How long the flow waits after being browsed before it drifts back to what is playing. */
-private const val DRIFT_BACK_MS = 6000L
 
 private val SETTLE = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessLow)

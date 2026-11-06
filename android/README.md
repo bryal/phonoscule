@@ -17,10 +17,10 @@ Features
 - **Album.** The cover and tags, Play and Enqueue, and the tracks: tap one to
   play the album from it, or enqueue it alone.
 - **Player.** The queue's albums as a vertical Cover Flow over a backdrop glowing
-  with the playing cover's colour. Drag to browse, tap a cover to bring it to
-  the middle, tap the middle one to play it, or to pause and resume it if it is
-  playing. Left alone, the flow drifts back to what is playing. Beneath it, the
-  seek bar, repeat, previous/next, and the four shuffles.
+  with the playing cover's colour. As on the desktop, the album the flow rests
+  on plays: drag or fling to another, or tap one. Tap the playing album to pause
+  and resume. Beneath it, the seek bar, repeat, previous/next, and the four
+  shuffles.
 - **Playback in the background.** A media session puts the player on the lock
   screen, in the notification shade, and under the headset's buttons. It pauses
   when another app takes the audio or the headphones come out.
