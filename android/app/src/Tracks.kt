@@ -78,7 +78,14 @@ fun rememberTrackScroll(tracks: IntRange, queued: Int, playing: Int?, onPlay: (I
     scroll.playing = playing
     scroll.onPlay = onPlay
     LaunchedEffect(playing) {
-        if (!scroll.dragging && playing != null) scroll.position.animateTo(playing.toFloat(), SETTLE)
+        if (scroll.dragging || playing == null) return@LaunchedEffect
+        // Along the album, smoothly; to another album, at once, rather than across the new one's names from where the
+        // old one's pick stood.
+        if (scroll.picked in tracks) {
+            scroll.position.animateTo(playing.toFloat(), SETTLE)
+        } else {
+            scroll.position.snapTo(playing.toFloat())
+        }
     }
     return scroll
 }
