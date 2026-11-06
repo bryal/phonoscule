@@ -11,6 +11,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,9 +33,10 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
@@ -50,7 +52,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
@@ -73,12 +75,15 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -223,20 +228,10 @@ fun LibraryScreen(
                 modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
+                SearchField(
+                    query,
+                    onQuery = { query = it },
                     modifier = Modifier.weight(1f).onFocusChanged { searching = it.isFocused },
-                    singleLine = true,
-                    placeholder = { Text("Search albums") },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    trailingIcon = {
-                        if (query.isNotEmpty()) {
-                            IconButton(onClick = { query = "" }) {
-                                Icon(Icons.Default.Clear, contentDescription = "Clear")
-                            }
-                        }
-                    },
                 )
                 LibraryMenu(albums, onChooseFolder)
             }
@@ -345,21 +340,66 @@ private fun SortMenu(expanded: Boolean, onDismiss: () -> Unit) {
     }
 }
 
-/** `filter`'s row: its name, at the same place in every row, which opens its picker, then a chip for each value picked
- * of it, scrolling sideways when they do not fit, which unpicks that value. */
+/** The library's search: an outlined field, shorter than Material's 56dp. */
+@Composable
+private fun SearchField(query: String, onQuery: (String) -> Unit, modifier: Modifier = Modifier) {
+    val interaction = remember { MutableInteractionSource() }
+    BasicTextField(
+        value = query,
+        onValueChange = onQuery,
+        modifier = modifier,
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+        interactionSource = interaction,
+        decorationBox = { field ->
+            OutlinedTextFieldDefaults.DecorationBox(
+                value = query,
+                innerTextField = field,
+                enabled = true,
+                singleLine = true,
+                visualTransformation = VisualTransformation.None,
+                interactionSource = interaction,
+                placeholder = { Text("Search albums") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { onQuery("") }) {
+                            Icon(Icons.Default.Clear, contentDescription = "Clear")
+                        }
+                    }
+                },
+                contentPadding = OutlinedTextFieldDefaults.contentPadding(top = 12.dp, bottom = 12.dp),
+                container = {
+                    OutlinedTextFieldDefaults.Container(
+                        enabled = true,
+                        isError = false,
+                        interactionSource = interaction,
+                    )
+                },
+            )
+        },
+    )
+}
+
+/** `filter`'s row: a chip for each value picked of it, which unpicks that value, scrolling sideways when they do not
+ * fit; then at the right, for the thumb, and at the same place in every row, its name, which opens its picker. */
 @Composable
 private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, onPick: (List<String>) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        AssistChip(
-            onClick = onOpen,
-            label = { Text(filter.title) },
-            trailingIcon = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
-            modifier = Modifier.width(FILTER_NAME_WIDTH),
-        )
         if (picked.isEmpty()) {
-            Text("All", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "All",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.End,
+                modifier = Modifier.weight(1f),
+            )
         } else {
-            LazyRow(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(CHIP_GAP)) {
+            LazyRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(CHIP_GAP, Alignment.End),
+            ) {
                 items(picked, key = { it }) { value ->
                     InputChip(
                         selected = true,
@@ -370,6 +410,12 @@ private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, 
                 }
             }
         }
+        AssistChip(
+            onClick = onOpen,
+            label = { Text(filter.title) },
+            leadingIcon = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = null) },
+            modifier = Modifier.width(FILTER_NAME_WIDTH),
+        )
     }
 }
 
