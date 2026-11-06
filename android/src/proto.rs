@@ -54,13 +54,15 @@ pub enum Request {
     /// Scan the picked folder, or queue one more scan if one is running.
     Scan,
 
-    /// The albums matching `query` whose genre is one of `genres`. An empty `query` matches every
-    /// album, as do no `genres`.
+    /// The albums matching `query` whose genre is one of `genres` and whose artist is one of
+    /// `artists`. An empty `query` matches every album, as do no `genres` and no `artists`.
     Albums {
         #[serde(default)]
         query: String,
         #[serde(default)]
         genres: Vec<String>,
+        #[serde(default)]
+        artists: Vec<String>,
     },
     /// One album with its tracks. The response is `None` if there is no album by that id.
     Album {
@@ -69,6 +71,8 @@ pub enum Request {
     },
     /// Every genre some album has, sorted.
     Genres,
+    /// Every artist some album is by, sorted.
+    Artists,
     /// Every order the albums can be listed in, and which is current.
     Sorts,
     /// List the albums in order `index` of what [`Request::Sorts`] answered.
@@ -160,6 +164,9 @@ pub enum Response {
     },
     Genres {
         genres: Vec<String>,
+    },
+    Artists {
+        artists: Vec<String>,
     },
     Sorts {
         labels: Vec<String>,
@@ -419,8 +426,8 @@ pub fn dispatch(request: Request) -> anyhow::Result<Response> {
             core.scan();
             Response::Done
         }
-        (core, Request::Albums { query, genres }) => {
-            let albums = core.albums(&query, &genres);
+        (core, Request::Albums { query, genres, artists }) => {
+            let albums = core.albums(&query, &genres, &artists);
             Response::Albums { albums: albums.iter().map(AlbumSummary::of).collect() }
         }
         (core, Request::Album { id }) => Response::Album {
@@ -430,6 +437,7 @@ pub fn dispatch(request: Request) -> anyhow::Result<Response> {
             }),
         },
         (core, Request::Genres) => Response::Genres { genres: core.genres() },
+        (core, Request::Artists) => Response::Artists { artists: core.artists() },
         (core, Request::Sorts) => Response::Sorts {
             labels: SortOrder::ALL.iter().map(|sort| sort.label()).collect(),
             current: SortOrder::ALL.iter().position(|&sort| sort == core.sort()).unwrap_or(0),

@@ -387,13 +387,15 @@ impl Core {
     }
 
     /// The albums whose title or artist matches `query`, best match first and in the current sort
-    /// order otherwise, limited to those whose genre is one of `genres` unless there are none.
-    pub fn albums(&self, query: &str, genres: &[String]) -> Vec<Album> {
+    /// order otherwise, limited to those whose genre is one of `genres` unless there are none, and
+    /// likewise for `artists`.
+    pub fn albums(&self, query: &str, genres: &[String], artists: &[String]) -> Vec<Album> {
         let state = self.state();
         let mut ranked: Vec<(&Album, usize)> = state
             .albums
             .iter()
             .filter(|a| genres.is_empty() || genres.contains(&a.genre))
+            .filter(|a| artists.is_empty() || artists.contains(&a.artist))
             .filter_map(|a| Some((a, search::rank(&format!("{} {}", a.title, a.artist), query)?)))
             .collect();
         ranked.sort_by(|(a, ra), (b, rb)| rb.cmp(ra).then_with(|| state.sort.cmp(a, b)));
@@ -406,12 +408,12 @@ impl Core {
 
     /// Every genre some album has, sorted.
     pub fn genres(&self) -> Vec<String> {
-        let state = self.state();
-        let mut genres: Vec<String> = state.albums.iter().map(|a| a.genre.clone()).filter(|g| !g.is_empty()).collect();
-        // Case only breaks ties, so that equal genres end up next to each other for `dedup`.
-        genres.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)));
-        genres.dedup();
-        genres
+        sorted_names(self.state().albums.iter().map(|a| &a.genre))
+    }
+
+    /// Every artist some album is by, sorted.
+    pub fn artists(&self) -> Vec<String> {
+        sorted_names(self.state().albums.iter().map(|a| &a.artist))
     }
 
     pub fn sort(&self) -> SortOrder {
@@ -636,6 +638,15 @@ impl Core {
     }
 }
 
+/// `names` without the empty one, each once, in alphabetical order whatever their case.
+fn sorted_names<'a>(names: impl Iterator<Item = &'a String>) -> Vec<String> {
+    let mut names: Vec<String> = names.filter(|n| !n.is_empty()).cloned().collect();
+    // Case only breaks ties, so that equal names end up next to each other for `dedup`.
+    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)));
+    names.dedup();
+    names
+}
+
 /// The tracks of `albums` as queue items, album by album.
 fn items_of(library: &[Album], albums: &[u64]) -> Vec<QueueItem> {
     albums
@@ -730,14 +741,18 @@ mod test {
         core.scan();
         await_scan(core);
 
-        let albums = core.albums("", &[]);
+        let albums = core.albums("", &[], &[]);
         let titles: Vec<&str> = albums.iter().map(|a| a.title.as_str()).collect();
         assert_eq!(titles, ["First", "Second"]);
-        assert_eq!(core.albums("seco", &[]).len(), 1, "search narrows by title");
-        assert_eq!(core.albums("b", &[])[0].title, "Second", "and by artist");
+        assert_eq!(core.albums("seco", &[], &[]).len(), 1, "search narrows by title");
+        assert_eq!(core.albums("b", &[], &[])[0].title, "Second", "and by artist");
         // Neither has a genre tag, so both have the empty genre.
-        assert!(core.albums("", &["Jazz".into()]).is_empty(), "genres narrow");
-        assert_eq!(core.albums("", &["Jazz".into(), String::new()]).len(), 2, "to the albums of any of them");
+        assert!(core.albums("", &["Jazz".into()], &[]).is_empty(), "genres narrow");
+        assert_eq!(core.albums("", &["Jazz".into(), String::new()], &[]).len(), 2, "to the albums of any of them");
+        assert_eq!(core.artists(), ["A", "B"]);
+        let by_b = core.albums("", &[], &["B".into()]);
+        assert_eq!(by_b.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), ["Second"], "artists narrow");
+        assert_eq!(core.albums("", &[], &["A".into(), "B".into()]).len(), 2, "to the albums of any of them");
 
         let first = &albums[0];
         assert!(first.accent.is_some(), "the cover's accent arrived with it");
@@ -751,11 +766,11 @@ mod test {
         core.scan();
         await_scan(core);
         std::fs::set_permissions(&second, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(core.albums("", &[]).len(), 2, "the unreadable folder's album is kept");
+        assert_eq!(core.albums("", &[], &[]).len(), 2, "the unreadable folder's album is kept");
         std::fs::rename(&second, root.join("B-gone")).unwrap();
         core.scan();
         await_scan(core);
-        assert_eq!(core.albums("", &[]).len(), 1, "the missing folder's album is dropped");
+        assert_eq!(core.albums("", &[], &[]).len(), 1, "the missing folder's album is dropped");
         std::fs::rename(root.join("B-gone"), &second).unwrap();
         core.scan();
         await_scan(core);
