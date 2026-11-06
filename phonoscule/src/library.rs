@@ -970,10 +970,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
 /// Lists one directory: collects audio files with their stat data, spots a cover image, and
 /// pushes subdirectories onto `dirs`.
 async fn dir_job(fs: &dyn Fs, dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<DirJob> {
-    const COVER_STEMS: [&str; 4] = ["cover", "folder", "front", "albumart"];
-    const COVER_EXTS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
-
-    let entries = match fs.read_dir(dir).await {
+    let entries = match fs.read_dir(dir, |path| is_audio(path) || is_cover(path)).await {
         Ok(entries) => entries,
         Err(e) => {
             log::warn!("could not read directory {dir:?}: {e}");
@@ -986,18 +983,26 @@ async fn dir_job(fs: &dyn Fs, dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<Dir
             dirs.push(path);
             continue;
         }
-        let ext = extension(&path).unwrap_or_default();
-        if matches!(ext.as_str(), "wav" | "opus") {
+        if is_audio(&path) {
             job.files.push(AudioFile { path, mtime, size });
-        } else if job.cover.is_none()
-            && COVER_EXTS.contains(&ext.as_str())
-            && COVER_STEMS.contains(&path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase().as_str())
-        {
+        } else if job.cover.is_none() {
             job.cover = Some((path, mtime));
         }
     }
     job.files.sort_by(|a, b| a.path.cmp(&b.path));
     Some(job)
+}
+
+fn is_audio(path: &Path) -> bool {
+    matches!(extension(path).as_deref(), Some("wav" | "opus"))
+}
+
+/// Whether `path` is named as a directory's cover image would be, such as `Folder.jpg`.
+fn is_cover(path: &Path) -> bool {
+    const COVER_STEMS: [&str; 4] = ["cover", "folder", "front", "albumart"];
+    const COVER_EXTS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
+    extension(path).is_some_and(|ext| COVER_EXTS.contains(&ext.as_str()))
+        && COVER_STEMS.contains(&path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase().as_str())
 }
 
 /// Reads the tags of each of the directory's files, from the cache when it is still valid.

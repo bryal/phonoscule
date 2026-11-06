@@ -125,7 +125,7 @@ impl Default for Saf {
 }
 
 impl Fs for Saf {
-    fn read_dir<'a>(&'a self, dir: &'a Path) -> IoFuture<'a, Vec<DirEntry>> {
+    fn read_dir<'a>(&'a self, dir: &'a Path, wanted: fn(&Path) -> bool) -> IoFuture<'a, Vec<DirEntry>> {
         Box::pin(async move {
             let path = name(dir)?;
             match self.ask(|id| Op::ReadDir { id, path }).await? {
@@ -137,6 +137,7 @@ impl Fs for Saf {
                         mtime: SystemTime::UNIX_EPOCH + Duration::from_millis(entry.mtime.max(0) as u64),
                         size: entry.size,
                     })
+                    .filter(|entry| entry.is_dir || wanted(&entry.path))
                     .collect()),
                 other => Err(unexpected(other)),
             }
@@ -229,7 +230,7 @@ pub mod test {
         let saf = Arc::new(Saf::new());
         serve(Arc::clone(&saf), root.clone());
         smol::block_on(async {
-            let entries = saf.read_dir(Path::new(ROOT)).await.unwrap();
+            let entries = saf.read_dir(Path::new(ROOT), |_| true).await.unwrap();
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].path, Path::new("/Artist"));
             assert!(entries[0].is_dir);

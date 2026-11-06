@@ -35,8 +35,8 @@ pub struct DirEntry {
 
 /// A tree of directories and files to read music from.
 pub trait Fs: Send + Sync {
-    /// Every entry of `dir`, in no particular order.
-    fn read_dir<'a>(&'a self, dir: &'a Path) -> IoFuture<'a, Vec<DirEntry>>;
+    /// Every directory in `dir`, and every file in it that is `wanted`, in no particular order.
+    fn read_dir<'a>(&'a self, dir: &'a Path, wanted: fn(&Path) -> bool) -> IoFuture<'a, Vec<DirEntry>>;
 
     /// `path`, opened for reading. The file must be seekable.
     fn open<'a>(&'a self, path: &'a Path) -> IoFuture<'a, std::fs::File>;
@@ -53,7 +53,7 @@ pub trait Fs: Send + Sync {
 pub struct Local;
 
 impl Fs for Local {
-    fn read_dir<'a>(&'a self, dir: &'a Path) -> IoFuture<'a, Vec<DirEntry>> {
+    fn read_dir<'a>(&'a self, dir: &'a Path, wanted: fn(&Path) -> bool) -> IoFuture<'a, Vec<DirEntry>> {
         Box::pin(smol::unblock({
             let dir = dir.to_path_buf();
             move || {
@@ -64,6 +64,9 @@ impl Fs for Local {
                     let path = entry.path();
                     if file_type.is_dir() {
                         entries.push(DirEntry { path, is_dir: true, mtime: SystemTime::UNIX_EPOCH, size: 0 });
+                        continue;
+                    }
+                    if !wanted(&path) {
                         continue;
                     }
                     // Through a symlink, as opening it would. A link to a directory is not walked,
