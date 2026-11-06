@@ -79,18 +79,16 @@ import kotlinx.coroutines.withContext
 /** The library: a wall of covers to search, narrow by genre and artist, and sort, with what is playing along the
  * bottom.
  *
- * Shows only the albums of the picked `genres` and `artists`, all of them while none are picked. A row for each filter
- * names what is picked of it: its name opens its picker with [onOpenFilter], and what is picked clears it.
+ * Shows only the albums of the `picks`. A row for each filter names what is picked of it: its name opens its picker with
+ * [onOpenFilter], and what is picked clears it.
  *
- * Back clears the search, the genres and the artists, and leaves the search field, before it leaves the app. Pass
+ * Back clears the search and the picks, and leaves the search field, before it leaves the app. Pass
  * `covered` while another screen is open over this one, which then has Back to itself. */
 @Composable
 fun LibraryScreen(
     covered: Boolean,
-    genres: List<String>,
-    artists: List<String>,
-    onPickGenres: (List<String>) -> Unit,
-    onPickArtists: (List<String>) -> Unit,
+    picks: Picks,
+    onPick: (Picks) -> Unit,
     onOpenFilter: (Filter) -> Unit,
     onOpenAlbum: (Long) -> Unit,
     onOpenPlayer: () -> Unit,
@@ -106,16 +104,15 @@ fun LibraryScreen(
     var searching by remember { mutableStateOf(false) }
 
     val focus = LocalFocusManager.current
-    val filtered = query.isNotEmpty() || genres.isNotEmpty() || artists.isNotEmpty()
+    val filtered = query.isNotEmpty() || !picks.isEmpty()
     BackHandler(enabled = !covered && (filtered || searching)) {
         query = ""
-        onPickGenres(emptyList())
-        onPickArtists(emptyList())
+        onPick(Picks())
         focus.clearFocus()
     }
 
-    LaunchedEffect(query, genres, artists, App.libraryVersion) {
-        albums = withContext(Dispatchers.IO) { Core.albums(query, genres, artists) }
+    LaunchedEffect(query, picks, App.libraryVersion) {
+        albums = withContext(Dispatchers.IO) { Core.albums(query, picks.genres, picks.artists) }
     }
 
     // The wall runs the full height, under the bars that float over it, and clears them by their heights.
@@ -227,13 +224,14 @@ fun LibraryScreen(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = CHIP_GAP),
                     verticalArrangement = Arrangement.spacedBy(CHIP_GAP),
                 ) {
-                    FilterRow(Filter.GENRES, genres, onOpen = { onOpenFilter(Filter.GENRES) }, onPick = onPickGenres)
-                    FilterRow(
-                        Filter.ARTISTS,
-                        artists,
-                        onOpen = { onOpenFilter(Filter.ARTISTS) },
-                        onPick = onPickArtists,
-                    )
+                    for (filter in Filter.entries) {
+                        FilterRow(
+                            filter,
+                            picks[filter],
+                            onOpen = { onOpenFilter(filter) },
+                            onPick = { onPick(picks.with(filter, it)) },
+                        )
+                    }
                 }
             }
 

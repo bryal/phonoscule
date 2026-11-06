@@ -32,6 +32,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
+import java.io.Serializable
 
 class MainActivity : ComponentActivity() {
     private val chooseFolder = this.registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
@@ -88,21 +89,12 @@ class MainActivity : ComponentActivity() {
  * the library. */
 @Composable
 private fun Screens(onChooseFolder: () -> Unit) {
-    var album by rememberSaveable { mutableStateOf<Long?>(null) }
-    var player by rememberSaveable { mutableStateOf(App.storage != null && App.playback.current != null) }
-    var filter by rememberSaveable { mutableStateOf<Filter?>(null) }
-    var genres by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    var artists by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    val openAlbum = album
-    val openFilter = filter
-    val covered = player || openAlbum != null || openFilter != null
-    BackHandler(enabled = covered) {
-        when {
-            player -> player = false
-            openAlbum != null -> album = null
-            else -> filter = null
-        }
+    var overlay by rememberSaveable {
+        mutableStateOf<Overlay?>(if (App.storage != null && App.playback.current != null) Overlay.Player else null)
     }
+    var picks by rememberSaveable { mutableStateOf(Picks()) }
+    val covered = overlay != null
+    BackHandler(enabled = covered) { overlay = null }
     // A focused search field would otherwise keep the keyboard up over the screen on top.
     val focus = LocalFocusManager.current
     LaunchedEffect(covered) { if (covered) focus.clearFocus() }
@@ -112,40 +104,48 @@ private fun Screens(onChooseFolder: () -> Unit) {
         Box(modifier = if (covered) hidden else Modifier) {
             LibraryScreen(
                 covered = covered,
-                genres = genres,
-                artists = artists,
-                onPickGenres = { genres = it },
-                onPickArtists = { artists = it },
-                onOpenFilter = { filter = it },
-                onOpenAlbum = { album = it },
-                onOpenPlayer = { player = true },
+                picks = picks,
+                onPick = { picks = it },
+                onOpenFilter = { overlay = Overlay.Picker(it) },
+                onOpenAlbum = { overlay = Overlay.Album(it) },
+                onOpenPlayer = { overlay = Overlay.Player },
                 onChooseFolder = onChooseFolder,
             )
         }
-        if (covered) {
+        val open = overlay
+        if (open != null) {
             // Takes every touch, so none reaches the library beneath.
             val takeTouches = Modifier.pointerInput(Unit) {
                 awaitPointerEventScope { while (true) awaitPointerEvent() }
             }
             Box(modifier = Modifier.fillMaxSize().then(takeTouches)) {
-                if (player) {
-                    PlayerScreen()
-                } else if (openAlbum != null) {
-                    AlbumScreen(openAlbum, onBack = { album = null }, onPlayed = {
-                        album = null
-                        player = true
-                    })
-                } else if (openFilter != null) {
-                    FilterScreen(
-                        openFilter,
-                        picked = if (openFilter == Filter.GENRES) genres else artists,
-                        onPick = { if (openFilter == Filter.GENRES) genres = it else artists = it },
-                        onBack = { filter = null },
+                when (open) {
+                    Overlay.Player -> PlayerScreen()
+                    is Overlay.Album -> AlbumScreen(
+                        open.id,
+                        onBack = { overlay = null },
+                        onPlayed = { overlay = Overlay.Player },
+                    )
+                    is Overlay.Picker -> FilterScreen(
+                        open.filter,
+                        picked = picks[open.filter],
+                        onPick = { picks = picks.with(open.filter, it) },
+                        onBack = { overlay = null },
                     )
                 }
             }
         }
     }
+}
+
+/** What is open over the library. */
+private sealed interface Overlay : Serializable {
+    data object Player : Overlay
+
+    data class Album(val id: Long) : Overlay
+
+    /** A filter's picker. */
+    data class Picker(val filter: Filter) : Overlay
 }
 
 /** The desktop player's font, Iosevka, in every style, its regular weight standing in for the heavier ones as on the

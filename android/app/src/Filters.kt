@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import java.io.Serializable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -43,6 +44,22 @@ enum class Filter(val title: String) {
         GENRES -> Core.genres()
         ARTISTS -> Core.artists()
     }
+}
+
+/** The values picked of each [Filter], to narrow the library to the albums of. None picked of a filter narrows nothing. */
+data class Picks(val genres: List<String> = emptyList(), val artists: List<String> = emptyList()) : Serializable {
+    operator fun get(filter: Filter): List<String> = when (filter) {
+        Filter.GENRES -> genres
+        Filter.ARTISTS -> artists
+    }
+
+    /** These picks, with `filter`'s replaced by `picked`. */
+    fun with(filter: Filter, picked: List<String>): Picks = when (filter) {
+        Filter.GENRES -> copy(genres = picked)
+        Filter.ARTISTS -> copy(artists = picked)
+    }
+
+    fun isEmpty(): Boolean = genres.isEmpty() && artists.isEmpty()
 }
 
 /** Every value of `filter`, two to a row, to narrow the library to the albums of the `picked` ones: each value's chip
