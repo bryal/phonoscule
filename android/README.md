@@ -1,0 +1,118 @@
+Phonoscule for Android
+============================================================
+Android version of `phonoscule-gui`: the same album-centric player on a phone.
+Not a port of the desktop player but a sibling of it, the way the
+[terminal player](../tui/README.md) is. A wall of covers to browse, search and
+filter by genre, and a Cover Flow to play into - stood on end, since a phone is
+taller than it is wide.
+
+Status: early, and not yet run on a device.
+
+
+Features
+------------------------------------------------------------
+- **Library.** A grid of album covers, grouped from the tags exactly as on the
+  desktop. Fuzzy search over titles and artists, genre chips, and the desktop's
+  sort orders. Long-press an album to enqueue it.
+- **Album.** The cover and tags, Play and Enqueue, and the tracks: tap one to
+  play the album from it, or enqueue it alone.
+- **Player.** The queue's albums as a vertical Cover Flow over a backdrop glowing
+  with the playing cover's colour. Drag to browse, tap a cover to bring it to
+  the middle, tap the middle one to play it, or to pause and resume it if it is
+  playing. Left alone, the flow drifts back to what is playing. Beneath it, the
+  seek bar, repeat, previous/next, and the four shuffles.
+- **Playback in the background.** A media session puts the player on the lock
+  screen, in the notification shade, and under the headset's buttons. It pauses
+  when another app takes the audio or the headphones come out.
+- **The session** - queue, position, repeat mode and sort order - is restored
+  across runs.
+
+
+Architecture
+------------------------------------------------------------
+A Rust core with a thin Kotlin/Compose shell, talking over a single JNI
+function, in the shape of neuma-android.
+
+    Kotlin / Compose              one JNI fn            Rust
+    +----------------------+                    +------------------------+
+    | Compose UI           |                    | proto.rs               |
+    | media session        | <-- JSON bytes --> | model.rs: library,     |
+    | SAF: lists, opens    |                    |   queue, engine        |
+    +----------------------+                    | saf.rs: the Fs         |
+        owns all I/O on                         +------------------------+
+        the music                                 phonoscule: scan, tags,
+                                                  decoding, AAudio, session
+
+Everything that makes a player is the `phonoscule` crate's, shared with the
+desktop players: the library scan and its caches, the tag reading, the Opus and
+WAV decoders, the play engine, shuffling, sorting, searching, and the saved
+session. Audio goes out through AAudio, from `phonoscule::sink`.
+
+What differs is how the music is reached. Android hands an app its music
+folder through the Storage Access Framework, which lists directories and opens
+documents but has no paths. So the library and the engine read through
+`phonoscule::fs::Fs`, and this crate's `Fs` turns each listing or open into an
+op that Kotlin performs: a few worker threads sit in `Core.nextOp()`, list the
+directory or open the document, and answer with the entries or a file
+descriptor. Paths are names within the picked folder - `/Artist/Album/01.opus` -
+which Kotlin resolves to documents from the listings it has made. Kotlin never
+gets called into: it asks.
+
+It learns what changed the same way, with a thread parked in
+`Core.nextNotices()`. The screens observe a few counters bumped from there and
+ask the core again.
+
+The core's own files - caches and the saved session - are written by Rust at
+paths under the app's private directories, which Kotlin gives it at startup.
+Covers reach the screens as the JPEGs of the desktop player's full-size cover
+cache, which Android decodes at a fraction of their size for the grid.
+
+The FFI boundary is exactly one symbol, `Java_zone_jo_phonoscule_Core_call`,
+taking and returning a byte array. Everything behind it is safe Rust, which is
+why the whole protocol is exercised by `cargo test` on the host, the SAF bridge
+included, with a thread playing Kotlin's part. The symbol name encodes the
+Kotlin package and class, so renaming `zone.jo.phonoscule.Core` means renaming
+the function in `src/jni.rs` too.
+
+
+Building
+------------------------------------------------------------
+Run `just` to list the available recipes:
+
+    just build              # debug APK
+    just run                # install onto the connected device and launch it
+    just test               # host-side Rust tests, no device needed
+    just logs               # follow the running app's log output
+    just gradle <task>...   # arbitrary Gradle tasks
+
+Gradle invokes `cargo ndk` itself via the `cargoNdk` task, so there is no
+separate Rust build step. That task deliberately has no up-to-date check; it
+always runs and lets cargo decide what actually needs rebuilding. It always
+builds the core in release, debug APK or not: an unoptimised Opus decoder
+cannot keep up with playback on a phone.
+
+The crate is a member of the repository's Cargo workspace, so it shares the
+lockfile and the `target/` directory with the desktop players.
+
+The launcher icon is rendered from the desktop player's artwork
+(`gui/assets/icon/phonoscule.svg`) at build time with `rsvg-convert`, so that
+has to be installed. On Arch it comes with `librsvg`.
+
+
+Development setup
+------------------------------------------------------------
+The same as neuma-android's: a JDK 21 (see `app/gradle.properties`), the
+Android SDK with `platforms;android-36`, `build-tools;36.0.0` and
+`ndk;27.2.12479018` under `~/Android/Sdk`, and
+
+    rustup target add aarch64-linux-android
+    cargo install cargo-ndk
+
+Only `arm64-v8a` is built. It targets a phone, and there is no emulator
+support, so the other ABIs would be dead cross-compile time.
+
+
+License
+------------------------------------------------------------
+Released under the **Mozilla Public License 2.0**, like the rest of the
+repository (see [`LICENSE`](../LICENSE)).

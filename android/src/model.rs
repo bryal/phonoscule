@@ -129,6 +129,8 @@ pub struct Playback {
     pub repeat: Repeat,
     pub title: String,
     pub album: Option<AlbumRef>,
+    /// The album's cover as a JPEG file, if one has been made.
+    pub cover_file: Option<PathBuf>,
 }
 
 /// Enough of an album to show it beside something else.
@@ -501,6 +503,12 @@ impl Core {
     pub fn playback(&self) -> Playback {
         let state = self.state();
         let item = state.queue.get(state.current);
+        let album = item.and_then(|i| state.albums.iter().find(|a| a.id == i.album_id)).map(AlbumRef::of);
+        let cover_file = album
+            .as_ref()
+            .and_then(|a| a.cover)
+            .map(|cover| library::cover_file(&self.paths.full_covers, cover, library::FULL_FORMAT))
+            .filter(|path| path.exists());
         Playback {
             current: item.map(|_| state.current),
             playing: state.play_state == PlayState::Playing,
@@ -508,7 +516,8 @@ impl Core {
             length: state.length,
             repeat: state.repeat,
             title: item.map(|i| i.title.clone()).unwrap_or_default(),
-            album: item.and_then(|i| state.albums.iter().find(|a| a.id == i.album_id)).map(AlbumRef::of),
+            album,
+            cover_file,
         }
     }
 

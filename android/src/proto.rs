@@ -271,6 +271,8 @@ pub struct Playback {
     pub repeat: RepeatMode,
     pub title: String,
     pub album: Option<AlbumHeader>,
+    /// The album's cover as a JPEG file, if one has been made.
+    pub cover_file: Option<String>,
 }
 
 impl Playback {
@@ -283,6 +285,7 @@ impl Playback {
             repeat: playback.repeat.into(),
             title: playback.title,
             album: playback.album.map(AlbumHeader::of),
+            cover_file: playback.cover_file.map(|path| path.to_string_lossy().into_owned()),
         }
     }
 }

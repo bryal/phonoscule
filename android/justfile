@@ -1,0 +1,67 @@
+# Phonoscule Android tasks. Run `just` to list them.
+#
+# ANDROID_HOME is set here rather than in a shell rc file so the Android
+# toolchain does not leak into unrelated shells. Gradle invokes cargo-ndk
+# itself, so building the Rust core is never a separate step.
+#
+# Recipes run in this directory whatever your cwd, so relative paths always
+# resolve against the repo root, the way cargo writes to the workspace target/
+# regardless of where you invoke it.
+#
+# Keep recipe doc comments to one line: `just --list` shows only the last
+# comment line before a recipe.
+
+export ANDROID_HOME := env('ANDROID_HOME', home_directory() / 'Android/Sdk')
+
+app_id := 'zone.jo.phonoscule'
+
+[private]
+default:
+    @just --list --unsorted
+
+# Build the debug APK.
+build: _require-sdk
+    cd app && ./gradlew assembleDebug
+
+# Build and install onto the connected device.
+install: _require-sdk
+    cd app && ./gradlew installDebug
+
+# Install, then launch on the connected device.
+run: install
+    adb shell am start -n {{ app_id }}/.MainActivity
+
+# Run the host-side Rust tests. No device needed.
+test:
+    cargo test -p phonoscule-android
+
+# Follow the running app's log output.
+logs:
+    adb logcat --pid=$(adb shell pidof {{ app_id }})
+
+# Screenshot the device, e.g. `just screenshot shot.png`.
+screenshot path='screenshot.png':
+    adb exec-out screencap -p > {{ path }}
+    @echo 'wrote {{ path }}'
+
+# Run Android Lint.
+lint: _require-sdk
+    cd app && ./gradlew lint
+
+# Delete build artifacts from both build systems.
+clean: _require-sdk
+    cd app && ./gradlew clean
+    cargo clean -p phonoscule-android
+
+# Run an arbitrary Gradle task, e.g. `just gradle tasks`.
+gradle *args: _require-sdk
+    cd app && ./gradlew {{ args }}
+
+[private]
+_require-sdk:
+    #!/bin/sh
+    if [ ! -d "$ANDROID_HOME" ]; then
+        echo "Android SDK not found at $ANDROID_HOME." >&2
+        echo "See the Development setup section of README.md, or set ANDROID_HOME." >&2
+        exit 1
+    fi
