@@ -271,6 +271,7 @@ async fn player_loop(client: Client, fs: &dyn Fs, cmd_rx: channel::Receiver<Cmd>
         // Idle when there is nothing (left) to play.
         let Some(path) = queue.get(ix).map(|entry| entry.path.clone()) else {
             play_state = PlayState::Paused;
+            sink.rest();
             if events.send(Event::QueueEnded).await.is_err() {
                 return;
             }
@@ -330,10 +331,13 @@ async fn player_loop(client: Client, fs: &dyn Fs, cmd_rx: channel::Receiver<Cmd>
                 Some(cmd) => Some(cmd),
                 None => match play_state {
                     // Paused: nothing to do but wait for the next command.
-                    PlayState::Paused => match cmd_rx.recv().await {
-                        Ok(cmd) => Some(cmd),
-                        Err(_) => return,
-                    },
+                    PlayState::Paused => {
+                        sink.rest();
+                        match cmd_rx.recv().await {
+                            Ok(cmd) => Some(cmd),
+                            Err(_) => return,
+                        }
+                    }
                     PlayState::Playing => match cmd_rx.try_recv() {
                         Ok(cmd) => Some(cmd),
                         Err(channel::TryRecvError::Empty) => None,

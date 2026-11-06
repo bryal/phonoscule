@@ -3946,6 +3946,7 @@ dependencies = [
  "image",
  "libpulse-binding",
  "log",
+ "ndk",
  "notify",
  "ogg",
  "opuscule",
