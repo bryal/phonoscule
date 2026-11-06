@@ -1,13 +1,14 @@
 # The application icon
 
-The Cover Flow: the playing album square on, a sixteenth note on its cover, two covers either side
-tilted towards it, the nearer with an eighth, each above its reflection - the *Player* view reduced
-to a mark. It has no backdrop, so it stands on whatever the taskbar or dock is, light or dark.
+The Cover Flow: the playing album square on with two beamed eighth notes on its cover, two covers
+either side tilted towards it, the nearer pair with an eighth note each, and every cover above its
+reflection - the *Player* view reduced to a mark. It has no backdrop, so it stands on whatever the
+taskbar or dock is, light or dark.
 
 | file | what it is |
 |---|---|
 | `phonoscule.svg` | the artwork, and the only copy of it |
-| `phonoscule-small.svg` | the same mark for 16-32px, where the full one turns to mud: one cover either side, larger, on whole pixels, and only the middle note |
+| `phonoscule-small.svg` | the same mark for 16-32px, where the full one turns to mud: one cover either side, larger, on whole pixels, and only the middle notes |
 
 There is nothing generated to commit. [`../../build.rs`](../../build.rs) renders these at build time
 and, on Windows, packs them into the `.ico` it compiles into the executable; the running player uses

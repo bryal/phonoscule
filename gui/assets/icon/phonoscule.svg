@@ -12,7 +12,7 @@
     as no nearer reflection hides, and fades down its own length the way the player's does
     (coverflow.wgsl): from 0.3 at the seam, quadratically, to nothing.
 
-    A note is printed on the playing cover and on the near pair, and so shows in their reflections
+    Notes are printed on the playing cover and on the near pair, and so shows in their reflections
     too. Each is drawn once, in a cover's own 100-unit square, and put on a tilted cover by the
     perspective that carries the cover's corners there, taken at the note's middle. Those on the
     near pair sit in the middle of what shows of their covers.
@@ -42,19 +42,19 @@
     <linearGradient id="far-left" href="#far" x1="1" x2="61"/>
     <linearGradient id="far-right" href="#far" x1="255" x2="195"/>
 
-    <!-- A sixteenth note for the playing cover, an eighth for its neighbours. -->
+    <!-- Two beamed eighth notes for the playing cover, one eighth for each neighbour. -->
     <path id="flag" d="M0,0 C1.5,8 8.5,12 12.5,18 C16.5,24 17.5,33 13.5,42 C15.5,33 12.5,27 7.5,22 C4.5,19 1.5,15 0,11 Z"/>
-    <ellipse id="notehead" cx="42" cy="72" rx="15.5" ry="11" transform="rotate(-24 42 72)"/>
     <g id="eighth" fill="#ffffff">
-      <use href="#notehead"/>
+      <ellipse cx="42" cy="72" rx="15.5" ry="11" transform="rotate(-24 42 72)"/>
       <rect x="51.5" y="16" width="6" height="56"/>
       <use href="#flag" transform="translate(57.5 16)"/>
     </g>
-    <g id="sixteenth" fill="#ffffff">
-      <use href="#notehead"/>
-      <rect x="51.5" y="14" width="6" height="58"/>
-      <use href="#flag" transform="translate(57.5 14) scale(1 0.8)"/>
-      <use href="#flag" transform="translate(57.5 28) scale(1 0.8)"/>
+    <g id="beamed-eighths" fill="#ffffff">
+      <ellipse cx="29" cy="73" rx="13.5" ry="10" transform="rotate(-24 29 73)"/>
+      <ellipse cx="67" cy="66" rx="13.5" ry="10" transform="rotate(-24 67 66)"/>
+      <rect x="36" y="22" width="5.5" height="48"/>
+      <rect x="74" y="15" width="5.5" height="48"/>
+      <polygon points="36,22 79.5,14 79.5,25 36,33"/>
     </g>
     <!-- What shows of the near pair's reflections. -->
     <clipPath id="near-left-shown"><polygon points="23,141 66,130.3 66,213 26,236"/></clipPath>
@@ -101,7 +101,7 @@
     </g>
     <g mask="url(#middle-reflection)">
       <rect x="66" y="156" width="124" height="124" fill="url(#cover-mirrored)"/>
-      <use href="#sixteenth" transform="matrix(1.24 0 0 -1.24 66 280)"/>
+      <use href="#beamed-eighths" transform="matrix(1.24 0 0 -1.24 66 280)"/>
     </g>
     <g clip-path="url(#near-right-shown)" mask="url(#near-right-reflection)">
       <rect width="256" height="256" fill="url(#near-right)"/>
@@ -117,6 +117,6 @@
     <polygon points="178,45 235,41 233,141 177,127" fill="url(#near-right)"/>
     <use href="#eighth" transform="matrix(0.5724 0.0518 -0.0147 0.9114 180.60 40.87)"/>
     <rect x="66" y="32" width="124" height="124" fill="url(#cover)"/>
-    <use href="#sixteenth" transform="matrix(1.24 0 0 1.24 66 32)"/>
+    <use href="#beamed-eighths" transform="matrix(1.24 0 0 1.24 66 32)"/>
   </g>
 </svg>
