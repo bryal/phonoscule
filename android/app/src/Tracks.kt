@@ -187,10 +187,10 @@ private fun Icicle(title: String, lit: Boolean) {
 }
 
 /** How far apart the names stand, which is also how far a drag goes for one track. */
-private val TRACK_PITCH = 28.dp
+private val TRACK_PITCH = 19.6.dp
 
 /** How far from flat the names read, upwards, in degrees. */
-private const val ICICLE_TILT = 72f
+private const val ICICLE_TILT = 80f
 
 /** How far below the top edge the names' ends stand. */
 private val ICICLE_MARGIN = 8.dp
