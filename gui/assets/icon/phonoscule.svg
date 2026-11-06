@@ -12,7 +12,7 @@
     as no nearer reflection hides, and fades down its own length the way the player's does
     (coverflow.wgsl): from 0.3 at the seam, quadratically, to nothing.
 
-    Notes are printed on the playing cover and on the near pair, and so show in their reflections
+    Notes are embossed on the playing cover and on the near pair, and so show in their reflections
     too. Each is drawn once, in a cover's own 100-unit square, and put on a tilted cover by the
     perspective that carries the cover's corners there, taken at the note's middle. Those on the
     near pair sit in the middle of what shows of their covers.
@@ -39,19 +39,48 @@
       <stop offset="1" stop-color="#944068"/>
     </linearGradient>
 
-    <!-- Two beamed eighth notes for the playing cover, one eighth for each neighbour. -->
+    <!-- Two beamed eighth notes for the playing cover, one eighth for each neighbour, embossed: the
+         face a pale tint of the cover, lit along its upper left edges and shadowed along its lower
+         right. Each rim is the note nudged that way, less the note itself, so neither shows
+         through the face. -->
     <path id="flag" d="M0,0 C1.5,8 8.5,12 12.5,18 C16.5,24 17.5,33 13.5,42 C15.5,33 12.5,27 7.5,22 C4.5,19 1.5,15 0,11 Z"/>
-    <g id="eighth" fill="#ffffff">
+    <g id="eighth-shape">
       <ellipse cx="42" cy="72" rx="15.5" ry="11" transform="rotate(-24 42 72)"/>
       <rect x="51.5" y="16" width="6" height="56"/>
       <use href="#flag" transform="translate(57.5 16)"/>
     </g>
-    <g id="beamed-eighths" fill="#ffffff">
+    <g id="beamed-eighths-shape">
       <ellipse cx="29" cy="73" rx="13.5" ry="10" transform="rotate(-24 29 73)"/>
       <ellipse cx="67" cy="66" rx="13.5" ry="10" transform="rotate(-24 67 66)"/>
       <rect x="36" y="22" width="5.5" height="48"/>
       <rect x="74" y="15" width="5.5" height="48"/>
       <polygon points="36,22 79.5,14 79.5,25 36,33"/>
+    </g>
+    <mask id="eighth-light-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
+      <use href="#eighth-shape" fill="#ffffff" transform="translate(-1.7 -1.7)"/>
+      <use href="#eighth-shape" fill="#000000"/>
+    </mask>
+    <mask id="eighth-dark-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
+      <use href="#eighth-shape" fill="#ffffff" transform="translate(1.7 1.7)"/>
+      <use href="#eighth-shape" fill="#000000"/>
+    </mask>
+    <g id="eighth">
+      <rect x="-10" y="-10" width="120" height="120" fill="#ffffff" fill-opacity="0.9" mask="url(#eighth-light-rim)"/>
+      <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.38" mask="url(#eighth-dark-rim)"/>
+      <use href="#eighth-shape" fill="#ffffff" opacity="0.6"/>
+    </g>
+    <mask id="beamed-eighths-light-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
+      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(-1.7 -1.7)"/>
+      <use href="#beamed-eighths-shape" fill="#000000"/>
+    </mask>
+    <mask id="beamed-eighths-dark-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
+      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(1.7 1.7)"/>
+      <use href="#beamed-eighths-shape" fill="#000000"/>
+    </mask>
+    <g id="beamed-eighths">
+      <rect x="-10" y="-10" width="120" height="120" fill="#ffffff" fill-opacity="0.9" mask="url(#beamed-eighths-light-rim)"/>
+      <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.38" mask="url(#beamed-eighths-dark-rim)"/>
+      <use href="#beamed-eighths-shape" fill="#ffffff" opacity="0.6"/>
     </g>
     <!-- What shows of the near pair's reflections. -->
     <clipPath id="near-left-shown"><polygon points="23,141 66,130.3 66,213 26,236"/></clipPath>
