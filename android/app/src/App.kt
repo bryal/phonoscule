@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 class PhonosculeApp : Application() {
@@ -135,10 +136,11 @@ object App {
         scanListeners.remove(listener)
     }
 
-    /** Run `action` on a thread of its own, toasting rather than crashing if it fails. For commands, which are quick
-     * but should not hold up a frame. */
+    /** Run `action` off the main thread, after every command before it, toasting rather than crashing if it fails. For
+     * commands, which are quick but should not hold up a frame, and must reach the core in the order they were given:
+     * a pause and then a play, say. */
     fun command(action: () -> Unit) {
-        thread(name = "phonoscule-command") {
+        commands.execute {
             try {
                 action()
             } catch (e: Exception) {
@@ -147,6 +149,8 @@ object App {
             }
         }
     }
+
+    private val commands = Executors.newSingleThreadExecutor { Thread(it, "phonoscule-command").apply { isDaemon = true } }
 
     private fun followNotices() {
         while (true) {
