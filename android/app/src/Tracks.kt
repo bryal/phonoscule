@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -22,11 +23,11 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.tan
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -86,7 +87,7 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
             scroll.dragging = true
             tracker.resetTracking()
             target = scroll.position.value
-            pitch = pitchFor(size.width.toFloat(), scroll.tracks.count())
+            pitch = TRACK_PITCH.toPx()
             scroll.stop()
         },
         onHorizontalDrag = { change, dx ->
@@ -114,15 +115,39 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
 /** The album's track `titles` hanging from the top edge side by side, like icicles: in order from the left, and still,
  * each reading upwards at [ICICLE_TILT] from flat, its end along the top and its start below and to the left. The one
  * `scroll` has picked is lit; `first` is the queue index of the first. Each hangs at most [ICICLE_LENGTH] of the
- * height, cut short at its end. They are centred, leaning and all, and take no touches. */
+ * height, cut short at its end. They are centred, leaning and all, and take no touches.
+ *
+ * Where they do not all fit, those that do show, as many to either side of the picked one as it has tracks before and
+ * after it, as the desktop's list does: the view only moves as the pick moves along a long album. */
 @Composable
 fun TrackIcicles(titles: List<String>, first: Int, scroll: TrackScroll, modifier: Modifier = Modifier) {
     val picked by remember { derivedStateOf { scroll.picked } }
+    BoxWithConstraints(modifier = modifier) {
+        // As many as fit, if every one were as long as a name may hang.
+        val lean = maxHeight * ICICLE_LENGTH / tan(Math.toRadians(ICICLE_TILT.toDouble())).toFloat()
+        val fits = ((maxWidth - lean) / TRACK_PITCH).toInt() + 1
+        val shown = window(titles.size, picked - first, fits.coerceAtLeast(1))
+        Icicles(titles.subList(shown.first, shown.last + 1), first + shown.first, picked)
+    }
+}
+
+/** Which of `count` names show where `fits` do: all of them, or a window placed so the picked one, at `at`, stands as
+ * far along it as it does along the whole. */
+private fun window(count: Int, at: Int, fits: Int): IntRange {
+    if (count <= fits) return 0 until count
+    val pick = at.coerceIn(0, count - 1)
+    val place = (pick.toFloat() / (count - 1) * (fits - 1)).roundToInt()
+    val start = (pick - place).coerceIn(0, count - fits)
+    return start until start + fits
+}
+
+/** `titles`, of queue indices from `first`, tilted and placed as [TrackIcicles] says. */
+@Composable
+private fun Icicles(titles: List<String>, first: Int, picked: Int) {
     Layout(
         content = {
             titles.forEachIndexed { k, title -> Icicle(title, lit = first + k == picked) }
         },
-        modifier = modifier,
     ) { measurables, constraints ->
         val tilt = Math.toRadians(ICICLE_TILT.toDouble())
         val (sin, cos) = sin(tilt).toFloat() to cos(tilt).toFloat()
@@ -130,7 +155,7 @@ fun TrackIcicles(titles: List<String>, first: Int, scroll: TrackScroll, modifier
         val placeables = measurables.map { it.measure(Constraints(maxWidth = longest.roundToInt())) }
         // How far left of its end the longest name's start reaches.
         val lean = (placeables.maxOfOrNull { it.width } ?: 0) * cos
-        val pitch = pitchFor(constraints.maxWidth - lean, placeables.size)
+        val pitch = TRACK_PITCH.toPx()
         val firstEnd = (constraints.maxWidth - lean - pitch * (placeables.size - 1)) / 2 + lean
         layout(constraints.maxWidth, constraints.maxHeight) {
             placeables.forEachIndexed { k, placeable ->
@@ -147,10 +172,6 @@ fun TrackIcicles(titles: List<String>, first: Int, scroll: TrackScroll, modifier
     }
 }
 
-/** How far apart `count` names stand across `width` pixels: [TRACK_PITCH], or closer, so that they all fit. */
-private fun Density.pitchFor(width: Float, count: Int): Float =
-    if (count == 0) TRACK_PITCH.toPx() else minOf(TRACK_PITCH.toPx(), width / count)
-
 /** One track's name, on a line, shadowed to stand out from the covers. */
 @Composable
 private fun Icicle(title: String, lit: Boolean) {
@@ -165,7 +186,7 @@ private fun Icicle(title: String, lit: Boolean) {
     )
 }
 
-/** How far apart the names stand while they fit, which is also how far a drag goes for one track. */
+/** How far apart the names stand, which is also how far a drag goes for one track. */
 private val TRACK_PITCH = 28.dp
 
 /** How far from flat the names read, upwards, in degrees. */
