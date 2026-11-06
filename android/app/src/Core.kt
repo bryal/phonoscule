@@ -78,11 +78,12 @@ object Core {
     /** Scan the picked folder, or queue one more scan if one is running. */
     fun scan() = request("scan").send { }
 
-    /** The albums matching `query` whose genre is one of `genres`. An empty `query` matches every album, as do no
-     * `genres`. */
-    fun albums(query: String, genres: List<String>): List<AlbumSummary> = request("albums")
+    /** The albums matching `query` whose genre is one of `genres` and whose artist is one of `artists`. An empty
+     * `query` matches every album, as do no `genres` and no `artists`. */
+    fun albums(query: String, genres: List<String>, artists: List<String>): List<AlbumSummary> = request("albums")
         .put("query", query)
         .put("genres", JSONArray(genres))
+        .put("artists", JSONArray(artists))
         .send { resp -> resp.getJSONArray("albums").mapObjects { it.toAlbumSummary() } }
 
     /** One album with its tracks, or null if there is none by that id. */
@@ -92,6 +93,9 @@ object Core {
 
     /** Every genre some album has, sorted. */
     fun genres(): List<String> = request("genres").send { resp -> resp.getJSONArray("genres").toStrings() }
+
+    /** Every artist some album is by, sorted. */
+    fun artists(): List<String> = request("artists").send { resp -> resp.getJSONArray("artists").toStrings() }
 
     /** Every order the albums can be listed in, and which is current. */
     fun sorts(): Sorts = request("sorts").send { resp ->

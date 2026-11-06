@@ -44,6 +44,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
@@ -82,10 +83,19 @@ import kotlinx.coroutines.withContext
 
 /** The library: a wall of covers to search, filter by genre and sort, with what is playing along the bottom.
  *
- * Back clears the search and the genres, and leaves the search field, before it leaves the app. Pass `covered` while
- * another screen is open over this one, which then has Back to itself. */
+ * Shows only the albums of `artists`, unless there are none, which [onClearArtists] asks to be rid of.
+ *
+ * Back clears the search, the genres and the artists, and leaves the search field, before it leaves the app. Pass
+ * `covered` while this is not what shows, and Back is another screen's. */
 @Composable
-fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: () -> Unit, onChooseFolder: () -> Unit) {
+fun LibraryScreen(
+    covered: Boolean,
+    artists: List<String>,
+    onClearArtists: () -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+    onOpenPlayer: () -> Unit,
+    onChooseFolder: () -> Unit,
+) {
     if (App.storage == null) {
         ChooseFolder(onChooseFolder)
         return
@@ -98,14 +108,16 @@ fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: (
     var searching by remember { mutableStateOf(false) }
 
     val focus = LocalFocusManager.current
-    BackHandler(enabled = !covered && (query.isNotEmpty() || picked.isNotEmpty() || searching)) {
+    val filtered = query.isNotEmpty() || picked.isNotEmpty() || artists.isNotEmpty()
+    BackHandler(enabled = !covered && (filtered || searching)) {
         query = ""
         picked = emptyList()
+        onClearArtists()
         focus.clearFocus()
     }
 
-    LaunchedEffect(query, picked, App.libraryVersion) {
-        val (found, all) = withContext(Dispatchers.IO) { Core.albums(query, picked) to Core.genres() }
+    LaunchedEffect(query, picked, artists, App.libraryVersion) {
+        val (found, all) = withContext(Dispatchers.IO) { Core.albums(query, picked, artists) to Core.genres() }
         albums = found
         genres = all
     }
@@ -132,6 +144,16 @@ fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: (
         }
 
         GenreChips(genres, picked, onPick = { picked = it })
+        if (artists.isNotEmpty()) {
+            val label = if (artists.size == 1) artists[0] else "${artists.size} artists"
+            InputChip(
+                selected = true,
+                onClick = onClearArtists,
+                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                trailingIcon = { Icon(Icons.Default.Clear, contentDescription = "Show every artist") },
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
+        }
 
         HorizontalDivider()
 
@@ -166,7 +188,7 @@ fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: (
                 Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                     if (!App.scanning) {
                         Text(
-                            text = if (query.isEmpty() && picked.isEmpty()) {
+                            text = if (query.isEmpty() && picked.isEmpty() && artists.isEmpty()) {
                                 "No albums here yet. Pull down to scan."
                             } else {
                                 "Nothing matches."
@@ -195,8 +217,8 @@ fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: (
 }
 
 /** A thin bar down the right edge of the grid, always shown, for where the view is in the whole of it and how much of it
- * shows. Rows are taken to be of equal height, as the album cards are. */
-private fun Modifier.scrollBar(state: LazyGridState): Modifier = this.drawWithContent {
+ * shows. Rows are taken to be of equal height. */
+fun Modifier.scrollBar(state: LazyGridState): Modifier = this.drawWithContent {
     drawContent()
     val info = state.layoutInfo
     val items = info.visibleItemsInfo
@@ -283,22 +305,26 @@ private fun GenreChips(genres: List<String>, picked: List<String>, onPick: (List
             verticalArrangement = Arrangement.spacedBy(CHIP_GAP),
             horizontalItemSpacing = CHIP_GAP,
         ) {
-            item { GenreChip("All", selected = picked.isEmpty(), onClick = { onPick(emptyList()) }) }
+            item { FilterToggle("All", selected = picked.isEmpty(), onClick = { onPick(emptyList()) }) }
             items(genres, key = { it }) { genre ->
                 val selected = genre in picked
-                GenreChip(genre, selected, onClick = { onPick(if (selected) picked - genre else picked + genre) })
+                FilterToggle(genre, selected, onClick = { onPick(if (selected) picked - genre else picked + genre) })
             }
         }
     }
 }
 
+/** A compact chip that turns a filter on and off. Put it where the minimum touch target is turned off, or Material pads
+ * it out to one. */
 @Composable
-private fun GenreChip(label: String, selected: Boolean, onClick: () -> Unit) {
+fun FilterToggle(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     FilterChip(
         selected = selected,
         onClick = onClick,
-        label = { Text(label, style = MaterialTheme.typography.labelMedium) },
-        modifier = Modifier.height(CHIP_HEIGHT),
+        label = {
+            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        },
+        modifier = modifier.height(CHIP_HEIGHT),
     )
 }
 
@@ -410,7 +436,7 @@ private fun ChooseFolder(onChooseFolder: () -> Unit) {
 private const val PULL_GRACE_MS = 1000L
 
 private val CHIP_HEIGHT = 28.dp
-private val CHIP_GAP = 6.dp
+val CHIP_GAP = 6.dp
 
 private val SCROLL_BAR_WIDTH = 3.dp
 private val SCROLL_BAR_MARGIN = 3.dp
