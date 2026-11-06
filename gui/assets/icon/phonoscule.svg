@@ -41,7 +41,7 @@
     </linearGradient>
 
     <!-- Two beamed eighth notes for the playing cover, one eighth for each neighbour, embossed in
-         leather: the face a dark grey tinted by the cover under it, grained, lit along its upper left
+         leather: the face a dusky violet, grained, lit along its upper left
          edges and shadowed along its lower right. Each rim is the note nudged that way, less the
          note itself, so neither shows under the face. The face's colour comes from where the note
          is put. -->
@@ -84,15 +84,15 @@
       <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.48" mask="url(#beamed-eighths-dark-rim)"/>
       <use href="#beamed-eighths-shape" filter="url(#leather)"/>
     </g>
-    <!-- The faces: each cover's colour, 0.55 of the way to #2b2b30, in the frame a note is drawn in.
-         The near pair's run with their covers' shading, from the outer edge to the inner. -->
+    <!-- The faces: a dusky violet, hsl(280, 25%, 35%), in the frame a note is drawn in. The near
+         pair's darken with their covers' shading, from the outer edge to the inner. -->
     <linearGradient id="near-left-face" x1="11.25" y1="0" x2="111.25" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#51578d"/>
-      <stop offset="1" stop-color="#41456d"/>
+      <stop offset="0" stop-color="#5b3f69"/>
+      <stop offset="1" stop-color="#483253"/>
     </linearGradient>
     <linearGradient id="near-right-face" x1="90.25" y1="0" x2="-9.75" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#79547c"/>
-      <stop offset="1" stop-color="#5e4361"/>
+      <stop offset="0" stop-color="#563b63"/>
+      <stop offset="1" stop-color="#432f4e"/>
     </linearGradient>
     <!-- Leather grain, in the same frame: each colour times 0.82 to 1.18 with fine mottled noise. -->
     <filter id="leather" x="-10" y="-10" width="120" height="120" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
@@ -156,7 +156,7 @@
     </g>
     <g mask="url(#middle-reflection)">
       <rect x="66" y="156" width="124" height="124" fill="#b39dff" filter="url(#linen)"/>
-      <use href="#beamed-eighths" fill="#685e8d" transform="matrix(1.24 0 0 -1.24 66 280)"/>
+      <use href="#beamed-eighths" fill="#614370" transform="matrix(1.24 0 0 -1.24 66 280)"/>
     </g>
     <g clip-path="url(#near-right-shown)" mask="url(#near-right-reflection)">
       <rect width="256" height="256" fill="url(#near-right)" filter="url(#linen)"/>
@@ -172,6 +172,6 @@
     <polygon points="178,45 235,41 233,141 177,127" fill="url(#near-right)" filter="url(#linen)"/>
     <use href="#eighth" fill="url(#near-right-face)" transform="matrix(0.5724 0.0518 -0.0147 0.9114 180.60 40.87)"/>
     <rect x="66" y="32" width="124" height="124" fill="#b39dff" filter="url(#linen)"/>
-    <use href="#beamed-eighths" fill="#685e8d" transform="matrix(1.24 0 0 1.24 66 32)"/>
+    <use href="#beamed-eighths" fill="#614370" transform="matrix(1.24 0 0 1.24 66 32)"/>
   </g>
 </svg>
