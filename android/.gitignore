@@ -1,0 +1,10 @@
+# Gradle
+/app/.gradle/
+/app/build/
+# Machine-specific SDK path; the build gets ANDROID_HOME from the justfile instead.
+/app/local.properties
+# Built by the cargoNdk Gradle task from the Rust crate; never hand-edited.
+/app/jniLibs/
+
+# Default output of `just screenshot`.
+/screenshot.png
