@@ -468,12 +468,13 @@ fun CoverImage(cover: Long?, accent: Int?, edge: androidx.compose.ui.unit.Dp, mo
 /** An album's accent as a colour, or a dim grey before it is known. */
 fun accentColor(accent: Int?): Color = accent?.let { Color(0xff000000 or it.toLong()) } ?: Color(0xff2a2a30)
 
-/** A bar floating over the library, as the desktop player's are: glass, the `accent` darkened and translucent. */
-private fun glass(accent: Color) = Color(accent.red * 0.18f, accent.green * 0.18f, accent.blue * 0.18f, 0.68f)
+/** A bar floating over what it serves, as the desktop player's do: glass, the `accent` darkened and translucent, if a
+ * little less so than the desktop's. */
+fun glass(accent: Color) = Color(accent.red * 0.18f, accent.green * 0.18f, accent.blue * 0.18f, 0.8f)
 
 /** The glass's edge where it meets what it floats over, catching the light. */
 @Composable
-private fun GlassEdge(accent: Color) {
+fun GlassEdge(accent: Color) {
     val edge = Color(accent.red * 0.7f, accent.green * 0.7f, accent.blue * 0.7f, 0.35f)
     Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(edge))
 }

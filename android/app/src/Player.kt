@@ -109,9 +109,13 @@ fun PlayerScreen() {
             if (showTracks) RunTracks(queue, playback, modifier = Modifier.align(Alignment.BottomCenter))
         }
 
-        NowPlaying(playback)
-        SeekBar(playback, glow)
-        Transport(playback)
+        // On the glass the library's bars are of, tinted with the glow.
+        Column(modifier = Modifier.fillMaxWidth().background(glass(glow))) {
+            GlassEdge(glow)
+            NowPlaying(playback)
+            SeekBar(playback, glow)
+            Transport(playback)
+        }
     }
 }
 
