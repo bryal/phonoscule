@@ -4,7 +4,7 @@
     The same mark for 16, 24 and 32 pixels, where the full one (./phonoscule.svg) turns to mud: one
     cover either side rather than two, all of them larger, and the perspective a little steeper so a
     side cover still narrows towards the middle when it is three pixels wide. The reflections are
-    the full one's.
+    the full one's, and so is the note on the playing cover; one on a side cover would be a smudge.
 
     Edges sit on whole pixels at 16 and 32, where a unit is 16 and 8 of them. A side cover is drawn
     only where it shows, from the edge to the playing cover.
@@ -21,6 +21,15 @@
       <stop offset="1" stop-color="#5a46c8"/>
     </linearGradient>
     <linearGradient id="right" href="#left" x1="1" x2="0"/>
+
+    <!-- The full mark's sixteenth note, in a cover's own 100-unit square. -->
+    <path id="flag" d="M0,0 C1.5,8 8.5,12 12.5,18 C16.5,24 17.5,33 13.5,42 C15.5,33 12.5,27 7.5,22 C4.5,19 1.5,15 0,11 Z"/>
+    <g id="sixteenth" fill="#ffffff">
+      <ellipse cx="42" cy="72" rx="15.5" ry="11" transform="rotate(-24 42 72)"/>
+      <rect x="51.5" y="14" width="6" height="58"/>
+      <use href="#flag" transform="translate(57.5 14) scale(1 0.8)"/>
+      <use href="#flag" transform="translate(57.5 28) scale(1 0.8)"/>
+    </g>
 
     <linearGradient id="fade" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
@@ -48,10 +57,14 @@
   <g transform="translate(0 16)">
     <polygon points="0,160 48,144 48,240 0,288" fill="url(#left)" mask="url(#left-reflection)"/>
     <polygon points="208,144 256,160 256,288 208,240" fill="url(#right)" mask="url(#right-reflection)"/>
-    <rect x="48" y="176" width="160" height="160" fill="url(#cover-mirrored)" mask="url(#middle-reflection)"/>
+    <g mask="url(#middle-reflection)">
+      <rect x="48" y="176" width="160" height="160" fill="url(#cover-mirrored)"/>
+      <use href="#sixteenth" transform="matrix(1.6 0 0 -1.6 48 336)"/>
+    </g>
 
     <polygon points="0,32 48,48 48,144 0,160" fill="url(#left)"/>
     <polygon points="208,48 256,32 256,160 208,144" fill="url(#right)"/>
     <rect x="48" y="16" width="160" height="160" fill="url(#cover)"/>
+    <use href="#sixteenth" transform="matrix(1.6 0 0 1.6 48 16)"/>
   </g>
 </svg>
