@@ -85,14 +85,15 @@
       <use href="#beamed-eighths-shape" filter="url(#leather)"/>
     </g>
     <!-- The faces: a dusky indigo, hsl(250, 35%, 30%), in the frame a note is drawn in. The near
-         pair's darken with their covers' shading, from the outer edge to the inner. -->
+         pair's hues step from it as their covers' do from the playing cover's, to 230 and 296, and
+         they darken with their covers' shading, from the outer edge to the inner. -->
     <linearGradient id="near-left-face" x1="11.25" y1="0" x2="111.25" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#372f61"/>
-      <stop offset="1" stop-color="#2c254d"/>
+      <stop offset="0" stop-color="#2f3761"/>
+      <stop offset="1" stop-color="#252b4d"/>
     </linearGradient>
     <linearGradient id="near-right-face" x1="90.25" y1="0" x2="-9.75" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#342c5b"/>
-      <stop offset="1" stop-color="#292348"/>
+      <stop offset="0" stop-color="#582c5b"/>
+      <stop offset="1" stop-color="#462348"/>
     </linearGradient>
     <!-- Leather grain, in the same frame: each colour times 0.82 to 1.18 with fine mottled noise. -->
     <filter id="leather" x="-10" y="-10" width="120" height="120" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
