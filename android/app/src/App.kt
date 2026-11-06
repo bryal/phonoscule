@@ -89,11 +89,11 @@ object App {
         thread(name = "phonoscule-adopt") {
             try {
                 val adopted = Storage.adopt(context, tree)
+                if (storage?.tree != adopted.tree) Core.clear()
                 main.post {
-                    val changed = storage?.tree != adopted.tree
+                    // Before the scan, which the workers serve from it.
                     storage = adopted
-                    if (changed) Core.clear()
-                    Core.scan()
+                    this.command { Core.scan() }
                 }
             } catch (e: Exception) {
                 main.post { Toast.makeText(context, e.message ?: e.toString(), Toast.LENGTH_LONG).show() }
@@ -115,15 +115,15 @@ object App {
         foreground = false
     }
 
-    /** Run `action` on a thread of its own, toasting rather than crashing if the core refuses. For commands, which
-     * are quick but should not hold up a frame. */
+    /** Run `action` on a thread of its own, toasting rather than crashing if it fails. For commands, which are quick
+     * but should not hold up a frame. */
     fun command(action: () -> Unit) {
         thread(name = "phonoscule-command") {
             try {
                 action()
-            } catch (e: CoreException) {
-                Log.e(TAG, "core: ${e.message}")
-                main.post { Toast.makeText(context, e.message, Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) {
+                Log.e(TAG, "command failed", e)
+                main.post { Toast.makeText(context, e.message ?: e.toString(), Toast.LENGTH_LONG).show() }
             }
         }
     }
@@ -132,8 +132,8 @@ object App {
         while (true) {
             val notices = try {
                 Core.nextNotices()
-            } catch (e: CoreException) {
-                Log.e(TAG, "notices: ${e.message}")
+            } catch (e: Exception) {
+                Log.e(TAG, "notices", e)
                 Thread.sleep(1000)
                 continue
             }
@@ -145,18 +145,38 @@ object App {
 
     private fun apply(notices: Notices) {
         scanning = notices.scanning
-        if (notices.library) libraryVersion++
-        if (notices.queue) queueVersion++
-        if (notices.queue || notices.library) for (listener in queueListeners.toList()) listener()
+        if (notices.queue) {
+            queueVersion++
+            for (listener in queueListeners.toList()) listener()
+        }
         if (notices.covers.isNotEmpty()) {
             Covers.forgetMissing()
-            coversVersion++
+            coversChanged = true
         }
+        if (notices.library || coversChanged) this.libraryChanged()
         notices.playback?.let { new ->
             playback = new
             for (listener in playbackListeners.toList()) listener(new)
         }
     }
 
+    private var libraryChangePending = false
+    private var coversChanged = false
+
+    /** Tell whatever shows the albums or their covers to ask again, at most a few times a second: a scan streams its
+     * albums in one by one, and every list showing them would otherwise be rebuilt for each. */
+    private fun libraryChanged() {
+        if (libraryChangePending) return
+        libraryChangePending = true
+        main.postDelayed({
+            libraryChangePending = false
+            libraryVersion++
+            if (coversChanged) coversVersion++
+            coversChanged = false
+            for (listener in queueListeners.toList()) listener()
+        }, LIBRARY_CHANGE_MS)
+    }
+
+    private const val LIBRARY_CHANGE_MS = 300L
     private const val TAG = "phonoscule"
 }

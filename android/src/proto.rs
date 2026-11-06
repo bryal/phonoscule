@@ -167,10 +167,10 @@ pub enum Response {
         /// `None` if the artwork has not been found by a scan yet, or will not decode.
         path: Option<String>,
     },
+    /// What plays in it is [`Playback::current`].
     Queue {
         tracks: Vec<QueueTrack>,
         runs: Vec<Run>,
-        current: usize,
     },
     Playback {
         playback: Playback,
@@ -407,14 +407,13 @@ pub fn dispatch(request: Request) -> anyhow::Result<Response> {
             Response::Cover { path: core.cover(id).map(|path| path.to_string_lossy().into_owned()) }
         }
         (core, Request::Queue) => {
-            let (tracks, runs, current) = core.queue();
+            let (tracks, runs) = core.queue();
             Response::Queue {
                 tracks: tracks.into_iter().map(|item| QueueTrack { title: item.title, album: item.album_id }).collect(),
                 runs: runs
                     .into_iter()
                     .map(|run| Run { start: run.start, end: run.end, album: run.album.map(AlbumHeader::of) })
                     .collect(),
-                current,
             }
         }
         (core, Request::Play { albums, track }) => {

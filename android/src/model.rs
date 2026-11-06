@@ -25,6 +25,9 @@ const THUMB_EDGE: u32 = 64;
 
 /// The order the library starts in, before the listener picks one: by artist, then by year within
 /// each artist, as in the terminal player.
+/// How near a reported position must come to a pending seek's target for the seek to have landed.
+const SEEK_SETTLE: Duration = Duration::from_secs(1);
+
 const INITIAL_SORT: SortOrder = SortOrder { group_by_artist: Some(Dir::Asc), field: SortField::Year, field_dir: Dir::Asc };
 
 /// Where the core keeps its own files. The listener's music is never among them: that is read
@@ -58,19 +61,6 @@ pub struct QueueItem {
     pub path: PathBuf,
     pub album_id: u64,
     pub title: String,
-}
-
-/// The queue's contiguous runs of tracks from one album, as ranges into the queue. The cover flow
-/// shows one cover per run.
-pub fn album_runs(queue: &[QueueItem]) -> Vec<std::ops::Range<usize>> {
-    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
-    for (ix, item) in queue.iter().enumerate() {
-        match runs.last_mut() {
-            Some(run) if queue[run.start].album_id == item.album_id => run.end = ix + 1,
-            _ => runs.push(ix..ix + 1),
-        }
-    }
-    runs
 }
 
 /// What changed since Kotlin last asked. See [`Core::wait_notices`].
@@ -108,6 +98,11 @@ struct State {
     sort: SortOrder,
     scanning: bool,
     rescan_queued: bool,
+    /// Where the listener last seeked to, until the engine reports a position near it. Reports
+    /// already on their way when the seek was sent would otherwise drag the bar back.
+    pending_seek: Option<Duration>,
+    /// [`Saf::failed_listings`] when the running scan started.
+    failures_before_scan: u64,
 }
 
 pub struct Core {
@@ -201,6 +196,8 @@ impl Core {
             sort: restored.sort.unwrap_or(INITIAL_SORT),
             scanning: false,
             rescan_queued: false,
+            pending_seek: None,
+            failures_before_scan: 0,
         };
         Core { saf, paths, engine, state: Mutex::new(state), changes: Mutex::new(Changes::default()), changed: Condvar::new() }
     }
@@ -289,7 +286,7 @@ impl Core {
             return;
         }
         let options = {
-            let state = self.state();
+            let mut state = self.state();
             // A cover whose full-size copy is cached already, with its accent in the index, needs
             // nothing from its artwork. Telling the scan so saves decoding every sleeve again.
             let known_covers = state
@@ -299,10 +296,11 @@ impl Core {
                 .filter_map(|a| a.cover_id)
                 .filter(|&id| library::cover_file(&self.paths.full_covers, id, library::FULL_FORMAT).exists())
                 .collect();
+            state.failures_before_scan = self.saf.failed_listings();
             library::ScanOptions {
                 fs: Arc::clone(&self.saf) as Arc<dyn Fs>,
                 root: PathBuf::from(saf::ROOT),
-                priority: cover_priority(&state.queue, state.current),
+                priority: queue::outward(&state.queue.iter().map(|item| item.album_id).collect::<Vec<_>>(), state.current),
                 known_covers,
                 cache_file: Some(self.paths.tag_cache.clone()),
                 covers_dir: Some(self.paths.thumbs.clone()),
@@ -351,8 +349,14 @@ impl Core {
                 None
             }
             ScanEvent::Done { album_ids } => {
-                let found: HashSet<u64> = album_ids.into_iter().collect();
-                state.albums.retain(|a| found.contains(&a.id));
+                // A directory the scan could not list is not a directory that is gone: its albums stay
+                // until a scan that reads everything says otherwise.
+                if self.saf.failed_listings() == state.failures_before_scan {
+                    let found: HashSet<u64> = album_ids.into_iter().collect();
+                    state.albums.retain(|a| found.contains(&a.id));
+                } else {
+                    log::warn!("some of the music folder could not be listed, so no albums are dropped");
+                }
                 let State { albums, queue, .. } = &mut *state;
                 hydrate(albums, queue);
                 let save = library::save_index(Some(self.paths.album_index.clone()), &state.albums);
@@ -389,7 +393,8 @@ impl Core {
     pub fn genres(&self) -> Vec<String> {
         let state = self.state();
         let mut genres: Vec<String> = state.albums.iter().map(|a| a.genre.clone()).filter(|g| !g.is_empty()).collect();
-        genres.sort_by_key(|g| g.to_lowercase());
+        // Case only breaks ties, so that equal genres end up next to each other for `dedup`.
+        genres.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)));
         genres.dedup();
         genres
     }
@@ -420,24 +425,28 @@ impl Core {
 
     // ----- The queue -----
 
-    pub fn queue(&self) -> (Vec<QueueItem>, Vec<Run>, usize) {
+    pub fn queue(&self) -> (Vec<QueueItem>, Vec<Run>) {
         let state = self.state();
-        let runs = album_runs(&state.queue)
+        let albums: HashMap<u64, &Album> = state.albums.iter().map(|a| (a.id, a)).collect();
+        let runs = queue::runs(state.queue.iter().map(|item| item.album_id))
             .into_iter()
             .map(|run| Run {
-                album: state.albums.iter().find(|a| a.id == state.queue[run.start].album_id).map(AlbumRef::of),
+                album: albums.get(&state.queue[run.start].album_id).map(|a| AlbumRef::of(a)),
                 start: run.start,
                 end: run.end,
             })
             .collect();
-        (state.queue.clone(), runs, state.current)
+        (state.queue.clone(), runs)
     }
 
     /// Replaces the queue with the tracks of `albums`, and plays from track `track` of the first.
     pub fn play(&self, albums: &[u64], track: usize) {
         let mut state = self.state();
         let items = items_of(&state.albums, albums);
-        let start = track.min(items.len().saturating_sub(1));
+        if items.is_empty() {
+            return;
+        }
+        let start = track.min(items.len() - 1);
         self.send(player::Cmd::SetQueue { tracks: entries(&items), start, play: PlayState::Playing });
         state.queue = items;
         state.current = start;
@@ -533,10 +542,7 @@ impl Core {
     }
 
     pub fn set_playing(&self, playing: bool) {
-        let state = self.state();
-        if (state.play_state == PlayState::Playing) != playing {
-            self.send(player::Cmd::TogglePlayPause);
-        }
+        self.send(player::Cmd::SetPlayState(if playing { PlayState::Playing } else { PlayState::Paused }));
     }
 
     pub fn toggle_playing(&self) {
@@ -555,6 +561,7 @@ impl Core {
     pub fn seek(&self, to: Duration) {
         let mut state = self.state();
         state.position = state.length.map_or(to, |len| to.min(len));
+        state.pending_seek = Some(state.position);
         self.send(player::Cmd::Seek(state.position));
         drop(state);
         self.note(|c| c.playback = true);
@@ -575,9 +582,16 @@ impl Core {
                 state.current = ix;
                 state.length = len;
                 state.position = Duration::ZERO;
+                state.pending_seek = None;
                 track_changed = true;
             }
-            player::Event::Progress(pos) => state.position = pos,
+            player::Event::Progress(pos) => {
+                if state.pending_seek.is_some_and(|target| pos.abs_diff(target) > SEEK_SETTLE) {
+                    return;
+                }
+                state.pending_seek = None;
+                state.position = pos;
+            }
             player::Event::PlayState(play_state) => state.play_state = play_state,
             player::Event::QueueEnded => {
                 state.play_state = PlayState::Paused;
@@ -647,24 +661,6 @@ fn hydrate(albums: &[Album], queue: &mut [QueueItem]) {
     }
 }
 
-/// The queue's albums circularly outward from the playing one: the order the cover flow wants its
-/// covers in.
-fn cover_priority(queue: &[QueueItem], current: usize) -> Vec<u64> {
-    let mut ids = Vec::new();
-    let mut seen = HashSet::new();
-    let n = queue.len();
-    for d in 0..n {
-        for ix in [current.saturating_add(d), current.wrapping_sub(d)] {
-            if let Some(item) = queue.get(ix)
-                && seen.insert(item.album_id)
-            {
-                ids.push(item.album_id);
-            }
-        }
-    }
-    ids
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -715,7 +711,7 @@ mod test {
 
         let core: &'static Core = Box::leak(Box::new(Core::new(Paths::new(&root.join("files"), &root.join("cache")))));
         core.follow_engine();
-        saf::test::serve(Arc::clone(&core.saf), music);
+        saf::test::serve(Arc::clone(&core.saf), music.clone());
         core.scan();
         await_scan(core);
 
@@ -730,10 +726,26 @@ mod test {
         let cover = core.cover(first.cover_id.expect("a cover was found")).expect("a cover file");
         assert!(image::open(&cover).is_ok(), "the cover is a file anything can decode");
 
+        // A folder that cannot be listed keeps its albums, where a folder that is gone loses them.
+        use std::os::unix::fs::PermissionsExt;
+        let second = music.join("B");
+        std::fs::set_permissions(&second, std::fs::Permissions::from_mode(0o000)).unwrap();
+        core.scan();
+        await_scan(core);
+        std::fs::set_permissions(&second, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(core.albums("", None).len(), 2, "the unreadable folder's album is kept");
+        std::fs::rename(&second, root.join("B-gone")).unwrap();
+        core.scan();
+        await_scan(core);
+        assert_eq!(core.albums("", None).len(), 1, "the missing folder's album is dropped");
+        std::fs::rename(root.join("B-gone"), &second).unwrap();
+        core.scan();
+        await_scan(core);
+
         core.play(&[first.id, albums[1].id], 1);
-        let (queue, runs, current) = core.queue();
+        let (queue, runs) = core.queue();
         assert_eq!(queue.len(), 3);
-        assert_eq!(current, 1);
+        assert_eq!(core.playback().current, Some(1));
         assert_eq!(runs.iter().map(|r| r.start..r.end).collect::<Vec<_>>(), [0..2, 2..3]);
         assert_eq!(core.playback().title, "Two");
 

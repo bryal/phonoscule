@@ -111,7 +111,6 @@ object Core {
             runs = resp.getJSONArray("runs").mapObjects {
                 Run(it.getInt("start"), it.getInt("end"), it.optObject("album")?.toAlbumHeader())
             },
-            current = resp.getInt("current"),
         )
     }
 
@@ -277,12 +276,13 @@ data class QueueTrack(val title: String, val album: Long)
 /** Queue indices `start` until `end` are tracks of one album: one cover in the cover flow. */
 data class Run(val start: Int, val end: Int, val album: AlbumHeader?)
 
-data class Queue(val tracks: List<QueueTrack>, val runs: List<Run>, val current: Int) {
-    /** The run holding the current track, or -1 if the queue is empty. */
-    val currentRun: Int get() = runs.indexOfFirst { current in it.start until it.end }
+/** The queue's tracks, and its runs of tracks from one album. What plays in it is [Playback.current]. */
+data class Queue(val tracks: List<QueueTrack>, val runs: List<Run>) {
+    /** The run holding queue index `track`, or -1 if none does. */
+    fun runOf(track: Int?): Int = runs.indexOfFirst { track != null && track in it.start until it.end }
 
     companion object {
-        val EMPTY = Queue(emptyList(), emptyList(), 0)
+        val EMPTY = Queue(emptyList(), emptyList())
     }
 }
 

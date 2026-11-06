@@ -134,7 +134,16 @@ class Workers(private val storage: () -> Storage?) {
     fun start() {
         repeat(COUNT) { n ->
             thread(name = "phonoscule-io-$n", isDaemon = true) {
-                while (true) this.serve(Core.nextOp())
+                while (true) {
+                    try {
+                        this.serve(Core.nextOp())
+                    } catch (e: Exception) {
+                        // The core has never failed to hand out an op or take an answer, but a worker lost to it would
+                        // be one fewer for good.
+                        Log.e(TAG, "io worker", e)
+                        Thread.sleep(1000)
+                    }
+                }
             }
         }
     }

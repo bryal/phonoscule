@@ -100,8 +100,11 @@ fun PlayerScreen(onBack: () -> Unit) {
             } else {
                 VerticalCoverFlow(
                     covers = covers,
-                    playing = queue.currentRun,
-                    onPlay = { run -> App.command { Core.jumpTo(queue.runs[run].start) } },
+                    playing = queue.runOf(playback.current),
+                    onPlay = { run ->
+                        val start = queue.runs[run].start
+                        App.command { Core.jumpTo(start) }
+                    },
                     onToggle = { App.command { Core.togglePlaying() } },
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -118,8 +121,9 @@ fun PlayerScreen(onBack: () -> Unit) {
 /** The tracks of the playing album run, as the desktop player lists them beside its flow. */
 @Composable
 private fun RunTracks(queue: Queue, playback: Playback, modifier: Modifier = Modifier) {
-    val run = queue.runs.getOrNull(queue.currentRun) ?: return
-    val state = rememberLazyListState(initialFirstVisibleItemIndex = (queue.current - run.start - 2).coerceAtLeast(0))
+    val current = playback.current ?: return
+    val run = queue.runs.getOrNull(queue.runOf(current)) ?: return
+    val state = rememberLazyListState(initialFirstVisibleItemIndex = (current - run.start - 2).coerceAtLeast(0))
     LazyColumn(
         state = state,
         modifier = modifier.fillMaxWidth().fillMaxHeight(0.5f).background(Color.Black.copy(alpha = 0.75f)),

@@ -59,6 +59,7 @@ fun VerticalCoverFlow(
     val currentPlaying by rememberUpdatedState(playing)
     val currentOnPlay by rememberUpdatedState(onPlay)
     val currentOnToggle by rememberUpdatedState(onToggle)
+    val currentCount by rememberUpdatedState(covers.size)
     val scope = rememberCoroutineScope()
     var dragging by remember { mutableStateOf(false) }
     // Bumped whenever the listener lets go, restarting the wait before drifting back.
@@ -97,37 +98,43 @@ fun VerticalCoverFlow(
 
     Canvas(
         modifier = modifier
-            .pointerInput(covers.size) {
+            .pointerInput(Unit) {
                 val tracker = VelocityTracker()
+                // Where the drag has taken the flow. Kept here, since a snap launched for one move has not
+                // necessarily landed by the next.
+                var target = 0f
+                val last = { (currentCount - 1).coerceAtLeast(0) }
                 detectVerticalDragGestures(
                     onDragStart = {
                         dragging = true
                         tracker.resetTracking()
+                        target = position.value
                         scope.launch { position.stop() }
                     },
                     onVerticalDrag = { change, dy ->
                         tracker.addPosition(change.uptimeMillis, change.position)
-                        val max = (covers.size - 1).coerceAtLeast(0) + OVERSCROLL
-                        val to = (position.value - dy / (coverPx * DRAG_PER_COVER)).coerceIn(-OVERSCROLL, max)
+                        target = (target - dy / (coverPx * DRAG_PER_COVER)).coerceIn(-OVERSCROLL, last() + OVERSCROLL)
+                        val to = target
                         scope.launch { position.snapTo(to) }
                     },
                     onDragEnd = {
                         dragging = false
                         val velocity = tracker.calculateVelocity().y / (coverPx * DRAG_PER_COVER)
-                        val target = (position.value - velocity * FLING_SECONDS).roundToInt().coerceIn(0, (covers.size - 1).coerceAtLeast(0))
-                        scope.launch { position.animateTo(target.toFloat(), SETTLE, initialVelocity = -velocity) }
+                        val rest = (target - velocity * FLING_SECONDS).roundToInt().coerceIn(0, last())
+                        scope.launch { position.animateTo(rest.toFloat(), SETTLE, initialVelocity = -velocity) }
                         browsed++
                     },
                     onDragCancel = {
                         dragging = false
+                        scope.launch { position.animateTo(target.roundToInt().coerceIn(0, last()).toFloat(), SETTLE) }
                         browsed++
                     },
                 )
             }
-            .pointerInput(covers.size) {
+            .pointerInput(Unit) {
                 detectTapGestures { tap ->
                     val flow = Flow(size.width.toFloat(), size.height.toFloat())
-                    val hit = flow.hitTest(covers.size, position.value, tap) ?: return@detectTapGestures
+                    val hit = flow.hitTest(currentCount, position.value, tap) ?: return@detectTapGestures
                     when {
                         hit != position.value.roundToInt() -> {
                             scope.launch { position.animateTo(hit.toFloat(), SETTLE) }

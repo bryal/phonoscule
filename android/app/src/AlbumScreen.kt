@@ -41,10 +41,22 @@ import kotlinx.coroutines.withContext
 @Composable
 fun AlbumScreen(id: Long, onBack: () -> Unit, onPlayed: () -> Unit) {
     var album by remember { mutableStateOf<AlbumDetail?>(null) }
+    var loaded by remember { mutableStateOf(false) }
     LaunchedEffect(id, App.libraryVersion) {
         album = withContext(Dispatchers.IO) { Core.album(id) }
+        loaded = true
     }
-    val detail = album ?: return
+    val detail = album
+    if (detail == null) {
+        // A rescan can take an album away while it is open.
+        if (loaded) {
+            Column(modifier = Modifier.padding(8.dp)) {
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                Text("This album is no longer in the library.", modifier = Modifier.padding(16.dp))
+            }
+        }
+        return
+    }
     val summary = detail.summary
     val accent = accentColor(summary.accent)
 

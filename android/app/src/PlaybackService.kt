@@ -23,7 +23,8 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
-import kotlin.concurrent.thread
+import kotlin.math.abs
+import java.util.concurrent.Executors
 
 /** Keeps playback going with the screen off, and puts it on the lock screen, in the notification shade, and under the
  * headset's buttons.
@@ -38,16 +39,19 @@ class PlaybackService : MediaSessionService() {
     private lateinit var focus: Focus
 
     private val onPlayback: (Playback) -> Unit = { playback ->
-        player.refresh()
+        player.follow(playback)
         focus.follow(playback.playing)
     }
 
+    /** Fetches the queue off the main thread. One thread, so that a slow fetch cannot land after a newer one. */
+    private val fetcher = Executors.newSingleThreadExecutor()
+
     private val onQueue: () -> Unit = {
-        thread(name = "phonoscule-session-queue") {
+        fetcher.execute {
             val queue = try {
                 Core.queue()
             } catch (e: CoreException) {
-                return@thread
+                return@execute
             }
             mainExecutor.execute { player.setQueue(queue) }
         }
@@ -80,6 +84,7 @@ class PlaybackService : MediaSessionService() {
         App.removePlaybackListener(onPlayback)
         App.removeQueueListener(onQueue)
         focus.follow(false)
+        fetcher.shutdown()
         session.release()
         player.release()
         super.onDestroy()
@@ -88,25 +93,40 @@ class PlaybackService : MediaSessionService() {
 
 /** The core's queue and playback, as a Media3 player: what the media session shows, and how its buttons reach the core.
  *
- * Holds no state of its own beyond the last queue it was given. Call [refresh] when the playback changes. */
+ * Holds no state of its own beyond the last queue it was given. Call [follow] when the playback changes. */
 @OptIn(UnstableApi::class)
 private class CorePlayer(looper: Looper) : SimpleBasePlayer(looper) {
     private var queue = Queue.EMPTY
 
+    /** The playback the state was last built for, and the playlist built with it. */
+    private var shown: Playback? = null
+    private var playlist = emptyList<MediaItemData>()
+
     fun setQueue(queue: Queue) {
         this.queue = queue
+        shown = null
         this.invalidateState()
     }
 
-    fun refresh() = this.invalidateState()
+    /** Rebuild the state if `playback` changed more than its position has, which the session extrapolates by itself
+     * while playing. A seek moves it further than playing could have. */
+    fun follow(playback: Playback) {
+        val last = shown
+        val same = last != null &&
+            last.copy(positionMs = 0) == playback.copy(positionMs = 0) &&
+            abs(playback.positionMs - last.positionMs) < SEEK_THRESHOLD_MS
+        if (!same) this.invalidateState()
+    }
 
     override fun getState(): State {
         val playback = App.playback
+        if (shown?.copy(positionMs = 0) != playback.copy(positionMs = 0)) playlist = this.playlist(playback)
+        shown = playback
         val builder = State.Builder()
             .setAvailableCommands(COMMANDS)
             .setPlayWhenReady(playback.playing, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
             .setPlaybackState(if (queue.tracks.isEmpty()) STATE_IDLE else STATE_READY)
-            .setPlaylist(this.playlist(playback))
+            .setPlaylist(playlist)
         val current = playback.current
         if (current != null && current in queue.tracks.indices) {
             builder.setCurrentMediaItemIndex(current)
@@ -161,6 +181,10 @@ private class CorePlayer(looper: Looper) : SimpleBasePlayer(looper) {
     }
 
     companion object {
+        /** How far the position may move between reports before it is taken for a seek rather than playing. Reports
+         * come at least twice a second. */
+        private const val SEEK_THRESHOLD_MS = 1500L
+
         private val COMMANDS = Player.Commands.Builder()
             .addAll(
                 COMMAND_PLAY_PAUSE,
@@ -228,7 +252,10 @@ private class Focus(private val context: Context) {
     fun follow(playing: Boolean) {
         if (playing && !held) {
             held = true
-            audio.requestAudioFocus(request)
+            // Refused during a call, say: then there is nothing to play over.
+            if (audio.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_FAILED) {
+                App.command { Core.setPlaying(false) }
+            }
             val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
             ContextCompat.registerReceiver(context, noisy, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
             wake.acquire()

@@ -74,11 +74,24 @@ pub struct Saf {
     /// Who is waiting on each op Kotlin has not answered yet.
     waiting: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
     next_id: AtomicU64,
+    /// How many listings have failed, so that a scan can tell a directory it could not read from one
+    /// that is gone.
+    failed_listings: AtomicU64,
 }
 
 impl Saf {
     pub fn new() -> Self {
-        Saf { ops: channel::unbounded(), waiting: Mutex::new(HashMap::new()), next_id: AtomicU64::new(0) }
+        Saf {
+            ops: channel::unbounded(),
+            waiting: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(0),
+            failed_listings: AtomicU64::new(0),
+        }
+    }
+
+    /// How many listings have failed since this was made.
+    pub fn failed_listings(&self) -> u64 {
+        self.failed_listings.load(Ordering::Relaxed)
     }
 
     /// The next op to perform, waiting for one if there is none.
@@ -128,7 +141,11 @@ impl Fs for Saf {
     fn read_dir<'a>(&'a self, dir: &'a Path) -> IoFuture<'a, Vec<DirEntry>> {
         Box::pin(async move {
             let path = name(dir)?;
-            match self.ask(|id| Op::ReadDir { id, path }).await? {
+            let answer = self.ask(|id| Op::ReadDir { id, path }).await;
+            if answer.is_err() {
+                self.failed_listings.fetch_add(1, Ordering::Relaxed);
+            }
+            match answer? {
                 Answer::Listing { entries } => Ok(entries
                     .into_iter()
                     .map(|entry| DirEntry {
