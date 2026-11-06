@@ -112,6 +112,8 @@ pub struct Core {
     paths: Paths,
     engine: player::Engine,
     state: Mutex<State>,
+    /// Held through each save of the session, so that saves land one at a time and the last holds the latest state.
+    saving: Mutex<()>,
     changes: Mutex<Changes>,
     changed: Condvar,
 }
@@ -173,9 +175,9 @@ impl Core {
         );
 
         let albums = smol::block_on(library::load_index(Some(paths.album_index.clone())));
-        let known: HashSet<&Path> = albums.iter().flat_map(|a| &a.tracks).map(|t| t.path.as_path()).collect();
-        let restored =
-            smol::block_on(session::load(Some(paths.playlist.clone()), Some(paths.player.clone()), |p| known.contains(p)));
+        // Every track, whether the index knows it or not: the index is a cache, which Android may clear, and the queue
+        // outlives it. A track gone from the music is skipped when it comes to play.
+        let restored = smol::block_on(session::load(Some(paths.playlist.clone()), Some(paths.player.clone()), |_| true));
         let mut queue: Vec<QueueItem> =
             restored.tracks.into_iter().map(|path| QueueItem { path, album_id: 0, title: String::new() }).collect();
         hydrate(&albums, &mut queue);
@@ -202,7 +204,15 @@ impl Core {
             pending_seek: None,
             failures_before_scan: 0,
         };
-        Core { saf, paths, engine, state: Mutex::new(state), changes: Mutex::new(Changes::default()), changed: Condvar::new() }
+        Core {
+            saf,
+            paths,
+            engine,
+            state: Mutex::new(state),
+            saving: Mutex::new(()),
+            changes: Mutex::new(Changes::default()),
+            changed: Condvar::new(),
+        }
     }
 
     /// Starts the thread that follows the engine. Call once, on the core that will live for good.
@@ -625,11 +635,13 @@ impl Core {
     // ----- The session -----
 
     fn save_playlist(&self) {
+        let _saving = self.saving.lock().unwrap_or_else(|e| e.into_inner());
         let tracks = self.state().queue.iter().map(|item| item.path.clone()).collect();
         smol::block_on(session::save_playlist(Some(self.paths.playlist.clone()), session::SavedPlaylist::new(tracks)));
     }
 
     fn save_player(&self) {
+        let _saving = self.saving.lock().unwrap_or_else(|e| e.into_inner());
         let saved = {
             let state = self.state();
             session::SavedPlayer::new(state.current, state.repeat, state.sort)
@@ -713,6 +725,24 @@ mod test {
         let list = [&b"INFO"[..], &info(b"INAM", title), &info(b"IART", artist), &info(b"IPRD", album)].concat();
         let riff = [&b"WAVE"[..], &chunk(b"fmt ", &fmt), &chunk(b"LIST", &list), &chunk(b"data", &[0; 4800 * 4])].concat();
         [&b"RIFF"[..], &(riff.len() as u32).to_le_bytes(), &riff].concat()
+    }
+
+    /// The queue outlives the album index, which sits among the caches Android may clear: a core that finds no index
+    /// still restores every track it was left with.
+    #[test]
+    fn restores_the_queue_without_the_index() {
+        let root = std::env::temp_dir().join(format!("phonoscule-android-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::new(&root.join("files"), &root.join("cache"));
+        std::fs::create_dir_all(root.join("files")).unwrap();
+        let tracks = vec![PathBuf::from("/A/First/1.wav"), PathBuf::from("/A/First/2.wav")];
+        smol::block_on(session::save_playlist(Some(paths.playlist.clone()), session::SavedPlaylist::new(tracks.clone())));
+
+        let core = Core::new(paths);
+        let (queue, _) = core.queue();
+        assert_eq!(queue.iter().map(|item| item.path.clone()).collect::<Vec<_>>(), tracks);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Waits out the scan that was just started.
