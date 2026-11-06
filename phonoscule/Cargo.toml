@@ -16,9 +16,11 @@ default = []
 dirs = []
 # The shared TOML config file (see `config`). Wants std and a filesystem.
 config = ["dirs", "dep:smol", "dep:toml_edit", "dep:shellexpand", "dep:anyhow", "log/std"]
+# Reading the music through something other than plain paths (see `fs`). Wants std.
+fs = ["dep:smol"]
 # Scanning a music directory into albums, with cover thumbnails (see `library`). Wants std and a
 # filesystem.
-library = ["dep:smol", "dep:futures", "dep:serde", "dep:serde_json", "dep:image", "dep:embedded-io-adapters", "log/std"]
+library = ["fs", "dep:smol", "dep:futures", "dep:serde", "dep:serde_json", "dep:image", "dep:embedded-io-adapters", "log/std"]
 # Album ordering (see `sort`).
 sort = ["library", "dep:serde"]
 # Reordering a play queue (see `queue`).
@@ -32,7 +34,7 @@ session = ["player", "sort", "dep:smol", "dep:serde", "dep:serde_json", "log/std
 # Windows. Split from `player` so a program that drives the decoders itself can still just play.
 sink = ["dep:pulse-simple", "dep:windows", "dep:windows-core", "log/std"]
 # The play-queue engine (see `player`). Wants std, a filesystem, and audio output.
-player = ["sink", "dep:smol", "dep:embedded-io-adapters", "dep:serde", "log/std"]
+player = ["fs", "sink", "dep:smol", "dep:embedded-io-adapters", "dep:serde", "log/std"]
 # Per-application volume through the OS mixer (see `volume`). Wants std.
 volume = ["dep:smol", "dep:libpulse-binding", "dep:windows", "log/std"]
 # Watching the music directory for changes (see `watcher`). Wants std and a filesystem.

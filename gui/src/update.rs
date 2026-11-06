@@ -1077,6 +1077,7 @@ fn next_album(app: &App) {
 /// priority -- the covers that matter are long known by now.
 fn rescan_options(app: &App) -> library::ScanOptions {
     library::ScanOptions {
+        fs: std::sync::Arc::new(phonoscule::fs::Local),
         root: app.conf.music_dir.clone(),
         priority: vec![],
         known_covers: app.albums.iter().filter_map(|a| a.cover.as_ref().map(|c| c.id)).collect(),
@@ -1164,7 +1165,8 @@ fn ensure_covers(app: &mut App) -> Task<Msg> {
 /// from the full-size cache) when the cache holds nothing for it yet.
 fn query_hires(app: &mut App, id: u64, file: &Arc<PathBuf>) -> Task<Msg> {
     let cache_path = app.full_covers_dir.as_ref().map(|dir| library::cover_file(dir, id, library::FULL_FORMAT));
-    let load = library::load_full_cover((**file).clone(), cache_path, library::FULL);
+    let file = Arc::clone(file);
+    let load = async move { library::load_full_cover(&phonoscule::fs::Local, &file, cache_path, library::FULL).await };
     app.hires.query(id, Task::perform(load, move |pixels| Msg::HiResLoaded { id, pixels }))
 }
 

@@ -741,6 +741,7 @@ pub enum Scan {
 /// Options for a scan.
 pub fn scan_options(model: &Model, phase: Scan) -> library::ScanOptions {
     library::ScanOptions {
+        fs: std::sync::Arc::new(phonoscule::fs::Local),
         root: model.conf.music_dir.clone(),
         priority: vec![],
         // Re-reading a known cover costs a file read, an RGBA expansion and an accent histogram, all
@@ -1091,7 +1092,10 @@ mod test {
         // Restored with no library at all: the paths are all there is to show.
         let conf = phonoscule::config::Conf::new("tui", "/music".into());
         let covers = crate::covers::Covers::default();
-        let engine = player::start(player::Client { name: "restore-test".into(), description: String::new() });
+        let engine = player::start(
+            player::Client { name: "restore-test".into(), description: String::new() },
+            std::sync::Arc::new(phonoscule::fs::Local),
+        );
         let mut model = Model::restored(conf, covers, engine, vec![], restored);
         assert_eq!(model.queue.len(), paths.len());
         assert!(model.queue.iter().all(|item| item.album_id == 0), "no album is known yet");

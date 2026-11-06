@@ -369,10 +369,13 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
     move || {
         let (media, media_worker) = media::start("Phonoscule", "phonoscule");
         let mut app = App {
-            engine: player::start(player::Client {
-                name: "phonoscule-gui".into(),
-                description: "GUI application based on the Phonoscule music player library".into(),
-            }),
+            engine: player::start(
+                player::Client {
+                    name: "phonoscule-gui".into(),
+                    description: "GUI application based on the Phonoscule music player library".into(),
+                },
+                std::sync::Arc::new(phonoscule::fs::Local),
+            ),
             media,
             mixer: volume::start(),
             watcher: watcher::start(&conf.music_dir),
@@ -464,6 +467,7 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             }
         }
         let options = library::ScanOptions {
+            fs: std::sync::Arc::new(phonoscule::fs::Local),
             root: conf.music_dir.clone(),
             // Dress the restored queue's covers first, outward from the playing album: they're
             // what a session booting into the player is looking at.

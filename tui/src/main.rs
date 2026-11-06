@@ -80,17 +80,20 @@ fn run() -> anyhow::Result<()> {
     let logs = logger::start();
     let conf = smol::block_on(config::load(APP, arg_conf_path))?;
     let index = smol::block_on(library::load_index(paths::album_index_file()));
-    let restored = smol::block_on(session::load(paths::playlist_file(), paths::player_file()));
+    let restored = smol::block_on(session::load(paths::playlist_file(), paths::player_file(), std::path::Path::exists));
 
     // Installs a panic hook that restores the terminal first, so a panic leaves a usable shell
     // rather than a raw-mode one with the alternate screen still up.
     let mut terminal = ratatui::init();
     // Between entering the alternate screen and reading any terminal event, which is where the
     // protocol query has to happen (it writes to stdout and reads the reply from stdin).
-    let engine = player::start(player::Client {
-        name: "phonoscule-tui".into(),
-        description: "Terminal application based on the Phonoscule music player library".into(),
-    });
+    let engine = player::start(
+        player::Client {
+            name: "phonoscule-tui".into(),
+            description: "Terminal application based on the Phonoscule music player library".into(),
+        },
+        std::sync::Arc::new(phonoscule::fs::Local),
+    );
     let covers = covers::Covers::default();
     let model = Model::restored(conf, covers, engine, index, restored);
     // The query's bytes went out behind ratatui's back, and a terminal that did not understand them

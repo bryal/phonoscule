@@ -31,7 +31,13 @@ use std::{
     time::SystemTime,
 };
 
-use crate::{io::Skippable, metadata::Tag, opus, wav::Wav};
+use crate::{
+    fs::{DirEntry, Fs},
+    io::Skippable,
+    metadata::Tag,
+    opus,
+    wav::Wav,
+};
 use embedded_io_adapters::futures_03::FromFutures;
 use embedded_io_async::{Read as _, Seek as _, SeekFrom};
 use futures::{StreamExt, stream};
@@ -137,6 +143,9 @@ pub enum ScanEvent {
 }
 
 pub struct ScanOptions {
+    /// Where the music is read from. The caches below are read and written as local paths
+    /// regardless.
+    pub fs: Arc<dyn Fs>,
     pub root: PathBuf,
     /// Album ids whose directories are scanned (and thus whose covers load) before everything
     /// else, in this order -- e.g. the restored queue's albums, circularly outward from the
@@ -332,8 +341,9 @@ impl Pixels {
     }
 }
 
-/// A decode to run: the artwork, the square edge to fit it to, and what to hand back.
-type Request = (PathBuf, u32, Pixels, futures::channel::oneshot::Sender<Option<Vec<u8>>>);
+/// A decode to run: the artwork opened, its path for the log, the square edge to fit it to, and what
+/// to hand back.
+type Request = (std::fs::File, PathBuf, u32, Pixels, futures::channel::oneshot::Sender<Option<Vec<u8>>>);
 
 /// Decodes a cover from its original artwork to `edge`²  in `pixels`, center-cropped.
 ///
@@ -345,7 +355,7 @@ type Request = (PathBuf, u32, Pixels, futures::channel::oneshot::Sender<Option<V
 /// the *whole* source image -- several tens of megabytes for a large sleeve -- and a pool that grows
 /// on demand will happily hold a hundred of them at once. Requests queue; the queue is cheap, the
 /// concurrency is what costs.
-pub async fn decode_cover(file: PathBuf, edge: u32, pixels: Pixels) -> Option<Vec<u8>> {
+pub async fn decode_cover(fs: &dyn Fs, file: &Path, edge: u32, pixels: Pixels) -> Option<Vec<u8>> {
     use futures::channel::oneshot;
     static DECODER_THREADS: LazyLock<(channel::Sender<Request>, [thread::JoinHandle<()>; DECODER_THREAD_COUNT])> =
         LazyLock::new(|| {
@@ -353,8 +363,11 @@ pub async fn decode_cover(file: PathBuf, edge: u32, pixels: Pixels) -> Option<Ve
             let threads = std::array::from_fn(|_thread_ix| {
                 let req_rx = req_rx.clone();
                 thread::spawn(move || {
-                    while let Ok((file, edge, pixels, resp_tx)) = req_rx.recv_blocking() {
-                        let decoded = image::open(&file)
+                    while let Ok((opened, file, edge, pixels, resp_tx)) = req_rx.recv_blocking() {
+                        let decoded = image::ImageReader::new(std::io::BufReader::new(opened))
+                            .with_guessed_format()
+                            .map_err(image::ImageError::IoError)
+                            .and_then(|reader| reader.decode())
                             .inspect_err(|e| log::warn!("could not decode cover {file:?}: {e}"))
                             .ok()
                             .map(|img| {
@@ -374,11 +387,14 @@ pub async fn decode_cover(file: PathBuf, edge: u32, pixels: Pixels) -> Option<Ve
             (req_tx, threads)
         });
 
+    let opened = fs.open(file).await.inspect_err(|e| log::warn!("could not open cover {file:?}: {e}")).ok()?;
     let (resp_tx, resp_rx) = oneshot::channel();
     let (req_tx, _) = &*DECODER_THREADS;
     // Never blocks in practice: the channel is unbounded. Keep it that way, or this needs to become
     // an await.
-    req_tx.send_blocking((file, edge, pixels, resp_tx)).expect("decoder threads should never exit on their own accord");
+    req_tx
+        .send_blocking((opened, file.to_path_buf(), edge, pixels, resp_tx))
+        .expect("decoder threads should never exit on their own accord");
     resp_rx.await.ok().flatten()
 }
 
@@ -690,6 +706,7 @@ async fn emit_albums(
 
 async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     log::info!("scanning {:?}", options.root);
+    let fs = &*options.fs;
     let cache = match &options.cache_file {
         Some(path) => load_cache(path).await,
         None => Cache::default(),
@@ -702,7 +719,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     let mut jobs = Vec::new();
     let mut covers = HashMap::new();
     while let Some(dir) = dirs.pop() {
-        let Some(mut job) = dir_job(&dir, &mut dirs).await else { continue };
+        let Some(mut job) = dir_job(fs, &dir, &mut dirs).await else { continue };
         if let Some(cover) = job.cover.take() {
             covers.insert(job.dir.clone(), cover);
         }
@@ -741,7 +758,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     let read_tags_phase = async {
         let mut per_dir = futures::stream::iter(jobs)
             .map(|job| async move {
-                let read = read_dir_tags(&job, cache).await;
+                let read = read_dir_tags(fs, &job, cache).await;
                 (job, read)
             })
             .buffer_unordered(concurrency());
@@ -777,7 +794,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
             cover_rx
                 .map(|(ids, path, mtime)| {
                     let id = stable_id((&path, mtime));
-                    async move { (ids, id, load_cover(path, covers_dir, id, thumb_edge).await) }
+                    async move { (ids, id, load_cover(fs, path, covers_dir, id, thumb_edge).await) }
                 })
                 .buffer_unordered(concurrency())
         );
@@ -803,7 +820,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
             full_rx
                 .map(|(id, file)| async move {
                     let Some(dir) = full_covers_dir else { return };
-                    cache_full_cover((*file).clone(), cover_file(dir, id, FULL_FORMAT), FULL).await;
+                    cache_full_cover(fs, &file, cover_file(dir, id, FULL_FORMAT), FULL).await;
                 })
                 .buffer_unordered(concurrency())
         );
@@ -824,11 +841,11 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
 
 /// Lists one directory: collects audio files with their stat data, spots a cover image, and
 /// pushes subdirectories onto `dirs`.
-async fn dir_job(dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<DirJob> {
+async fn dir_job(fs: &dyn Fs, dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<DirJob> {
     const COVER_STEMS: [&str; 4] = ["cover", "folder", "front", "albumart"];
     const COVER_EXTS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
 
-    let mut entries = match smol::fs::read_dir(dir).await {
+    let entries = match fs.read_dir(dir).await {
         Ok(entries) => entries,
         Err(e) => {
             log::warn!("could not read directory {dir:?}: {e}");
@@ -836,24 +853,19 @@ async fn dir_job(dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<DirJob> {
         }
     };
     let mut job = DirJob { dir: dir.to_path_buf(), files: Vec::new(), cover: None };
-    while let Some(Ok(entry)) = entries.next().await {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type().await else { continue };
-        if file_type.is_dir() {
+    for DirEntry { path, is_dir, mtime, size } in entries {
+        if is_dir {
             dirs.push(path);
             continue;
         }
         let ext = extension(&path).unwrap_or_default();
         if matches!(ext.as_str(), "wav" | "opus") {
-            let Ok(meta) = entry.metadata().await else { continue };
-            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            job.files.push(AudioFile { path, mtime, size: meta.len() });
+            job.files.push(AudioFile { path, mtime, size });
         } else if job.cover.is_none()
             && COVER_EXTS.contains(&ext.as_str())
             && COVER_STEMS.contains(&path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase().as_str())
         {
-            let Ok(meta) = entry.metadata().await else { continue };
-            job.cover = Some((path, meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
+            job.cover = Some((path, mtime));
         }
     }
     job.files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -863,7 +875,7 @@ async fn dir_job(dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<DirJob> {
 /// Reads the tags of each of the directory's files, from the cache when it is still valid.
 /// Returns the resolved entries (fallbacks applied) and how many files were actually parsed;
 /// grouping into albums is the [`Assembler`]'s job.
-async fn read_dir_tags(job: &DirJob, cache: &Cache) -> (Vec<(PathBuf, CacheEntry)>, usize) {
+async fn read_dir_tags(fs: &dyn Fs, job: &DirJob, cache: &Cache) -> (Vec<(PathBuf, CacheEntry)>, usize) {
     let mut entries = Vec::with_capacity(job.files.len());
     let mut n_parsed = 0usize;
 
@@ -873,7 +885,7 @@ async fn read_dir_tags(job: &DirJob, cache: &Cache) -> (Vec<(PathBuf, CacheEntry
             Some(entry) => entry.clone(),
             None => {
                 n_parsed += 1;
-                let Some(tags) = read_tags(&file.path).await else {
+                let Some(tags) = read_tags(fs, &file.path).await else {
                     log::warn!("could not parse {:?}", file.path);
                     continue;
                 };
@@ -953,8 +965,8 @@ fn year(s: &str) -> Option<u32> {
     s.split(|c: char| !c.is_ascii_digit()).find(|run| run.len() == 4).and_then(|run| run.parse().ok())
 }
 
-async fn read_tags(path: &Path) -> Option<FileTags> {
-    let mut f = Skippable(FromFutures::new(BufReader::new(File::open(path).await.ok()?)));
+async fn read_tags(fs: &dyn Fs, path: &Path) -> Option<FileTags> {
+    let mut f = Skippable(FromFutures::new(BufReader::new(File::from(fs.open(path).await.ok()?))));
     let mut magic = [0u8; 4];
     f.read_exact(&mut magic).await.ok()?;
     f.seek(SeekFrom::Start(0)).await.ok()?;
@@ -988,9 +1000,15 @@ pub async fn read_thumbnail(covers_dir: &Path, id: u64) -> Option<(Arc<[u8]>, u3
 /// [`THUMB_FORMAT`]), and its accent color. Reads the cached thumbnail when there is one, and
 /// otherwise decodes the original and caches the result. The decoded pixels are not handed back --
 /// the accent is all the scan needs them for, and a consumer that wants them has the cache.
-async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64, edge: u32) -> Option<(PathBuf, Arc<[u8]>, Rgb)> {
+async fn load_cover(
+    fs: &dyn Fs,
+    path: PathBuf,
+    covers_dir: Option<&Path>,
+    id: u64,
+    edge: u32,
+) -> Option<(PathBuf, Arc<[u8]>, Rgb)> {
     // Absolute, so consumers (e.g. the MPRIS art URL) don't depend on our working directory.
-    let file = smol::fs::canonicalize(path).await.ok()?;
+    let file = fs.canonicalize(&path).await.ok()?;
     let cache_path = covers_dir.map(|dir| cover_file(dir, id, THUMB_FORMAT));
 
     if let Some(cache_path) = &cache_path
@@ -1009,7 +1027,7 @@ async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64, edge: u32
         }
     }
 
-    let rgb = decode_thumbnail(file.clone(), edge).await?;
+    let rgb = decode_thumbnail(fs, &file, edge).await?;
     let encoded = encode_thumbnail(&rgb, edge)?;
     if let Some(cache_path) = &cache_path
         && let Err(e) = smol::fs::write(cache_path, &encoded).await
@@ -1028,7 +1046,7 @@ async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64, edge: u32
 /// from, and the reason to have a cache at these sizes at all: a sleeve is some 1700 pixels square,
 /// so decoding one costs about six times what decoding this does, and holds a buffer several times
 /// the size of the answer while it works. Both of those are paid on every miss.
-pub async fn load_full_cover(file: PathBuf, cache_path: Option<PathBuf>, edge: u32) -> Option<Arc<[u8]>> {
+pub async fn load_full_cover(fs: &dyn Fs, file: &Path, cache_path: Option<PathBuf>, edge: u32) -> Option<Arc<[u8]>> {
     if let Some(cache_path) = &cache_path
         && let Ok(encoded) = smol::fs::read(cache_path).await
     {
@@ -1043,7 +1061,7 @@ pub async fn load_full_cover(file: PathBuf, cache_path: Option<PathBuf>, edge: u
     }
 
     // RGB from the decoder, because that is what gets encoded; the caller's alpha is added last.
-    let rgb = decode_cover(file, edge, Pixels::Rgb).await?;
+    let rgb = decode_cover(fs, file, edge, Pixels::Rgb).await?;
     let rgba = rgb_to_rgba(&rgb);
     if let Some(cache_path) = cache_path {
         write_full_cover(rgb, edge, cache_path).await;
@@ -1056,13 +1074,13 @@ pub async fn load_full_cover(file: PathBuf, cache_path: Option<PathBuf>, edge: u
 /// What fills the cache for a library rather than for a screen: [`load_full_cover`] only ever asks
 /// for the cover it is about to draw, so left to it the cache holds wherever the listener has been.
 /// A scan is the one pass that sees every album, and it is holding the artwork's path anyway.
-pub async fn cache_full_cover(file: PathBuf, cache_path: PathBuf, edge: u32) {
+pub async fn cache_full_cover(fs: &dyn Fs, file: &Path, cache_path: PathBuf, edge: u32) {
     // Existence is the whole question -- a readable entry of the wrong size is `load_full_cover`'s
     // to notice and overwrite, and reading every cover back to check would defeat the point.
     if smol::fs::metadata(&cache_path).await.is_ok() {
         return;
     }
-    let Some(rgb) = decode_cover(file, edge, Pixels::Rgb).await else { return };
+    let Some(rgb) = decode_cover(fs, file, edge, Pixels::Rgb).await else { return };
     write_full_cover(rgb, edge, cache_path).await;
 }
 
@@ -1107,8 +1125,8 @@ fn encode_thumbnail(rgb: &[u8], edge: u32) -> Option<Vec<u8>> {
 ///
 /// RGB, not RGBA: this is what the cache stores, and an alpha channel on a cover is a channel of
 /// 255s.
-async fn decode_thumbnail(file: PathBuf, edge: u32) -> Option<Vec<u8>> {
-    decode_cover(file, edge, Pixels::Rgb).await
+async fn decode_thumbnail(fs: &dyn Fs, file: &Path, edge: u32) -> Option<Vec<u8>> {
+    decode_cover(fs, file, edge, Pixels::Rgb).await
 }
 
 /// Expands packed RGB triplets to fully opaque RGBA quartets. The cache stores RGB, a third
@@ -1231,18 +1249,18 @@ mod test {
 
         let green = |pixels: &Arc<[u8]>| pixels[1] > 200 && pixels[0] < 60;
 
-        let hit = smol::block_on(load_full_cover(artwork.clone(), Some(cached(EDGE)), EDGE)).expect("decodes");
+        let hit = smol::block_on(load_full_cover(&crate::fs::Local, &artwork, Some(cached(EDGE)), EDGE)).expect("decodes");
         assert_eq!(hit.len() as u32, EDGE * EDGE * 4, "RGBA at the edge asked for");
         assert!(green(&hit), "the cache entry, not the artwork");
 
         // The wrong edge is ignored, and the artwork is decoded and written over it instead.
         let wrong = cached(EDGE / 2);
-        let miss = smol::block_on(load_full_cover(artwork.clone(), Some(wrong.clone()), EDGE)).expect("decodes");
+        let miss = smol::block_on(load_full_cover(&crate::fs::Local, &artwork, Some(wrong.clone()), EDGE)).expect("decodes");
         assert_eq!(miss.len() as u32, EDGE * EDGE * 4, "still RGBA at the edge asked for");
         assert!(!green(&miss), "the artwork, not the cache entry of the wrong size");
         // The cache now holds the right size, so this load is a hit -- on the artwork's colours
         // rather than the green, and only approximately equal to the first load, this being JPEG.
-        let rewritten = smol::block_on(load_full_cover(artwork, Some(wrong), EDGE)).expect("decodes");
+        let rewritten = smol::block_on(load_full_cover(&crate::fs::Local, &artwork, Some(wrong), EDGE)).expect("decodes");
         assert!(!green(&rewritten), "still the artwork");
         let worst = rewritten.iter().zip(miss.iter()).map(|(a, b)| a.abs_diff(*b)).max().expect("not empty");
         assert!(worst < 16, "within a re-encode of the first load, off by at most {worst}");
@@ -1470,6 +1488,7 @@ mod test {
     /// Cache-less scan options for a test library at `root`.
     fn plain_options(root: &Path) -> ScanOptions {
         ScanOptions {
+            fs: Arc::new(crate::fs::Local),
             thumb_edge: 64,
             full_covers_dir: None,
             root: root.to_path_buf(),
@@ -1659,6 +1678,7 @@ mod test {
         }
         let cache_file = root.join("cache.json");
         let options = || ScanOptions {
+            fs: Arc::new(crate::fs::Local),
             root: root.clone(),
             priority: vec![],
             known_covers: Default::default(),

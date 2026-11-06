@@ -126,6 +126,7 @@ fn corpus(with_covers: bool) -> PathBuf {
 fn drain(root: PathBuf) -> Vec<Album> {
     smol::block_on(async {
         let options = library::ScanOptions {
+            fs: std::sync::Arc::new(phonoscule::fs::Local),
             root,
             priority: vec![],
             known_covers: Default::default(),
