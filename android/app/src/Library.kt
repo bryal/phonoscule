@@ -7,7 +7,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -17,7 +16,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,13 +24,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -65,16 +61,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -261,35 +249,6 @@ fun LibraryScreen(
     }
 }
 
-/** A thin bar down the right edge of the grid, always shown, for where the view is in the whole of it and how much of it
- * shows. It runs between the grid's content padding, and takes rows to be of equal height. */
-fun Modifier.scrollBar(state: LazyGridState): Modifier = this.drawWithContent {
-    drawContent()
-    val info = state.layoutInfo
-    val items = info.visibleItemsInfo
-    if (items.isEmpty()) return@drawWithContent
-    val columns = items.maxOf { it.column } + 1
-    val rows = (info.totalItemsCount + columns - 1) / columns
-    val stride = items.first().size.height + info.mainAxisItemSpacing
-    val content = rows * stride - info.mainAxisItemSpacing + info.beforeContentPadding + info.afterContentPadding
-    val viewport = info.viewportSize.height
-    if (content <= viewport) return@drawWithContent
-    val scrolled = state.firstVisibleItemIndex / columns * stride + state.firstVisibleItemScrollOffset
-    val fraction = (scrolled.toFloat() / (content - viewport)).coerceIn(0f, 1f)
-
-    val margin = SCROLL_BAR_MARGIN.toPx()
-    val width = SCROLL_BAR_WIDTH.toPx()
-    val top = maxOf(margin, info.beforeContentPadding.toFloat())
-    val track = size.height - maxOf(margin, info.afterContentPadding.toFloat()) - top
-    val thumb = (track * viewport / content).coerceAtLeast(SCROLL_BAR_MIN.toPx()).coerceAtMost(track)
-    drawRoundRect(
-        color = Color.White.copy(alpha = SCROLL_BAR_ALPHA),
-        topLeft = Offset(size.width - margin - width, top + (track - thumb) * fraction),
-        size = Size(width, thumb),
-        cornerRadius = CornerRadius(width / 2),
-    )
-}
-
 @Composable
 private fun LibraryMenu(albums: List<AlbumSummary>, onChooseFolder: () -> Unit) {
     var open by remember { mutableStateOf(false) }
@@ -447,38 +406,6 @@ private fun AlbumCard(album: AlbumSummary, onClick: () -> Unit) {
     }
 }
 
-/** A square cover, standing in its accent colour until the pixels have loaded. */
-@Composable
-fun CoverImage(cover: Long?, accent: Int?, edge: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
-    val px = with(LocalDensity.current) { edge.roundToPx() }
-    val bitmap = rememberCover(cover, px)
-    val shape = RoundedCornerShape(4.dp)
-    Box(modifier = modifier.aspectRatio(1f).clip(shape).background(accentColor(accent).copy(alpha = 0.5f))) {
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-    }
-}
-
-/** An album's accent as a colour, or a dim grey before it is known. */
-fun accentColor(accent: Int?): Color = accent?.let { Color(0xff000000 or it.toLong()) } ?: Color(0xff2a2a30)
-
-/** A bar floating over what it serves, as the desktop player's do: glass, the `accent` darkened and translucent, if a
- * little less so than the desktop's. */
-fun glass(accent: Color) = Color(accent.red * 0.18f, accent.green * 0.18f, accent.blue * 0.18f, 0.8f)
-
-/** The glass's edge where it meets what it floats over, catching the light. */
-@Composable
-fun GlassEdge(accent: Color) {
-    val edge = Color(accent.red * 0.7f, accent.green * 0.7f, accent.blue * 0.7f, 0.35f)
-    Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(edge))
-}
-
 /** What is playing, along the bottom of the library, on the same glass as its header. Tapping it opens the player.
  * Shows nothing while the queue is empty. */
 @Composable
@@ -545,10 +472,4 @@ private fun ChooseFolder(onChooseFolder: () -> Unit) {
 /** How long the pull-to-refresh indicator spins on a pull alone, should the core never say it started scanning. */
 private const val PULL_GRACE_MS = 1000L
 
-val CHIP_GAP = 6.dp
 private val FILTER_NAME_WIDTH = 84.dp
-
-private val SCROLL_BAR_WIDTH = 3.dp
-private val SCROLL_BAR_MARGIN = 3.dp
-private val SCROLL_BAR_MIN = 24.dp
-private const val SCROLL_BAR_ALPHA = 0.22f
