@@ -3,21 +3,15 @@ package zone.jo.phonoscule
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -51,7 +45,6 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -69,7 +62,7 @@ fun PlayerScreen() {
     val covers = remember(queue) { queue.runs.map { FlowCover(it.album?.cover, it.album?.accent) } }
     val playback = App.playback
     val glow by animateColorAsState(accentColor(playback.album?.accent), tween(GLOW_MS), label = "glow")
-    var showTracks by remember { mutableStateOf(false) }
+    val tracks = rememberTrackScroll(queue.tracks.size, playback.current, onPlay = { App.command { Core.jumpTo(it) } })
     var footerPx by remember { mutableIntStateOf(0) }
     val footer = with(LocalDensity.current) { footerPx.toDp() }
 
@@ -87,38 +80,29 @@ fun PlayerScreen() {
                 )
             },
     ) {
-        // The flow runs on under the controls, which float over it.
-        Column(modifier = Modifier.fillMaxSize()) {
-            Row(modifier = Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.End) {
-                IconButton(onClick = { showTracks = !showTracks }) {
-                    Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Tracks")
-                }
+        // The flow runs on under the controls, which float over it, with the track names hanging over its top. A drag
+        // up or down moves through the albums, sideways through the tracks.
+        Box(modifier = Modifier.fillMaxSize().trackDrag(tracks)) {
+            if (queue.runs.isEmpty()) {
+                Text(
+                    "Nothing queued. Play an album from the library.",
+                    modifier = Modifier.align(Alignment.Center).padding(bottom = footer).padding(24.dp),
+                    textAlign = TextAlign.Center,
+                )
+            } else {
+                VerticalCoverFlow(
+                    covers = covers,
+                    playing = queue.runOf(playback.current),
+                    onPlay = { run ->
+                        val start = queue.runs[run].start
+                        App.command { Core.jumpTo(start) }
+                    },
+                    onToggle = { App.command { Core.togglePlaying() } },
+                    modifier = Modifier.fillMaxSize(),
+                    obscuredBottom = footer,
+                )
             }
-
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (queue.runs.isEmpty()) {
-                    Text(
-                        "Nothing queued. Play an album from the library.",
-                        modifier = Modifier.align(Alignment.Center).padding(bottom = footer).padding(24.dp),
-                        textAlign = TextAlign.Center,
-                    )
-                } else {
-                    VerticalCoverFlow(
-                        covers = covers,
-                        playing = queue.runOf(playback.current),
-                        onPlay = { run ->
-                            val start = queue.runs[run].start
-                            App.command { Core.jumpTo(start) }
-                        },
-                        onToggle = { App.command { Core.togglePlaying() } },
-                        modifier = Modifier.fillMaxSize(),
-                        obscuredBottom = footer,
-                    )
-                }
-                if (showTracks) {
-                    RunTracks(queue, playback, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = footer))
-                }
-            }
+            TrackIcicles(queue.tracks, playback.current, tracks, modifier = Modifier.fillMaxSize())
         }
 
         // On the glass the library's bars are of, tinted with the glow. It takes every touch on it, so that none
@@ -135,34 +119,6 @@ fun PlayerScreen() {
             NowPlaying(playback)
             SeekBar(playback, glow)
             Transport(playback)
-        }
-    }
-}
-
-/** The tracks of the playing album run, as the desktop player lists them beside its flow. */
-@Composable
-private fun RunTracks(queue: Queue, playback: Playback, modifier: Modifier = Modifier) {
-    val current = playback.current ?: return
-    val run = queue.runs.getOrNull(queue.runOf(current)) ?: return
-    val state = rememberLazyListState(initialFirstVisibleItemIndex = (current - run.start - 2).coerceAtLeast(0))
-    LazyColumn(
-        state = state,
-        modifier = modifier.fillMaxWidth().fillMaxHeight(0.5f).background(Color.Black.copy(alpha = 0.75f)),
-    ) {
-        itemsIndexed(queue.tracks.subList(run.start, run.end)) { ix, track ->
-            val current = run.start + ix == playback.current
-            Text(
-                text = track.title,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
-                color = if (current) Color.White else Color.White.copy(alpha = 0.7f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { App.command { Core.jumpTo(run.start + ix) } }
-                    .padding(horizontal = 24.dp, vertical = 10.dp),
-            )
         }
     }
 }
