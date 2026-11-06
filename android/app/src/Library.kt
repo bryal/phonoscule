@@ -19,15 +19,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.staggeredgrid.LazyHorizontalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -44,11 +46,13 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,9 +71,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -77,7 +82,7 @@ import kotlinx.coroutines.withContext
 
 /** The library: a wall of covers to search, filter by genre and sort, with what is playing along the bottom.
  *
- * Back clears the search and the genre, and leaves the search field, before it leaves the app. Pass `covered` while
+ * Back clears the search and the genres, and leaves the search field, before it leaves the app. Pass `covered` while
  * another screen is open over this one, which then has Back to itself. */
 @Composable
 fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: () -> Unit, onChooseFolder: () -> Unit) {
@@ -87,20 +92,20 @@ fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: (
     }
 
     var query by rememberSaveable { mutableStateOf("") }
-    var genre by rememberSaveable { mutableStateOf<String?>(null) }
+    var picked by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var albums by remember { mutableStateOf(emptyList<AlbumSummary>()) }
     var genres by remember { mutableStateOf(emptyList<String>()) }
     var searching by remember { mutableStateOf(false) }
 
     val focus = LocalFocusManager.current
-    BackHandler(enabled = !covered && (query.isNotEmpty() || genre != null || searching)) {
+    BackHandler(enabled = !covered && (query.isNotEmpty() || picked.isNotEmpty() || searching)) {
         query = ""
-        genre = null
+        picked = emptyList()
         focus.clearFocus()
     }
 
-    LaunchedEffect(query, genre, App.libraryVersion) {
-        val (found, all) = withContext(Dispatchers.IO) { Core.albums(query, genre) to Core.genres() }
+    LaunchedEffect(query, picked, App.libraryVersion) {
+        val (found, all) = withContext(Dispatchers.IO) { Core.albums(query, picked) to Core.genres() }
         albums = found
         genres = all
     }
@@ -126,7 +131,7 @@ fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: (
             LibraryMenu(albums, onChooseFolder)
         }
 
-        GenreChips(genres, genre, onPick = { genre = it })
+        GenreChips(genres, picked, onPick = { picked = it })
 
         HorizontalDivider()
 
@@ -161,7 +166,7 @@ fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: (
                 Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                     if (!App.scanning) {
                         Text(
-                            text = if (query.isEmpty() && genre == null) {
+                            text = if (query.isEmpty() && picked.isEmpty()) {
                                 "No albums here yet. Pull down to scan."
                             } else {
                                 "Nothing matches."
@@ -264,19 +269,37 @@ private fun SortMenu(expanded: Boolean, onDismiss: () -> Unit) {
     }
 }
 
-/** Chips that limit the wall to one genre. Shows nothing while no album has a genre. */
+/** Chips that limit the wall to the albums of the `picked` genres, in two rows to scroll across. Each genre's chip
+ * toggles it; All clears them, and with none picked every album shows. Shows nothing while no album has a genre. */
 @Composable
-private fun GenreChips(genres: List<String>, picked: String?, onPick: (String?) -> Unit) {
+private fun GenreChips(genres: List<String>, picked: List<String>, onPick: (List<String>) -> Unit) {
     if (genres.isEmpty()) return
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        item { FilterChip(selected = picked == null, onClick = { onPick(null) }, label = { Text("All") }) }
-        items(genres, key = { it }) { genre ->
-            FilterChip(selected = picked == genre, onClick = { onPick(genre) }, label = { Text(genre) })
+    // Material pads every chip out to a 48dp touch target, which would make two rows of them a third of a phone.
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+        LazyHorizontalStaggeredGrid(
+            rows = StaggeredGridCells.Fixed(2),
+            modifier = Modifier.height(CHIP_HEIGHT * 2 + CHIP_GAP * 3),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = CHIP_GAP),
+            verticalArrangement = Arrangement.spacedBy(CHIP_GAP),
+            horizontalItemSpacing = CHIP_GAP,
+        ) {
+            item { GenreChip("All", selected = picked.isEmpty(), onClick = { onPick(emptyList()) }) }
+            items(genres, key = { it }) { genre ->
+                val selected = genre in picked
+                GenreChip(genre, selected, onClick = { onPick(if (selected) picked - genre else picked + genre) })
+            }
         }
     }
+}
+
+@Composable
+private fun GenreChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label, style = MaterialTheme.typography.labelMedium) },
+        modifier = Modifier.height(CHIP_HEIGHT),
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -385,6 +408,9 @@ private fun ChooseFolder(onChooseFolder: () -> Unit) {
 
 /** How long the pull-to-refresh indicator spins on a pull alone, should the core never say it started scanning. */
 private const val PULL_GRACE_MS = 1000L
+
+private val CHIP_HEIGHT = 28.dp
+private val CHIP_GAP = 6.dp
 
 private val SCROLL_BAR_WIDTH = 3.dp
 private val SCROLL_BAR_MARGIN = 3.dp

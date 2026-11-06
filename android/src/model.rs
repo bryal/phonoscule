@@ -387,13 +387,13 @@ impl Core {
     }
 
     /// The albums whose title or artist matches `query`, best match first and in the current sort
-    /// order otherwise, limited to `genre` unless that is `None`.
-    pub fn albums(&self, query: &str, genre: Option<&str>) -> Vec<Album> {
+    /// order otherwise, limited to those whose genre is one of `genres` unless there are none.
+    pub fn albums(&self, query: &str, genres: &[String]) -> Vec<Album> {
         let state = self.state();
         let mut ranked: Vec<(&Album, usize)> = state
             .albums
             .iter()
-            .filter(|a| genre.is_none_or(|genre| a.genre == genre))
+            .filter(|a| genres.is_empty() || genres.contains(&a.genre))
             .filter_map(|a| Some((a, search::rank(&format!("{} {}", a.title, a.artist), query)?)))
             .collect();
         ranked.sort_by(|(a, ra), (b, rb)| rb.cmp(ra).then_with(|| state.sort.cmp(a, b)));
@@ -730,11 +730,14 @@ mod test {
         core.scan();
         await_scan(core);
 
-        let albums = core.albums("", None);
+        let albums = core.albums("", &[]);
         let titles: Vec<&str> = albums.iter().map(|a| a.title.as_str()).collect();
         assert_eq!(titles, ["First", "Second"]);
-        assert_eq!(core.albums("seco", None).len(), 1, "search narrows by title");
-        assert_eq!(core.albums("b", None)[0].title, "Second", "and by artist");
+        assert_eq!(core.albums("seco", &[]).len(), 1, "search narrows by title");
+        assert_eq!(core.albums("b", &[])[0].title, "Second", "and by artist");
+        // Neither has a genre tag, so both have the empty genre.
+        assert!(core.albums("", &["Jazz".into()]).is_empty(), "genres narrow");
+        assert_eq!(core.albums("", &["Jazz".into(), String::new()]).len(), 2, "to the albums of any of them");
 
         let first = &albums[0];
         assert!(first.accent.is_some(), "the cover's accent arrived with it");
@@ -748,11 +751,11 @@ mod test {
         core.scan();
         await_scan(core);
         std::fs::set_permissions(&second, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(core.albums("", None).len(), 2, "the unreadable folder's album is kept");
+        assert_eq!(core.albums("", &[]).len(), 2, "the unreadable folder's album is kept");
         std::fs::rename(&second, root.join("B-gone")).unwrap();
         core.scan();
         await_scan(core);
-        assert_eq!(core.albums("", None).len(), 1, "the missing folder's album is dropped");
+        assert_eq!(core.albums("", &[]).len(), 1, "the missing folder's album is dropped");
         std::fs::rename(root.join("B-gone"), &second).unwrap();
         core.scan();
         await_scan(core);

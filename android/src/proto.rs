@@ -54,13 +54,13 @@ pub enum Request {
     /// Scan the picked folder, or queue one more scan if one is running.
     Scan,
 
-    /// The albums matching `query`, limited to `genre` unless it is absent. An empty `query`
-    /// matches every album.
+    /// The albums matching `query` whose genre is one of `genres`. An empty `query` matches every
+    /// album, as do no `genres`.
     Albums {
         #[serde(default)]
         query: String,
         #[serde(default)]
-        genre: Option<String>,
+        genres: Vec<String>,
     },
     /// One album with its tracks. The response is `None` if there is no album by that id.
     Album {
@@ -419,8 +419,8 @@ pub fn dispatch(request: Request) -> anyhow::Result<Response> {
             core.scan();
             Response::Done
         }
-        (core, Request::Albums { query, genre }) => {
-            let albums = core.albums(&query, genre.as_deref());
+        (core, Request::Albums { query, genres }) => {
+            let albums = core.albums(&query, &genres);
             Response::Albums { albums: albums.iter().map(AlbumSummary::of).collect() }
         }
         (core, Request::Album { id }) => Response::Album {
