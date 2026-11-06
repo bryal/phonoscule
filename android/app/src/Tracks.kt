@@ -4,7 +4,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,18 +16,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import java.text.BreakIterator
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -113,35 +111,37 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
     )
 }
 
-/** The album's track `titles` hanging from the top edge side by side, each a column of upright characters, like
- * icicles: in order from the left, centred, and still. The one `scroll` has picked is lit; `first` is the queue index of
- * the first. Each hangs at most [ICICLE_LENGTH] of the height, cut short with a vertical ellipsis. They take no
- * touches. */
+/** The album's track `titles` hanging from the top edge side by side, like icicles: in order from the left, and still,
+ * each reading upwards at [ICICLE_TILT] from flat, its end along the top and its start below and to the left. The one
+ * `scroll` has picked is lit; `first` is the queue index of the first. Each hangs at most [ICICLE_LENGTH] of the
+ * height, cut short at its end. They are centred, leaning and all, and take no touches. */
 @Composable
 fun TrackIcicles(titles: List<String>, first: Int, scroll: TrackScroll, modifier: Modifier = Modifier) {
     val picked by remember { derivedStateOf { scroll.picked } }
-    val style = MaterialTheme.typography.bodyMedium.copy(lineHeight = ICICLE_LINE)
-    BoxWithConstraints(modifier = modifier) {
-        val density = LocalDensity.current
-        val rows = with(density) { (maxHeight * ICICLE_LENGTH).toPx() / ICICLE_LINE.toPx() }.toInt()
-        val columns = remember(titles, rows) { titles.map { column(it, rows) } }
-        Icicles(columns, first, picked, style)
-    }
-}
-
-@Composable
-private fun Icicles(columns: List<String>, first: Int, picked: Int, style: TextStyle) {
     Layout(
         content = {
-            columns.forEachIndexed { k, column -> Icicle(column, lit = first + k == picked, style) }
+            titles.forEachIndexed { k, title -> Icicle(title, lit = first + k == picked) }
         },
+        modifier = modifier,
     ) { measurables, constraints ->
-        val placeables = measurables.map { it.measure(Constraints()) }
-        val pitch = pitchFor(constraints.maxWidth.toFloat(), placeables.size)
-        val left = (constraints.maxWidth - pitch * placeables.size) / 2
+        val tilt = Math.toRadians(ICICLE_TILT.toDouble())
+        val (sin, cos) = sin(tilt).toFloat() to cos(tilt).toFloat()
+        val longest = constraints.maxHeight * ICICLE_LENGTH / sin
+        val placeables = measurables.map { it.measure(Constraints(maxWidth = longest.roundToInt())) }
+        // How far left of its end the longest name's start reaches.
+        val lean = (placeables.maxOfOrNull { it.width } ?: 0) * cos
+        val pitch = pitchFor(constraints.maxWidth - lean, placeables.size)
+        val firstEnd = (constraints.maxWidth - lean - pitch * (placeables.size - 1)) / 2 + lean
         layout(constraints.maxWidth, constraints.maxHeight) {
             placeables.forEachIndexed { k, placeable ->
-                placeable.place((left + pitch * (k + 0.5f) - placeable.width / 2).roundToInt(), 0)
+                // Turned about the middle of its end, which stands at its place along the top.
+                val endX = firstEnd + pitch * k
+                val endY = ICICLE_MARGIN.toPx() + placeable.height / 2 * cos
+                val x = (endX - placeable.width).roundToInt()
+                placeable.placeWithLayer(x, (endY - placeable.height / 2).roundToInt()) {
+                    rotationZ = -ICICLE_TILT
+                    transformOrigin = TransformOrigin(1f, 0.5f)
+                }
             }
         }
     }
@@ -151,38 +151,28 @@ private fun Icicles(columns: List<String>, first: Int, picked: Int, style: TextS
 private fun Density.pitchFor(width: Float, count: Int): Float =
     if (count == 0) TRACK_PITCH.toPx() else minOf(TRACK_PITCH.toPx(), width / count)
 
-/** `title` as a column of at most `rows` characters, a line each, ending in a vertical ellipsis where it is cut short.
- * A character is what reads as one, so an accented letter or an emoji is not split up. */
-private fun column(title: String, rows: Int): String {
-    val characters = BreakIterator.getCharacterInstance().run {
-        setText(title)
-        generateSequence(first()) { next().takeIf { it != BreakIterator.DONE } }
-            .zipWithNext { from, to -> title.substring(from, to) }
-            .toList()
-    }
-    val shown = if (characters.size <= rows) characters else characters.take((rows - 1).coerceAtLeast(0)) + "\u22ee"
-    return shown.joinToString("\n")
-}
-
-/** One track's name as a column of upright characters, each centred on the column. */
+/** One track's name, on a line, shadowed to stand out from the covers. */
 @Composable
-private fun Icicle(column: String, lit: Boolean, style: TextStyle) {
+private fun Icicle(title: String, lit: Boolean) {
     Text(
-        column,
-        style = style.copy(
+        title,
+        style = MaterialTheme.typography.bodyMedium.copy(
             color = if (lit) Color.White else Color.White.copy(alpha = 0.6f),
             shadow = Shadow(Color.Black.copy(alpha = if (lit) 0.9f else 0.8f), Offset(2f, 2f), blurRadius = 4f),
-            textAlign = TextAlign.Center,
         ),
-        softWrap = false,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
     )
 }
 
 /** How far apart the names stand while they fit, which is also how far a drag goes for one track. */
 private val TRACK_PITCH = 28.dp
 
-/** How far apart the characters of a name stand, down its column. */
-private val ICICLE_LINE = 14.sp
+/** How far from flat the names read, upwards, in degrees. */
+private const val ICICLE_TILT = 72f
+
+/** How far below the top edge the names' ends stand. */
+private val ICICLE_MARGIN = 8.dp
 
 /** The most of the height a name hangs before it is cut short. */
 private const val ICICLE_LENGTH = 0.42f
