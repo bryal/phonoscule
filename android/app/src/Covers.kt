@@ -25,6 +25,10 @@ object Covers {
     /** Covers the core had no file for, not to be asked for again until [forgetMissing]. */
     private val missing = Collections.synchronizedSet(mutableSetOf<Long>())
 
+    /** Bumped by [forgetMissing], so that a load asked before it does not mark its cover missing after it. */
+    @Volatile
+    private var generation = 0
+
     private data class Key(val cover: Long, val sample: Int)
 
     /** The cover, if it is decoded already at a size good for `edge` pixels. */
@@ -36,13 +40,14 @@ object Covers {
         val key = Key(cover, sampleFor(edge))
         cache[key]?.let { return it }
         if (cover in missing) return null
+        val asked = generation
         val file = try {
             Core.cover(cover)
         } catch (e: CoreException) {
             null
         }
         if (file == null) {
-            missing.add(cover)
+            if (asked == generation) missing.add(cover)
             return null
         }
         val bitmap = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = key.sample })
@@ -52,7 +57,10 @@ object Covers {
     }
 
     /** Forget which covers were missing, because a scan has made more. */
-    fun forgetMissing() = missing.clear()
+    fun forgetMissing() {
+        generation++
+        missing.clear()
+    }
 
     private fun sampleFor(edge: Int): Int {
         var sample = 1
