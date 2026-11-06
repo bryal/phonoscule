@@ -76,14 +76,23 @@ val cargoNdk by tasks.registering(Exec::class) {
 
 tasks.named("preBuild") { dependsOn(cargoNdk) }
 
-// Mipmap-free: one raster at the largest launcher density, which the launcher scales down.
+// The adaptive icon's foreground (see res/drawable/ic_launcher.xml). Mipmap-free: one raster at the largest launcher
+// density, 108dp, which the launcher scales down. The mark spans 232 of its 432 pixels, so that its corners clear the
+// circle every launcher shape contains.
 val renderIcon by tasks.registering(Exec::class) {
     val svg = rootDir.parentFile.parentFile.resolve("gui/assets/icon/phonoscule.svg")
-    val png = iconRes.get().file("drawable-xxxhdpi/ic_launcher.png").asFile
+    val png = iconRes.get().file("drawable-xxxhdpi/ic_launcher_foreground.png").asFile
     inputs.file(svg)
     outputs.file(png)
-    doFirst { png.parentFile.mkdirs() }
-    commandLine("rsvg-convert", "-w", "192", "-h", "192", "-o", png.absolutePath, svg.absolutePath)
+    doFirst {
+        // Nothing but this task's output may be left there, such as the ic_launcher.png it once made.
+        iconRes.get().asFile.deleteRecursively()
+        png.parentFile.mkdirs()
+    }
+    commandLine(
+        "rsvg-convert", "-w", "232", "-h", "232", "--page-width", "432", "--page-height", "432", "--left", "100",
+        "--top", "100", "-o", png.absolutePath, svg.absolutePath,
+    )
 }
 
 tasks.named("preBuild") { dependsOn(renderIcon) }
