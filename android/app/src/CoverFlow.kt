@@ -20,10 +20,10 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.input.pointer.pointerInput
@@ -55,6 +55,10 @@ fun VerticalCoverFlow(
     modifier: Modifier = Modifier,
 ) {
     val position = remember { Animatable(playing.coerceAtLeast(0).toFloat()) }
+    // The gesture handlers outlive a composition, so they read these through state rather than capturing them.
+    val currentPlaying by rememberUpdatedState(playing)
+    val currentOnPlay by rememberUpdatedState(onPlay)
+    val currentOnToggle by rememberUpdatedState(onToggle)
     val scope = rememberCoroutineScope()
     var dragging by remember { mutableStateOf(false) }
     // Bumped whenever the listener lets go, restarting the wait before drifting back.
@@ -67,7 +71,7 @@ fun VerticalCoverFlow(
     LaunchedEffect(browsed) {
         if (browsed == 0) return@LaunchedEffect
         delay(DRIFT_BACK_MS)
-        if (!dragging && playing >= 0) position.animateTo(playing.toFloat(), SETTLE)
+        if (!dragging && currentPlaying >= 0) position.animateTo(currentPlaying.toFloat(), SETTLE)
     }
 
     // Pixels for the covers within reach, loaded as the flow moves: the nearest at full size, the rest smaller.
@@ -129,14 +133,14 @@ fun VerticalCoverFlow(
                             scope.launch { position.animateTo(hit.toFloat(), SETTLE) }
                             browsed++
                         }
-                        hit == playing -> onToggle()
-                        else -> onPlay(hit)
+                        hit == currentPlaying -> currentOnToggle()
+                        else -> currentOnPlay(hit)
                     }
                 }
             },
     ) {
         val flow = Flow(size.width, size.height)
-        coverPx = flow.coverPx
+        if (coverPx != flow.coverPx) coverPx = flow.coverPx
         val at = position.value
         val order = flow.visible(covers.size, at).sortedByDescending { (_, d) -> abs(d) }
         drawIntoCanvas { canvas ->

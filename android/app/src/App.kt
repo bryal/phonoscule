@@ -62,7 +62,6 @@ object App {
         playback = Core.playback()
         Workers { storage }.start()
         thread(name = "phonoscule-notices", isDaemon = true) { this.followNotices() }
-        if (storage != null) Core.scan()
     }
 
     /** Call `listener` on the main thread whenever [playback] changes. */
@@ -105,8 +104,10 @@ object App {
     /** Call on every return to the foreground. There is nothing to watch a folder with through SAF, so look again. */
     fun resume() {
         foreground = true
-        // The grant can be revoked while the app is in the background.
-        storage = Storage.restore(context)
+        // The grant can be revoked while the app is in the background. The same folder keeps its storage, which has
+        // learned where the documents are.
+        val restored = Storage.restore(context)
+        if (restored?.tree != storage?.tree) storage = restored
         if (storage != null) Core.scan()
     }
 

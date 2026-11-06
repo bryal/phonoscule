@@ -10,6 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use futures::StreamExt;
+use phonoscule::fs::Fs;
 use phonoscule::library::{self, Album, ScanEvent};
 use phonoscule::player::{self, PlayState, Repeat};
 use phonoscule::queue::{self, Grouping, Scope};
@@ -171,7 +172,7 @@ impl Core {
         let saf = Arc::new(Saf::new());
         let engine = player::start(
             player::Client { name: "phonoscule-android".into(), description: "Phonoscule".into() },
-            Arc::clone(&saf) as Arc<dyn phonoscule::fs::Fs>,
+            Arc::clone(&saf) as Arc<dyn Fs>,
         );
 
         let albums = smol::block_on(library::load_index(Some(paths.album_index.clone())));
@@ -281,6 +282,12 @@ impl Core {
     }
 
     async fn run_scan(&self) {
+        // The scan takes a folder it cannot list for an empty one, and would forget the whole library. A provider
+        // still fetching the folder says so, as does a revoked grant.
+        if let Err(e) = self.saf.read_dir(Path::new(saf::ROOT)).await {
+            log::warn!("not scanning, as the music folder cannot be listed: {e}");
+            return;
+        }
         let options = {
             let state = self.state();
             // A cover whose full-size copy is cached already, with its accent in the index, needs
@@ -293,7 +300,7 @@ impl Core {
                 .filter(|&id| library::cover_file(&self.paths.full_covers, id, library::FULL_FORMAT).exists())
                 .collect();
             library::ScanOptions {
-                fs: Arc::clone(&self.saf) as Arc<dyn phonoscule::fs::Fs>,
+                fs: Arc::clone(&self.saf) as Arc<dyn Fs>,
                 root: PathBuf::from(saf::ROOT),
                 priority: cover_priority(&state.queue, state.current),
                 known_covers,

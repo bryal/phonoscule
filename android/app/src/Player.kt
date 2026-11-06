@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -62,6 +63,7 @@ fun PlayerScreen(onBack: () -> Unit) {
     LaunchedEffect(App.queueVersion, App.libraryVersion) {
         queue = withContext(Dispatchers.IO) { Core.queue() }
     }
+    val covers = remember(queue) { queue.runs.map { FlowCover(it.album?.cover, it.album?.accent) } }
     val playback = App.playback
     val glow by animateColorAsState(accentColor(playback.album?.accent), tween(GLOW_MS), label = "glow")
     var showTracks by remember { mutableStateOf(false) }
@@ -97,7 +99,7 @@ fun PlayerScreen(onBack: () -> Unit) {
                 )
             } else {
                 VerticalCoverFlow(
-                    covers = queue.runs.map { FlowCover(it.album?.cover, it.album?.accent) },
+                    covers = covers,
                     playing = queue.currentRun,
                     onPlay = { run -> App.command { Core.jumpTo(queue.runs[run].start) } },
                     onToggle = { App.command { Core.togglePlaying() } },
@@ -120,7 +122,7 @@ private fun RunTracks(queue: Queue, playback: Playback, modifier: Modifier = Mod
     val state = rememberLazyListState(initialFirstVisibleItemIndex = (queue.current - run.start - 2).coerceAtLeast(0))
     LazyColumn(
         state = state,
-        modifier = modifier.fillMaxWidth().fillMaxSize(0.5f).background(Color.Black.copy(alpha = 0.75f)),
+        modifier = modifier.fillMaxWidth().fillMaxHeight(0.5f).background(Color.Black.copy(alpha = 0.75f)),
     ) {
         itemsIndexed(queue.tracks.subList(run.start, run.end)) { ix, track ->
             val current = run.start + ix == playback.current

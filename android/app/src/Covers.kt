@@ -66,6 +66,8 @@ object Covers {
 @Composable
 fun rememberCover(cover: Long?, edge: Int): Bitmap? {
     val bitmap by produceState(cover?.let { Covers.peek(it, edge) }, cover, edge, App.coversVersion) {
+        // The value outlives a change of keys, and would go on showing the cover asked for before.
+        value = cover?.let { Covers.peek(it, edge) }
         if (cover != null && value == null) value = withContext(Dispatchers.IO) { Covers.load(cover, edge) }
     }
     return bitmap
