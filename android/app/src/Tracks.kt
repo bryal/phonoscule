@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -19,14 +20,17 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.text.BreakIterator
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 /** Which of the playing album's tracks is picked: a queue index, fractional while it moves. Move it with [trackDrag];
  * it follows what plays otherwise. */
@@ -109,20 +113,30 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
     )
 }
 
-/** The album's track `titles` hanging from the top edge side by side, each written downwards, like icicles: in order
- * from the left, centred, and still. The one `scroll` has picked is lit; `first` is the queue index of the first. Each
- * hangs at most [ICICLE_LENGTH] of the height. They take no touches. */
+/** The album's track `titles` hanging from the top edge side by side, each a column of upright characters, like
+ * icicles: in order from the left, centred, and still. The one `scroll` has picked is lit; `first` is the queue index of
+ * the first. Each hangs at most [ICICLE_LENGTH] of the height, cut short with a vertical ellipsis. They take no
+ * touches. */
 @Composable
 fun TrackIcicles(titles: List<String>, first: Int, scroll: TrackScroll, modifier: Modifier = Modifier) {
     val picked by remember { derivedStateOf { scroll.picked } }
+    val style = MaterialTheme.typography.bodyMedium.copy(lineHeight = ICICLE_LINE)
+    BoxWithConstraints(modifier = modifier) {
+        val density = LocalDensity.current
+        val rows = with(density) { (maxHeight * ICICLE_LENGTH).toPx() / ICICLE_LINE.toPx() }.toInt()
+        val columns = remember(titles, rows) { titles.map { column(it, rows) } }
+        Icicles(columns, first, picked, style)
+    }
+}
+
+@Composable
+private fun Icicles(columns: List<String>, first: Int, picked: Int, style: TextStyle) {
     Layout(
         content = {
-            titles.forEachIndexed { k, title -> Icicle(title, lit = first + k == picked) }
+            columns.forEachIndexed { k, column -> Icicle(column, lit = first + k == picked, style) }
         },
-        modifier = modifier,
     ) { measurables, constraints ->
-        val hang = Constraints(maxHeight = (constraints.maxHeight * ICICLE_LENGTH).roundToInt())
-        val placeables = measurables.map { it.measure(hang) }
+        val placeables = measurables.map { it.measure(Constraints()) }
         val pitch = pitchFor(constraints.maxWidth.toFloat(), placeables.size)
         val left = (constraints.maxWidth - pitch * placeables.size) / 2
         layout(constraints.maxWidth, constraints.maxHeight) {
@@ -137,28 +151,38 @@ fun TrackIcicles(titles: List<String>, first: Int, scroll: TrackScroll, modifier
 private fun Density.pitchFor(width: Float, count: Int): Float =
     if (count == 0) TRACK_PITCH.toPx() else minOf(TRACK_PITCH.toPx(), width / count)
 
-/** One track's name, written downwards: laid out along the height it may hang, then turned a quarter clockwise. */
+/** `title` as a column of at most `rows` characters, a line each, ending in a vertical ellipsis where it is cut short.
+ * A character is what reads as one, so an accented letter or an emoji is not split up. */
+private fun column(title: String, rows: Int): String {
+    val characters = BreakIterator.getCharacterInstance().run {
+        setText(title)
+        generateSequence(first()) { next().takeIf { it != BreakIterator.DONE } }
+            .zipWithNext { from, to -> title.substring(from, to) }
+            .toList()
+    }
+    val shown = if (characters.size <= rows) characters else characters.take((rows - 1).coerceAtLeast(0)) + "\u22ee"
+    return shown.joinToString("\n")
+}
+
+/** One track's name as a column of upright characters, each centred on the column. */
 @Composable
-private fun Icicle(title: String, lit: Boolean) {
+private fun Icicle(column: String, lit: Boolean, style: TextStyle) {
     Text(
-        title,
-        style = MaterialTheme.typography.bodyMedium.copy(
+        column,
+        style = style.copy(
             color = if (lit) Color.White else Color.White.copy(alpha = 0.6f),
             shadow = Shadow(Color.Black.copy(alpha = if (lit) 0.9f else 0.8f), Offset(2f, 2f), blurRadius = 4f),
+            textAlign = TextAlign.Center,
         ),
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.layout { measurable, constraints ->
-            val text = measurable.measure(Constraints(maxWidth = constraints.maxHeight))
-            layout(text.height, text.width) {
-                text.placeWithLayer((text.height - text.width) / 2, (text.width - text.height) / 2) { rotationZ = 90f }
-            }
-        },
+        softWrap = false,
     )
 }
 
 /** How far apart the names stand while they fit, which is also how far a drag goes for one track. */
-private val TRACK_PITCH = 34.dp
+private val TRACK_PITCH = 28.dp
+
+/** How far apart the characters of a name stand, down its column. */
+private val ICICLE_LINE = 17.sp
 
 /** The most of the height a name hangs before it is cut short. */
 private const val ICICLE_LENGTH = 0.42f
