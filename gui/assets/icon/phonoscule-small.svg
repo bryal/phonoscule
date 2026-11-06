@@ -23,7 +23,7 @@
     </linearGradient>
 
     <!-- The full mark's notes for the playing cover, in a cover's own 100-unit square. -->
-    <g id="beamed-eighths" fill="#593f74">
+    <g id="beamed-eighths" fill="#323268">
       <ellipse cx="29" cy="73" rx="13.5" ry="10" transform="rotate(-24 29 73)"/>
       <ellipse cx="67" cy="66" rx="13.5" ry="10" transform="rotate(-24 67 66)"/>
       <rect x="36" y="22" width="5.5" height="48"/>
