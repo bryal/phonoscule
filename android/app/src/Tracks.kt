@@ -79,9 +79,9 @@ fun rememberTrackScroll(tracks: IntRange, playing: Int?, onPlay: (Int) -> Unit):
 }
 
 /** Moves `scroll` along the album's tracks a track per name's width dragged sideways, as if the names were pulled along
- * under the pick, so a drag rightwards picks earlier tracks; on letting go, plays the one it comes to. A quick flick
- * that has not come to another track steps to the next one along, and none carries on further. Vertical drags and taps
- * are left to what is beneath. */
+ * under the pick, so a drag rightwards picks earlier tracks; on letting go, plays the one it comes to. A flick, a drag
+ * still going quickly as it lets go, steps just one track from where it began, however far it went. Vertical drags and
+ * taps are left to what is beneath. */
 fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll) {
     val tracker = VelocityTracker()
     // Where the drag has taken the pick. Kept here, since a snap launched for one move has not necessarily landed by
@@ -110,10 +110,9 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
             val range = scroll.tracks
             if (range.isEmpty()) return@detectHorizontalDragGestures
             val velocity = tracker.calculateVelocity().x
-            val to = target.roundToInt()
-            val flicked = to == from && abs(velocity) > FLICK_SPEED.toPx()
             // Rightwards is towards earlier tracks.
-            scroll.settle((if (flicked) to - velocity.sign.toInt() else to).coerceIn(range))
+            val to = if (abs(velocity) > FLICK_SPEED.toPx()) from - velocity.sign.toInt() else target.roundToInt()
+            scroll.settle(to.coerceIn(range))
         },
         onDragCancel = {
             scroll.dragging = false
@@ -225,7 +224,7 @@ private val ICICLE_MARGIN = 8.dp
 /** The most of the height a name hangs before it is cut short. */
 private const val ICICLE_LENGTH = 0.42f
 
-/** How fast, per second, a drag must be going when it lets go to step on a track it has not reached. */
+/** How fast, per second, a drag must be going as it lets go to be a flick. */
 private val FLICK_SPEED = 300.dp
 
 private val SETTLE = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
