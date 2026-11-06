@@ -257,7 +257,7 @@ pub async fn load_index(path: Option<PathBuf>) -> Vec<Album> {
 
 /// Saves the album index (snapshotting `albums` eagerly, so the write can run detached).
 /// Best-effort atomic, like the tag cache; failure only costs the next launch its instant grid.
-pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output = ()> + Send + 'static {
+pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output = ()> + Send + use<> {
     let index = AlbumIndex {
         version: INDEX_VERSION,
         albums: albums

@@ -58,7 +58,8 @@ smol                 = { workspace = true, optional = true }
 embedded-io-adapters = { workspace = true, optional = true }
 serde                = { version = "1.0.228", features = ["derive"], optional = true }
 serde_json           = { version = "1.0.150", optional = true }
-image                = { version = "0.25.10", optional = true }
+# The formats folder art comes in, and the two the cover caches are written in.
+image                = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "qoi"], optional = true }
 toml_edit            = { version = "0.25", optional = true }
 shellexpand          = { version = "3.1", optional = true }
 anyhow               = { version = "1.0", optional = true }
