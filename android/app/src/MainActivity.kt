@@ -14,12 +14,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
@@ -70,22 +75,44 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** The library, with an album or the player opened over it. Back closes whatever is on top. */
+/** The library, with an album or the player opened over it. Back closes whatever is on top.
+ *
+ * Opens on the player when there is something to play. Playing an album closes it, so Back from the player returns to
+ * the library. */
 @Composable
 private fun Screens(onChooseFolder: () -> Unit) {
     var album by rememberSaveable { mutableStateOf<Long?>(null) }
-    var player by rememberSaveable { mutableStateOf(false) }
+    var player by rememberSaveable { mutableStateOf(App.storage != null && App.playback.current != null) }
     BackHandler(enabled = player || album != null) {
         if (player) player = false else album = null
     }
     val openAlbum = album
-    when {
-        player -> PlayerScreen(onBack = { player = false })
-        openAlbum != null -> AlbumScreen(openAlbum, onBack = { album = null }, onPlayed = { player = true })
-        else -> LibraryScreen(
-            onOpenAlbum = { album = it },
-            onOpenPlayer = { player = true },
-            onChooseFolder = onChooseFolder,
-        )
+    val covered = player || openAlbum != null
+    // A focused search field would otherwise keep the keyboard up over the screen on top.
+    val focus = LocalFocusManager.current
+    LaunchedEffect(covered) { if (covered) focus.clearFocus() }
+    Box {
+        // Kept under whatever is open, hidden, so that it comes back as it was left: scrolled, searched and filtered.
+        Box(modifier = if (covered) Modifier.graphicsLayer { alpha = 0f }.clearAndSetSemantics {} else Modifier) {
+            LibraryScreen(
+                onOpenAlbum = { album = it },
+                onOpenPlayer = { player = true },
+                onChooseFolder = onChooseFolder,
+            )
+        }
+        if (covered) {
+            // Takes every touch, so none reaches the library beneath.
+            val takeTouches = Modifier.pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } }
+            Box(modifier = Modifier.fillMaxSize().then(takeTouches)) {
+                if (player) {
+                    PlayerScreen(onBack = { player = false })
+                } else if (openAlbum != null) {
+                    AlbumScreen(openAlbum, onBack = { album = null }, onPlayed = {
+                        album = null
+                        player = true
+                    })
+                }
+            }
+        }
     }
 }
