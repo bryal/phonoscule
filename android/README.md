@@ -96,8 +96,8 @@ cannot keep up with playback on a phone.
 The crate is a member of the repository's Cargo workspace, so it shares the
 lockfile and the `target/` directory with the desktop players.
 
-The launcher icon is rendered from the desktop player's artwork
-(`gui/assets/icon/phonoscule.svg`) at build time with `rsvg-convert`, so that
+The launcher icon is rendered from the desktop player's artwork stood on end
+(`gui/assets/icon/phonoscule-vertical.svg`) at build time with `rsvg-convert`, so that
 has to be installed. On Arch it comes with `librsvg`.
 
 
