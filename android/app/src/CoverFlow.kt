@@ -27,13 +27,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sign
 import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -45,8 +45,10 @@ data class FlowCover(val cover: Long?, val accent: Int?)
 /** The desktop player's Cover Flow, stood on end: the queue's albums stacked above and below the playing one, tilted
  * away like the pages of a flip book, receding and fading with distance.
  *
- * The album the flow comes to rest on plays, as on the desktop: drag or fling to another, or tap one in the stacks.
- * Tap the playing album to pause or resume.
+ * The album the flow comes to rest on plays, as on the desktop: drag to another, or tap one in the stacks. Tap the
+ * playing album to pause or resume. As the track names' drag does, a flick, a drag let go within [FLICK_MS], steps just
+ * one album, and the flow goes no further than that one while it might yet be a flick; a drag held longer is followed,
+ * and plays the album it lets go at.
  *
  * Pass as `obscuredBottom` how much of the flow's bottom something floats over: the covers size and centre themselves
  * in the rest, and the lower stack runs on beneath it. */
@@ -75,9 +77,9 @@ fun VerticalCoverFlow(
     }
 
     /** Bring cover `ix` to the middle, and play it unless it plays already. */
-    fun settle(ix: Int, velocity: Float = 0f) {
+    fun settle(ix: Int) {
         if (currentCount == 0) return
-        scope.launch { position.animateTo(ix.toFloat(), SETTLE, initialVelocity = velocity) }
+        scope.launch { position.animateTo(ix.toFloat(), SETTLE) }
         if (ix != currentPlaying) currentOnPlay(ix)
     }
 
@@ -107,32 +109,47 @@ fun VerticalCoverFlow(
             // The stacks' far ends, mostly faded, reach past the edges.
             .clipToBounds()
             .pointerInput(Unit) {
-                val tracker = VelocityTracker()
-                // Where the drag has taken the flow. Kept here, since a snap launched for one move has not
-                // necessarily landed by the next.
+                // Where the drag has taken the flow, which it shows once the drag is held past a flick. Kept here,
+                // since a move launched for one event has not necessarily landed by the next.
                 var target = 0f
+                // How far the drag has gone, in covers: which way a flick goes.
+                var moved = 0f
+                var from = 0
+                var began = -1L
+                var held = false
                 val last = { (currentCount - 1).coerceAtLeast(0) }
                 detectVerticalDragGestures(
                     onDragStart = {
                         dragging = true
-                        tracker.resetTracking()
                         target = position.value
+                        moved = 0f
+                        from = position.value.roundToInt()
+                        began = -1L
+                        held = false
                         scope.launch { position.stop() }
                     },
                     onVerticalDrag = { change, dy ->
-                        tracker.addPosition(change.uptimeMillis, change.position)
-                        target = (target - dy / (coverPx * DRAG_PER_COVER)).coerceIn(-OVERSCROLL, last() + OVERSCROLL)
-                        val to = target
-                        scope.launch { position.snapTo(to) }
+                        if (began < 0) began = change.uptimeMillis
+                        held = change.uptimeMillis - began >= FLICK_MS
+                        val covers = dy / (coverPx * DRAG_PER_COVER)
+                        target = (target - covers).coerceIn(-OVERSCROLL, last() + OVERSCROLL)
+                        moved -= covers
+                        if (held) {
+                            val to = target
+                            scope.launch { position.animateTo(to, FOLLOW) }
+                        } else {
+                            val to = (from + moved.coerceIn(-1f, 1f)).coerceIn(0f, last().toFloat())
+                            scope.launch { position.snapTo(to) }
+                        }
                     },
                     onDragEnd = {
                         dragging = false
-                        val velocity = tracker.calculateVelocity().y / (coverPx * DRAG_PER_COVER)
-                        settle((target - velocity * FLING_SECONDS).roundToInt().coerceIn(0, last()), -velocity)
+                        val to = if (held) target.roundToInt() else from + moved.sign.toInt()
+                        settle(to.coerceIn(0, last()))
                     },
                     onDragCancel = {
                         dragging = false
-                        settle(target.roundToInt().coerceIn(0, last()))
+                        settle(from.coerceIn(0, last()))
                     },
                 )
             }
@@ -284,9 +301,6 @@ private const val TILT = 1.1f
 /** How far a finger moves the flow by one cover, as a fraction of the middle cover's edge: about as far as the middle
  * cover travels into a stack, so it stays under the finger. */
 private const val DRAG_PER_COVER = 0.6f
-
-/** How far a fling carries on, as the seconds its release velocity would last. */
-private const val FLING_SECONDS = 0.3f
 
 /** How far past either end the flow can be dragged before it stops giving. */
 private const val OVERSCROLL = 0.4f

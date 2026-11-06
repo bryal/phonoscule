@@ -245,10 +245,10 @@ private val ICICLE_MARGIN = 8.dp
 /** The most of the height a name hangs before it is cut short. */
 private const val ICICLE_LENGTH = 0.42f
 
-/** How long a drag may last, in milliseconds, and still be a flick. */
-private const val FLICK_MS = 125L
+/** How long a drag may last, in milliseconds, and still be a flick: one that steps a single track, or album. */
+internal const val FLICK_MS = 125L
 
 private val SETTLE = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
 
-/** How a held drag's pick keeps up with it: closely, without jumping when it first catches up. */
-private val FOLLOW = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessHigh)
+/** How what a held drag moves keeps up with it: closely, without jumping when it first catches up. */
+internal val FOLLOW = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessHigh)
