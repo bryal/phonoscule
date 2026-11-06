@@ -27,6 +27,8 @@ class ScanService : Service() {
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("Scanning the music library")
             .setOngoing(true)
+            // Rather than ten seconds in, by when a rescan is nearly done.
+            .setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
         // First, whatever happens next: a service started this way that never calls it crashes the app.
         this.startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
