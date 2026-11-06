@@ -59,40 +59,40 @@
       <polygon points="36,22 79.5,14 79.5,25 36,33"/>
     </g>
     <mask id="eighth-light-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
-      <use href="#eighth-shape" fill="#ffffff" transform="translate(-1.2 -1.2)"/>
+      <use href="#eighth-shape" fill="#ffffff" transform="translate(-0.9 -0.9)"/>
       <use href="#eighth-shape" fill="#000000"/>
     </mask>
     <mask id="eighth-dark-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
-      <use href="#eighth-shape" fill="#ffffff" transform="translate(1.2 1.2)"/>
+      <use href="#eighth-shape" fill="#ffffff" transform="translate(0.9 0.9)"/>
       <use href="#eighth-shape" fill="#000000"/>
     </mask>
     <g id="eighth">
-      <rect x="-10" y="-10" width="120" height="120" fill="#ffffff" fill-opacity="0.9" mask="url(#eighth-light-rim)"/>
+      <rect x="-10" y="-10" width="120" height="120" fill="#ffffff" fill-opacity="0.4" mask="url(#eighth-light-rim)"/>
       <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.38" mask="url(#eighth-dark-rim)"/>
       <use href="#eighth-shape" filter="url(#leather)"/>
     </g>
     <mask id="beamed-eighths-light-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
-      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(-1.2 -1.2)"/>
+      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(-0.9 -0.9)"/>
       <use href="#beamed-eighths-shape" fill="#000000"/>
     </mask>
     <mask id="beamed-eighths-dark-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
-      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(1.2 1.2)"/>
+      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(0.9 0.9)"/>
       <use href="#beamed-eighths-shape" fill="#000000"/>
     </mask>
     <g id="beamed-eighths">
-      <rect x="-10" y="-10" width="120" height="120" fill="#ffffff" fill-opacity="0.9" mask="url(#beamed-eighths-light-rim)"/>
+      <rect x="-10" y="-10" width="120" height="120" fill="#ffffff" fill-opacity="0.4" mask="url(#beamed-eighths-light-rim)"/>
       <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.38" mask="url(#beamed-eighths-dark-rim)"/>
       <use href="#beamed-eighths-shape" filter="url(#leather)"/>
     </g>
-    <!-- The faces: each cover's colour, 0.75 of the way to #2b2b30, in the frame a note is drawn in.
+    <!-- The faces: each cover's colour, 0.55 of the way to #2b2b30, in the frame a note is drawn in.
          The near pair's run with their covers' shading, from the outer edge to the inner. -->
     <linearGradient id="near-left-face" x1="11.25" y1="0" x2="111.25" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#404364"/>
-      <stop offset="1" stop-color="#373a52"/>
+      <stop offset="0" stop-color="#51578d"/>
+      <stop offset="1" stop-color="#41456d"/>
     </linearGradient>
     <linearGradient id="near-right-face" x1="90.25" y1="0" x2="-9.75" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#56425a"/>
-      <stop offset="1" stop-color="#47384b"/>
+      <stop offset="0" stop-color="#79547c"/>
+      <stop offset="1" stop-color="#5e4361"/>
     </linearGradient>
     <!-- Leather grain, in the same frame: each colour times 0.82 to 1.18 with fine mottled noise. -->
     <filter id="leather" x="-10" y="-10" width="120" height="120" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
@@ -156,7 +156,7 @@
     </g>
     <g mask="url(#middle-reflection)">
       <rect x="66" y="156" width="124" height="124" fill="#b39dff" filter="url(#linen)"/>
-      <use href="#beamed-eighths" fill="#4d4864" transform="matrix(1.24 0 0 -1.24 66 280)"/>
+      <use href="#beamed-eighths" fill="#685e8d" transform="matrix(1.24 0 0 -1.24 66 280)"/>
     </g>
     <g clip-path="url(#near-right-shown)" mask="url(#near-right-reflection)">
       <rect width="256" height="256" fill="url(#near-right)" filter="url(#linen)"/>
@@ -172,6 +172,6 @@
     <polygon points="178,45 235,41 233,141 177,127" fill="url(#near-right)" filter="url(#linen)"/>
     <use href="#eighth" fill="url(#near-right-face)" transform="matrix(0.5724 0.0518 -0.0147 0.9114 180.60 40.87)"/>
     <rect x="66" y="32" width="124" height="124" fill="#b39dff" filter="url(#linen)"/>
-    <use href="#beamed-eighths" fill="#4d4864" transform="matrix(1.24 0 0 1.24 66 32)"/>
+    <use href="#beamed-eighths" fill="#685e8d" transform="matrix(1.24 0 0 1.24 66 32)"/>
   </g>
 </svg>
