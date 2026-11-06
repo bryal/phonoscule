@@ -18,32 +18,25 @@
     near pair sit in the middle of what shows of their covers.
   -->
   <defs>
-    <!-- No real album art, so one sweep across the whole mark, which reads on a light or a dark
-         taskbar alike. -->
-    <linearGradient id="sweep" x1="0" y1="0" x2="256" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#4b7bff"/>
-      <stop offset="0.5" stop-color="#b39dff"/>
-      <stop offset="1" stop-color="#ff6eb4"/>
+    <!-- No real album art, so a colour for each cover, stepping from blue on the left through
+         lavender in the middle to pink on the right: #4b7bff, #7f8cff, #b39dff, #d986da, #ff6eb4.
+         The neighbours are shaded towards the edge that goes behind: their colour times 1 at the
+         outer edge and 0.72 at the inner, or 0.8 and 0.58 for the far pair. -->
+    <linearGradient id="far-left" x1="1" y1="0" x2="61" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3c62cc"/>
+      <stop offset="1" stop-color="#2c4794"/>
     </linearGradient>
-
-    <!-- The neighbours: the sweep where they are, shaded towards the edge that goes behind. Each
-         stop is the sweep's colour at that edge, times 1 at the outer edge and 0.72 at the inner,
-         or 0.8 and 0.58 for the far pair. -->
     <linearGradient id="near-left" x1="21" y1="0" x2="79" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#5c81ff"/>
-      <stop offset="1" stop-color="#6468b8"/>
+      <stop offset="0" stop-color="#7f8cff"/>
+      <stop offset="1" stop-color="#5b65b8"/>
     </linearGradient>
     <linearGradient id="near-right" x1="235" y1="0" x2="177" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#f376c0"/>
-      <stop offset="1" stop-color="#9664a3"/>
-    </linearGradient>
-    <linearGradient id="far-left" x1="1" y1="0" x2="61" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#3d63cc"/>
-      <stop offset="1" stop-color="#485194"/>
+      <stop offset="0" stop-color="#d986da"/>
+      <stop offset="1" stop-color="#9c609d"/>
     </linearGradient>
     <linearGradient id="far-right" x1="255" y1="0" x2="195" y2="0" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#cc5890"/>
-      <stop offset="1" stop-color="#7f4d7d"/>
+      <stop offset="1" stop-color="#944068"/>
     </linearGradient>
 
     <!-- Two beamed eighth notes for the playing cover, one eighth for each neighbour. -->
@@ -104,7 +97,7 @@
       <use href="#eighth" transform="matrix(0.5796 -0.2399 -0.0213 -0.8829 20.66 235.45)"/>
     </g>
     <g mask="url(#middle-reflection)">
-      <rect x="66" y="156" width="124" height="124" fill="url(#sweep)"/>
+      <rect x="66" y="156" width="124" height="124" fill="#b39dff"/>
       <use href="#beamed-eighths" transform="matrix(1.24 0 0 -1.24 66 280)"/>
     </g>
     <g clip-path="url(#near-right-shown)" mask="url(#near-right-reflection)">
@@ -120,7 +113,7 @@
     <use href="#eighth" transform="matrix(0.5949 -0.0538 0.0157 0.9291 16.11 45.35)"/>
     <polygon points="178,45 235,41 233,141 177,127" fill="url(#near-right)"/>
     <use href="#eighth" transform="matrix(0.5724 0.0518 -0.0147 0.9114 180.60 40.87)"/>
-    <rect x="66" y="32" width="124" height="124" fill="url(#sweep)"/>
+    <rect x="66" y="32" width="124" height="124" fill="#b39dff"/>
     <use href="#beamed-eighths" transform="matrix(1.24 0 0 1.24 66 32)"/>
   </g>
 </svg>
