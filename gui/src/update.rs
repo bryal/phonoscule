@@ -334,6 +334,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
                 return ensure_covers(app);
             }
         }
+        Msg::Library(library::ScanEvent::Progress(_)) => (),
         Msg::Library(library::ScanEvent::Done { album_ids }) => {
             let ids: std::collections::HashSet<u64> = album_ids.into_iter().collect();
             let before = app.albums.len();

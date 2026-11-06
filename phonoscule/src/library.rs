@@ -25,10 +25,11 @@ use std::{
     fmt,
     future::Future,
     hash::{DefaultHasher, Hash, Hasher},
+    mem,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
     thread,
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::{
@@ -137,9 +138,44 @@ pub enum ScanEvent {
         /// mostly a path and an id -- does not keep these as well without meaning to.
         encoded: Arc<[u8]>,
     },
+    /// How far the scan has come. Each stage is reported as it starts, then a few times a second
+    /// at most.
+    Progress(ScanProgress),
     /// The scan is complete: every album has been reported. Albums absent from `album_ids` no
     /// longer exist and should be dropped.
     Done { album_ids: Vec<u64> },
+}
+
+/// The stages of a scan, in order. Covers load during and after [`ScanProgress::Reading`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanProgress {
+    /// Listing the directories under the root: `listed` so far, of about `expected`, which is how
+    /// many held music or a directory that did, as of the last scan. `None` with no last scan to
+    /// go by.
+    Listing { listed: usize, expected: Option<usize> },
+    /// Reading the tags in the directories holding audio files: `read` of `total` directories.
+    Reading { read: usize, total: usize },
+}
+
+/// The least time between two [`ScanEvent::Progress`] reports of one stage.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Decides which progress is worth a [`ScanEvent::Progress`]: the first of each stage, then one per
+/// [`PROGRESS_INTERVAL`].
+#[derive(Default)]
+struct ProgressPacer {
+    last: Option<(mem::Discriminant<ScanProgress>, Instant)>,
+}
+
+impl ProgressPacer {
+    fn due(&mut self, progress: &ScanProgress) -> bool {
+        let (stage, now) = (mem::discriminant(progress), Instant::now());
+        let due = self.last.is_none_or(|(last, at)| last != stage || now - at >= PROGRESS_INTERVAL);
+        if due {
+            self.last = Some((stage, now));
+        }
+        due
+    }
 }
 
 pub struct ScanOptions {
@@ -715,11 +751,23 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     // Phase 1: walk the tree, collecting each directory's audio files (with stat data) and its
     // cover image candidate in a single directory listing. Covers are kept for every directory,
     // even file-less ones -- a parent directory's cover can dress the albums below it.
+    let expected = (!cache.files.is_empty()).then(|| {
+        let dirs =
+            cache.files.keys().flat_map(|file| file.ancestors().skip(1).take_while(|dir| dir.starts_with(&options.root)));
+        dirs.collect::<HashSet<_>>().len()
+    });
+    let mut pacer = ProgressPacer::default();
     let mut dirs = vec![options.root];
     let mut jobs = Vec::new();
     let mut covers = HashMap::new();
+    let mut listed = 0;
     while let Some(dir) = dirs.pop() {
+        let progress = ScanProgress::Listing { listed, expected };
+        if pacer.due(&progress) && tx.send(ScanEvent::Progress(progress)).await.is_err() {
+            return;
+        }
         let Some(mut job) = dir_job(fs, &dir, &mut dirs).await else { continue };
+        listed += 1;
         if let Some(cover) = job.cover.take() {
             covers.insert(job.dir.clone(), cover);
         }
@@ -755,14 +803,22 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     let mut n_parsed = 0usize;
 
     let cache = &cache;
+    let total = jobs.len();
     let read_tags_phase = async {
+        let mut read = 0;
         let mut per_dir = futures::stream::iter(jobs)
             .map(|job| async move {
                 let read = read_dir_tags(fs, &job, cache).await;
                 (job, read)
             })
             .buffer_unordered(concurrency());
-        while let Some((job, (entries, parsed))) = per_dir.next().await {
+        loop {
+            let progress = ScanProgress::Reading { read, total };
+            if (read == total || pacer.due(&progress)) && tx.send(ScanEvent::Progress(progress)).await.is_err() {
+                return;
+            }
+            let Some((job, (entries, parsed))) = per_dir.next().await else { break };
+            read += 1;
             n_parsed += parsed;
             asm.absorb(&job.dir, &entries);
             fresh.extend(entries);
@@ -1404,6 +1460,7 @@ mod test {
                             album.cover = Some(art.clone());
                         }
                     }
+                    ScanEvent::Progress(_) => (),
                     ScanEvent::Done { album_ids } => {
                         albums.retain(|a| album_ids.contains(&a.id));
                         break;
@@ -1567,12 +1624,49 @@ mod test {
             while let Some(event) = stream.next().await {
                 match event {
                     ScanEvent::Album(album) => reports.push(album.tracks.len()),
-                    ScanEvent::Cover { .. } => (),
+                    ScanEvent::Cover { .. } | ScanEvent::Progress(_) => (),
                     ScanEvent::Done { .. } => break,
                 }
             }
         });
         assert_eq!(reports, [2], "one report, already holding both discs' tracks");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Progress starts with the listing, which expects the directories that held music or held one
+    /// that did, and ends with every music directory read.
+    #[test]
+    fn progress_runs_from_listing_to_reading() {
+        let root = std::env::temp_dir().join(format!("phonoscule-progress-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Scans")).unwrap();
+        for (dir, title, track) in [("Spread/CD1", "One", 1), ("Spread/CD2", "Two", 2)] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("t.wav"), wav_bytes(title, "Artist", "Spread", Some(track))).unwrap();
+        }
+        let progress = || {
+            let options = ScanOptions { cache_file: Some(root.join("cache.json")), ..plain_options(&root) };
+            let mut reports = Vec::new();
+            smol::block_on(async {
+                let mut stream = std::pin::pin!(scan(options));
+                while let Some(event) = stream.next().await {
+                    match event {
+                        ScanEvent::Progress(progress) => reports.push(progress),
+                        ScanEvent::Done { .. } => break,
+                        _ => (),
+                    }
+                }
+            });
+            reports
+        };
+
+        let cold = progress();
+        assert_eq!(cold.first(), Some(&ScanProgress::Listing { listed: 0, expected: None }));
+        assert_eq!(cold.last(), Some(&ScanProgress::Reading { read: 2, total: 2 }));
+        // The root, Spread and its two discs, but not Scans.
+        let warm = progress();
+        assert_eq!(warm.first(), Some(&ScanProgress::Listing { listed: 0, expected: Some(4) }));
 
         let _ = std::fs::remove_dir_all(&root);
     }

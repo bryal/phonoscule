@@ -450,6 +450,7 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             }
             if applied { After::Redraw } else { After::Idle }
         }
+        Msg::Library(library::ScanEvent::Progress(_)) => After::Idle,
         Msg::Library(library::ScanEvent::Done { album_ids }) => {
             let ids: std::collections::HashSet<u64> = album_ids.into_iter().collect();
             let before = model.albums.len();

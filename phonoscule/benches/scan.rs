@@ -145,6 +145,7 @@ fn drain(root: PathBuf) -> Vec<Album> {
                         album.cover = Some(art.clone());
                     }
                 }
+                ScanEvent::Progress(_) => (),
                 ScanEvent::Done { .. } => break,
             }
         }
