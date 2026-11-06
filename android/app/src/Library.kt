@@ -22,31 +22,31 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.lazy.staggeredgrid.LazyHorizontalStaggeredGrid
-import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
-import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.InputChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -81,17 +81,22 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-/** The library: a wall of covers to search, filter by genre and sort, with what is playing along the bottom.
+/** The library: a wall of covers to search, narrow by genre and artist, and sort, with what is playing along the
+ * bottom.
  *
- * Shows only the albums of `artists`, unless there are none, which [onClearArtists] asks to be rid of.
+ * Shows only the albums of the picked `genres` and `artists`, all of them while none are picked. A row for each filter
+ * names what is picked of it: its name opens its picker with [onOpenFilter], and what is picked clears it.
  *
  * Back clears the search, the genres and the artists, and leaves the search field, before it leaves the app. Pass
- * `covered` while this is not what shows, and Back is another screen's. */
+ * `covered` while another screen is open over this one, which then has Back to itself. */
 @Composable
 fun LibraryScreen(
     covered: Boolean,
+    genres: List<String>,
     artists: List<String>,
-    onClearArtists: () -> Unit,
+    onPickGenres: (List<String>) -> Unit,
+    onPickArtists: (List<String>) -> Unit,
+    onOpenFilter: (Filter) -> Unit,
     onOpenAlbum: (Long) -> Unit,
     onOpenPlayer: () -> Unit,
     onChooseFolder: () -> Unit,
@@ -102,24 +107,20 @@ fun LibraryScreen(
     }
 
     var query by rememberSaveable { mutableStateOf("") }
-    var picked by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var albums by remember { mutableStateOf(emptyList<AlbumSummary>()) }
-    var genres by remember { mutableStateOf(emptyList<String>()) }
     var searching by remember { mutableStateOf(false) }
 
     val focus = LocalFocusManager.current
-    val filtered = query.isNotEmpty() || picked.isNotEmpty() || artists.isNotEmpty()
+    val filtered = query.isNotEmpty() || genres.isNotEmpty() || artists.isNotEmpty()
     BackHandler(enabled = !covered && (filtered || searching)) {
         query = ""
-        picked = emptyList()
-        onClearArtists()
+        onPickGenres(emptyList())
+        onPickArtists(emptyList())
         focus.clearFocus()
     }
 
-    LaunchedEffect(query, picked, artists, App.libraryVersion) {
-        val (found, all) = withContext(Dispatchers.IO) { Core.albums(query, picked, artists) to Core.genres() }
-        albums = found
-        genres = all
+    LaunchedEffect(query, genres, artists, App.libraryVersion) {
+        albums = withContext(Dispatchers.IO) { Core.albums(query, genres, artists) }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -143,16 +144,19 @@ fun LibraryScreen(
             LibraryMenu(albums, onChooseFolder)
         }
 
-        GenreChips(genres, picked, onPick = { picked = it })
-        if (artists.isNotEmpty()) {
-            val label = if (artists.size == 1) artists[0] else "${artists.size} artists"
-            InputChip(
-                selected = true,
-                onClick = onClearArtists,
-                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                trailingIcon = { Icon(Icons.Default.Clear, contentDescription = "Show every artist") },
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
+        // Compact rows: padded out to Material's 48dp touch target, two of them would take a sixth of the screen.
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = CHIP_GAP),
+                verticalArrangement = Arrangement.spacedBy(CHIP_GAP),
+            ) {
+                FilterRow(Filter.GENRES, genres, onOpen = { onOpenFilter(Filter.GENRES) }, onClear = {
+                    onPickGenres(emptyList())
+                })
+                FilterRow(Filter.ARTISTS, artists, onOpen = { onOpenFilter(Filter.ARTISTS) }, onClear = {
+                    onPickArtists(emptyList())
+                })
+            }
         }
 
         HorizontalDivider()
@@ -188,7 +192,7 @@ fun LibraryScreen(
                 Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                     if (!App.scanning) {
                         Text(
-                            text = if (query.isEmpty() && picked.isEmpty() && artists.isEmpty()) {
+                            text = if (!filtered) {
                                 "No albums here yet. Pull down to scan."
                             } else {
                                 "Nothing matches."
@@ -291,25 +295,28 @@ private fun SortMenu(expanded: Boolean, onDismiss: () -> Unit) {
     }
 }
 
-/** Chips that limit the wall to the albums of the `picked` genres, in two rows to scroll across. Each genre's chip
- * toggles it; All clears them, and with none picked every album shows. Shows nothing while no album has a genre. */
+/** `filter`'s row: its name, at the same place in every row, which opens its picker, then what is picked of it, which
+ * clears it. */
 @Composable
-private fun GenreChips(genres: List<String>, picked: List<String>, onPick: (List<String>) -> Unit) {
-    if (genres.isEmpty()) return
-    // Material pads every chip out to a 48dp touch target, which would make two rows of them a third of a phone.
-    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
-        LazyHorizontalStaggeredGrid(
-            rows = StaggeredGridCells.Fixed(2),
-            modifier = Modifier.height(CHIP_HEIGHT * 2 + CHIP_GAP * 3),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = CHIP_GAP),
-            verticalArrangement = Arrangement.spacedBy(CHIP_GAP),
-            horizontalItemSpacing = CHIP_GAP,
-        ) {
-            item { FilterToggle("All", selected = picked.isEmpty(), onClick = { onPick(emptyList()) }) }
-            items(genres, key = { it }) { genre ->
-                val selected = genre in picked
-                FilterToggle(genre, selected, onClick = { onPick(if (selected) picked - genre else picked + genre) })
-            }
+private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, onClear: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        AssistChip(
+            onClick = onOpen,
+            label = { Text(filter.title) },
+            trailingIcon = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+            modifier = Modifier.width(FILTER_NAME_WIDTH),
+        )
+        if (picked.isEmpty()) {
+            Text("All", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            val label = if (picked.size == 1) picked[0] else "${picked.size} ${filter.title.lowercase()}"
+            InputChip(
+                selected = true,
+                onClick = onClear,
+                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                trailingIcon = { Icon(Icons.Default.Clear, contentDescription = "Clear") },
+                modifier = Modifier.weight(1f, fill = false),
+            )
         }
     }
 }
@@ -437,6 +444,7 @@ private const val PULL_GRACE_MS = 1000L
 
 private val CHIP_HEIGHT = 28.dp
 val CHIP_GAP = 6.dp
+private val FILTER_NAME_WIDTH = 104.dp
 
 private val SCROLL_BAR_WIDTH = 3.dp
 private val SCROLL_BAR_MARGIN = 3.dp

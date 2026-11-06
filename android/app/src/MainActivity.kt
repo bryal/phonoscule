@@ -10,8 +10,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
@@ -19,7 +17,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -31,7 +28,6 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val chooseFolder = this.registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
@@ -79,67 +75,68 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** Three pages side by side, the artists, the library and the player, with an album opened over them. Swiping moves
- * between the pages, and Back from either side returns to the library. Back closes an open album.
+/** The library, with the player, an album or one of its filters opened over it. Back closes whatever is on top.
  *
  * Opens on the player when there is something to play. Playing an album closes it, so Back from the player returns to
  * the library. */
 @Composable
 private fun Screens(onChooseFolder: () -> Unit) {
     var album by rememberSaveable { mutableStateOf<Long?>(null) }
+    var player by rememberSaveable { mutableStateOf(App.storage != null && App.playback.current != null) }
+    var filter by rememberSaveable { mutableStateOf<Filter?>(null) }
+    var genres by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var artists by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    val first = if (App.storage != null && App.playback.current != null) PLAYER else LIBRARY
-    val pages = rememberPagerState(initialPage = first) { PAGES }
-    val scope = rememberCoroutineScope()
-    val show = { page: Int -> scope.launch { pages.animateScrollToPage(page) } }
     val openAlbum = album
-    BackHandler(enabled = openAlbum != null || pages.currentPage != LIBRARY) {
-        if (openAlbum != null) album = null else show(LIBRARY)
-    }
-    val onLibrary = openAlbum == null && pages.currentPage == LIBRARY
-    // A focused search field would otherwise keep the keyboard up over another page.
-    val focus = LocalFocusManager.current
-    LaunchedEffect(onLibrary) { if (!onLibrary) focus.clearFocus() }
-    Box {
-        // Kept under an open album, hidden, so that the pages come back as they were left: scrolled, searched and
-        // filtered. Every page is kept while another shows, for the same reason.
-        val hidden = Modifier.graphicsLayer { alpha = 0f }.clearAndSetSemantics {}
-        Box(modifier = if (openAlbum != null) hidden else Modifier) {
-            HorizontalPager(
-                state = pages,
-                beyondViewportPageCount = PAGES - 1,
-                userScrollEnabled = App.storage != null,
-            ) { page ->
-                when (page) {
-                    ARTISTS -> ArtistsScreen(artists, onPick = { artists = it })
-                    LIBRARY -> LibraryScreen(
-                        covered = !onLibrary,
-                        artists = artists,
-                        onClearArtists = { artists = emptyList() },
-                        onOpenAlbum = { album = it },
-                        onOpenPlayer = { show(PLAYER) },
-                        onChooseFolder = onChooseFolder,
-                    )
-                    else -> PlayerScreen(onBack = { show(LIBRARY) })
-                }
-            }
+    val openFilter = filter
+    val covered = player || openAlbum != null || openFilter != null
+    BackHandler(enabled = covered) {
+        when {
+            player -> player = false
+            openAlbum != null -> album = null
+            else -> filter = null
         }
-        if (openAlbum != null) {
-            // Takes every touch, so none reaches the pages beneath.
+    }
+    // A focused search field would otherwise keep the keyboard up over the screen on top.
+    val focus = LocalFocusManager.current
+    LaunchedEffect(covered) { if (covered) focus.clearFocus() }
+    Box {
+        // Kept under whatever is open, hidden, so that it comes back as it was left: scrolled, searched and filtered.
+        val hidden = Modifier.graphicsLayer { alpha = 0f }.clearAndSetSemantics {}
+        Box(modifier = if (covered) hidden else Modifier) {
+            LibraryScreen(
+                covered = covered,
+                genres = genres,
+                artists = artists,
+                onPickGenres = { genres = it },
+                onPickArtists = { artists = it },
+                onOpenFilter = { filter = it },
+                onOpenAlbum = { album = it },
+                onOpenPlayer = { player = true },
+                onChooseFolder = onChooseFolder,
+            )
+        }
+        if (covered) {
+            // Takes every touch, so none reaches the library beneath.
             val takeTouches = Modifier.pointerInput(Unit) {
                 awaitPointerEventScope { while (true) awaitPointerEvent() }
             }
             Box(modifier = Modifier.fillMaxSize().then(takeTouches)) {
-                AlbumScreen(openAlbum, onBack = { album = null }, onPlayed = {
-                    album = null
-                    scope.launch { pages.scrollToPage(PLAYER) }
-                })
+                if (player) {
+                    PlayerScreen(onBack = { player = false })
+                } else if (openAlbum != null) {
+                    AlbumScreen(openAlbum, onBack = { album = null }, onPlayed = {
+                        album = null
+                        player = true
+                    })
+                } else if (openFilter != null) {
+                    FilterScreen(
+                        openFilter,
+                        picked = if (openFilter == Filter.GENRES) genres else artists,
+                        onPick = { if (openFilter == Filter.GENRES) genres = it else artists = it },
+                        onBack = { filter = null },
+                    )
+                }
             }
         }
     }
 }
-
-private const val ARTISTS = 0
-private const val LIBRARY = 1
-private const val PLAYER = 2
-private const val PAGES = 3
