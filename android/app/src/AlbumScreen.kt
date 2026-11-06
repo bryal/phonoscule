@@ -82,20 +82,21 @@ fun AlbumScreen(id: Long, onBack: () -> Unit, onPlayed: () -> Unit) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // Play on the right, for the thumb.
                     Row(
-                        modifier = Modifier.padding(vertical = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                     ) {
+                        OutlinedButton(onClick = { App.command { Core.enqueue(listOf(id)) } }) {
+                            Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null)
+                            Text("Enqueue", modifier = Modifier.padding(start = 4.dp))
+                        }
                         Button(onClick = {
                             App.command { Core.play(listOf(id)) }
                             onPlayed()
                         }) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null)
                             Text("Play", modifier = Modifier.padding(start = 4.dp))
-                        }
-                        OutlinedButton(onClick = { App.command { Core.enqueue(listOf(id)) } }) {
-                            Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null)
-                            Text("Enqueue", modifier = Modifier.padding(start = 4.dp))
                         }
                     }
                 }
