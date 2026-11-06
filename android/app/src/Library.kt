@@ -99,7 +99,9 @@ fun LibraryScreen(onOpenAlbum: (Long) -> Unit, onOpenPlayer: () -> Unit, onChoos
 
         GenreChips(genres, genre, onPick = { genre = it })
 
-        if (App.scanning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) else HorizontalDivider()
+        // Only while there is nothing to show yet: an indeterminate bar redraws the screen every frame, which over a
+        // routine rescan costs more CPU than the scan.
+        if (App.scanning && albums.isEmpty()) LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) else HorizontalDivider()
 
         Box(modifier = Modifier.weight(1f)) {
             if (albums.isEmpty()) {
