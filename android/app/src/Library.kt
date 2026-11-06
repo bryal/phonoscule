@@ -1,5 +1,10 @@
 package zone.jo.phonoscule
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -53,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -113,11 +119,20 @@ fun LibraryScreen(onOpenAlbum: (Long) -> Unit, onOpenPlayer: () -> Unit, onChoos
                 pulled = false
             }
         }
+        // Asked before the scan starts, as its notification is hidden for good if posted without.
+        val context = LocalContext.current
+        val askToNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { App.scan() }
         PullToRefreshBox(
             isRefreshing = pulled || App.scanning,
             onRefresh = {
                 pulled = true
-                App.scan()
+                if (Build.VERSION.SDK_INT >= 33 &&
+                    context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    App.scan()
+                }
             },
             modifier = Modifier.weight(1f),
         ) {
