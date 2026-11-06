@@ -62,7 +62,9 @@ fun PlayerScreen() {
     val covers = remember(queue) { queue.runs.map { FlowCover(it.album?.cover, it.album?.accent) } }
     val playback = App.playback
     val glow by animateColorAsState(accentColor(playback.album?.accent), tween(GLOW_MS), label = "glow")
-    val tracks = rememberTrackScroll(queue.tracks.size, playback.current, onPlay = { App.command { Core.jumpTo(it) } })
+    val run = queue.runs.getOrNull(queue.runOf(playback.current))
+    val runTracks = if (run == null) IntRange.EMPTY else run.start until run.end
+    val tracks = rememberTrackScroll(runTracks, playback.current, onPlay = { App.command { Core.jumpTo(it) } })
     var footerPx by remember { mutableIntStateOf(0) }
     val footer = with(LocalDensity.current) { footerPx.toDp() }
 
@@ -80,8 +82,8 @@ fun PlayerScreen() {
                 )
             },
     ) {
-        // The flow runs on under the controls, which float over it, with the track names hanging over its top. A drag
-        // up or down moves through the albums, sideways through the tracks.
+        // The flow runs on under the controls, which float over it, with the playing album's track names hanging over
+        // its top. A drag up or down moves through the albums, sideways through the album's tracks.
         Box(modifier = Modifier.fillMaxSize().trackDrag(tracks)) {
             if (queue.runs.isEmpty()) {
                 Text(
@@ -102,7 +104,10 @@ fun PlayerScreen() {
                     obscuredBottom = footer,
                 )
             }
-            TrackIcicles(queue.tracks, playback.current, tracks, modifier = Modifier.fillMaxSize())
+            if (run != null) {
+                val titles = remember(queue, run) { queue.tracks.subList(run.start, run.end).map { it.title } }
+                TrackIcicles(titles, run.start, tracks, modifier = Modifier.fillMaxSize())
+            }
         }
 
         // On the glass the library's bars are of, tinted with the glow. It takes every touch on it, so that none

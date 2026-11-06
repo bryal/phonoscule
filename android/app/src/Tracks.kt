@@ -22,24 +22,27 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/** Where the queue's track names stand: the queue index in the middle, fractional while they move. Move it with
- * [trackDrag]; it follows what plays otherwise. */
+/** Which of the playing album's tracks is picked: a queue index, fractional while it moves. Move it with [trackDrag];
+ * it follows what plays otherwise. */
 class TrackScroll internal constructor(private val scope: CoroutineScope, first: Int) {
     val position = Animatable(first.toFloat())
     internal var dragging = false
-    internal var count = 0
+    internal var tracks = IntRange.EMPTY
     internal var playing: Int? = null
     internal var onPlay: (Int) -> Unit = {}
 
-    /** Bring track `ix` to the middle, and play it unless it plays already. */
+    /** The picked track: the playing one, or the one a drag has come to. */
+    val picked: Int get() = position.value.roundToInt()
+
+    /** Pick track `ix`, and play it unless it plays already. */
     internal fun settle(ix: Int, velocity: Float = 0f) {
-        if (count == 0) return
+        if (tracks.isEmpty()) return
         scope.launch { position.animateTo(ix.toFloat(), SETTLE, initialVelocity = velocity) }
         if (ix != playing) onPlay(ix)
     }
@@ -53,13 +56,13 @@ class TrackScroll internal constructor(private val scope: CoroutineScope, first:
     }
 }
 
-/** A [TrackScroll] over a queue of `count` tracks, following `playing` while not dragged. Coming to rest on a track
- * other than `playing` calls `onPlay` with it. */
+/** A [TrackScroll] over the queue indices `tracks`, the playing album's, following `playing` while not dragged.
+ * Coming to rest on a track other than `playing` calls `onPlay` with it. */
 @Composable
-fun rememberTrackScroll(count: Int, playing: Int?, onPlay: (Int) -> Unit): TrackScroll {
+fun rememberTrackScroll(tracks: IntRange, playing: Int?, onPlay: (Int) -> Unit): TrackScroll {
     val scope = rememberCoroutineScope()
     val scroll = remember { TrackScroll(scope, playing ?: 0) }
-    scroll.count = count
+    scroll.tracks = tracks
     scroll.playing = playing
     scroll.onPlay = onPlay
     LaunchedEffect(playing) {
@@ -68,67 +71,71 @@ fun rememberTrackScroll(count: Int, playing: Int?, onPlay: (Int) -> Unit): Track
     return scroll
 }
 
-/** Moves `scroll` a track per [TRACK_PITCH] dragged sideways, as the names follow the finger, and on letting go
- * settles on a track and plays it. Vertical drags and taps are left to what is beneath. */
+/** Moves `scroll` along the album's tracks as a sideways drag goes, a track per name passed, and on letting go plays
+ * the one it comes to. Vertical drags and taps are left to what is beneath. */
 fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll) {
-    val pitch = TRACK_PITCH.toPx()
     val tracker = VelocityTracker()
-    // Where the drag has taken the names. Kept here, since a snap launched for one move has not necessarily landed by
+    // Where the drag has taken the pick. Kept here, since a snap launched for one move has not necessarily landed by
     // the next.
     var target = 0f
-    val last = { (scroll.count - 1).coerceAtLeast(0) }
+    var pitch = 1f
     detectHorizontalDragGestures(
         onDragStart = {
             scroll.dragging = true
             tracker.resetTracking()
             target = scroll.position.value
+            pitch = pitchFor(size.width.toFloat(), scroll.tracks.count())
             scroll.stop()
         },
         onHorizontalDrag = { change, dx ->
             tracker.addPosition(change.uptimeMillis, change.position)
-            target = (target - dx / pitch).coerceIn(-OVERSCROLL, last() + OVERSCROLL)
+            val range = scroll.tracks
+            if (range.isEmpty()) return@detectHorizontalDragGestures
+            target = (target + dx / pitch).coerceIn(range.first.toFloat(), range.last.toFloat())
             scroll.snapTo(target)
         },
         onDragEnd = {
             scroll.dragging = false
+            val range = scroll.tracks
+            if (range.isEmpty()) return@detectHorizontalDragGestures
             val velocity = tracker.calculateVelocity().x / pitch
-            scroll.settle((target - velocity * FLING_SECONDS).roundToInt().coerceIn(0, last()), -velocity)
+            scroll.settle((target + velocity * FLING_SECONDS).roundToInt().coerceIn(range), velocity)
         },
         onDragCancel = {
             scroll.dragging = false
-            scroll.settle(target.roundToInt().coerceIn(0, last()))
+            val range = scroll.tracks
+            if (!range.isEmpty()) scroll.settle(target.roundToInt().coerceIn(range))
         },
     )
 }
 
-/** The queue's track names hanging from the top edge side by side, each written downwards, like icicles: the one at
- * `scroll`'s position in the middle, the rest fading off to either side. `playing` is lit. Each hangs at most
- * [ICICLE_LENGTH] of the height. They take no touches. */
+/** The album's track `titles` hanging from the top edge side by side, each written downwards, like icicles: in order
+ * from the left, centred, and still. The one `scroll` has picked is lit; `first` is the queue index of the first. Each
+ * hangs at most [ICICLE_LENGTH] of the height. They take no touches. */
 @Composable
-fun TrackIcicles(tracks: List<QueueTrack>, playing: Int?, scroll: TrackScroll, modifier: Modifier = Modifier) {
-    val near by remember { derivedStateOf { scroll.position.value.roundToInt() } }
-    val first = (near - REACH).coerceAtLeast(0)
-    val last = (near + REACH).coerceAtMost(tracks.size - 1)
+fun TrackIcicles(titles: List<String>, first: Int, scroll: TrackScroll, modifier: Modifier = Modifier) {
+    val picked by remember { derivedStateOf { scroll.picked } }
     Layout(
         content = {
-            for (ix in first..last) Icicle(tracks[ix].title, lit = ix == playing)
+            titles.forEachIndexed { k, title -> Icicle(title, lit = first + k == picked) }
         },
         modifier = modifier,
     ) { measurables, constraints ->
         val hang = Constraints(maxHeight = (constraints.maxHeight * ICICLE_LENGTH).roundToInt())
         val placeables = measurables.map { it.measure(hang) }
-        val pitch = TRACK_PITCH.toPx()
+        val pitch = pitchFor(constraints.maxWidth.toFloat(), placeables.size)
+        val left = (constraints.maxWidth - pitch * placeables.size) / 2
         layout(constraints.maxWidth, constraints.maxHeight) {
-            // Read here, not in composition: the names move every frame of a drag without recomposing.
-            val at = scroll.position.value
             placeables.forEachIndexed { k, placeable ->
-                val d = first + k - at
-                val x = constraints.maxWidth / 2 + d * pitch - placeable.width / 2
-                placeable.placeWithLayer(x.roundToInt(), 0) { alpha = (1f - abs(d) / (REACH + 1)).coerceIn(0f, 1f) }
+                placeable.place((left + pitch * (k + 0.5f) - placeable.width / 2).roundToInt(), 0)
             }
         }
     }
 }
+
+/** How far apart `count` names stand across `width` pixels: [TRACK_PITCH], or closer, so that they all fit. */
+private fun Density.pitchFor(width: Float, count: Int): Float =
+    if (count == 0) TRACK_PITCH.toPx() else minOf(TRACK_PITCH.toPx(), width / count)
 
 /** One track's name, written downwards: laid out along the height it may hang, then turned a quarter clockwise. */
 @Composable
@@ -150,19 +157,13 @@ private fun Icicle(title: String, lit: Boolean) {
     )
 }
 
-/** How far apart the names stand, which is also how far a drag goes for one track. */
+/** How far apart the names stand while they fit, which is also how far a drag goes for one track. */
 private val TRACK_PITCH = 34.dp
-
-/** How many names show to either side of the middle one. */
-private const val REACH = 7
 
 /** The most of the height a name hangs before it is cut short. */
 private const val ICICLE_LENGTH = 0.42f
 
 /** How far ahead of where a fling lets go its momentum carries, in seconds at the speed it let go at. */
-private const val FLING_SECONDS = 0.3f
+private const val FLING_SECONDS = 0.15f
 
-/** How far past the first or last track a drag goes, in tracks, before it stops. */
-private const val OVERSCROLL = 0.4f
-
-private val SETTLE = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessLow)
+private val SETTLE = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
