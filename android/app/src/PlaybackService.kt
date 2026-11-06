@@ -93,14 +93,20 @@ class PlaybackService : MediaSessionService() {
 
 /** The core's queue and playback, as a Media3 player: what the media session shows, and how its buttons reach the core.
  *
+ * The session's playlist is only the tracks either side of the playing one, enough for previous and next: Media3
+ * rebuilds and sends the whole playlist on every change of track, which for a queue of thousands stalls the main
+ * thread. Its indices are offsets from [windowStart].
+ *
  * Holds no state of its own beyond the last queue it was given. Call [follow] when the playback changes. */
 @OptIn(UnstableApi::class)
 private class CorePlayer(looper: Looper) : SimpleBasePlayer(looper) {
     private var queue = Queue.EMPTY
 
-    /** The playback the state was last built for, and the playlist built with it. */
+    /** The playback the state was last built for, and the playlist built with it, starting at queue index
+     * [windowStart]. */
     private var shown: Playback? = null
     private var playlist = emptyList<MediaItemData>()
+    private var windowStart = 0
 
     fun setQueue(queue: Queue) {
         this.queue = queue
@@ -129,7 +135,7 @@ private class CorePlayer(looper: Looper) : SimpleBasePlayer(looper) {
             .setPlaylist(playlist)
         val current = playback.current
         if (current != null && current in queue.tracks.indices) {
-            builder.setCurrentMediaItemIndex(current)
+            builder.setCurrentMediaItemIndex(current - windowStart)
             builder.setContentPositionMs(
                 if (playback.playing) {
                     PositionSupplier.getExtrapolating(playback.positionMs, 1f)
@@ -141,10 +147,16 @@ private class CorePlayer(looper: Looper) : SimpleBasePlayer(looper) {
         return builder.build()
     }
 
-    /** The queue as media items. Only the playing one carries a length and artwork, which the core knows of no other. */
+    /** The window of the queue around the playing track as media items, and sets [windowStart]. Only the playing one
+     * carries a length and artwork, which the core knows of no other. */
     private fun playlist(playback: Playback): List<MediaItemData> {
+        val tracks = queue.tracks
+        val middle = (playback.current ?: 0).coerceIn(0, (tracks.size - 1).coerceAtLeast(0))
+        windowStart = (middle - 1).coerceAtLeast(0)
+        val window = windowStart until (middle + 2).coerceAtMost(tracks.size)
         val albums = queue.runs.mapNotNull { it.album }.associateBy { it.id }
-        return queue.tracks.mapIndexed { ix, track ->
+        return window.map { ix ->
+            val track = tracks[ix]
             val album = albums[track.album]
             val playing = ix == playback.current
             val metadata = MediaMetadata.Builder()
@@ -167,8 +179,9 @@ private class CorePlayer(looper: Looper) : SimpleBasePlayer(looper) {
     }
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
-        if (mediaItemIndex != App.playback.current && mediaItemIndex in queue.tracks.indices) {
-            App.command { Core.jumpTo(mediaItemIndex) }
+        val ix = windowStart + mediaItemIndex
+        if (ix != App.playback.current && ix in queue.tracks.indices) {
+            App.command { Core.jumpTo(ix) }
         } else {
             App.command { Core.seek(positionMs.coerceAtLeast(0)) }
         }
