@@ -27,6 +27,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
@@ -48,7 +49,7 @@ data class FlowCover(val cover: Long?, val accent: Int?)
  * The album the flow comes to rest on plays, as on the desktop: drag to another, or tap one in the stacks. Tap the
  * playing album to pause or resume. As the track names' drag does, a flick, a drag let go within [FLICK_MS], steps just
  * one album, and the flow goes no further than that one while it might yet be a flick; a drag held longer is followed,
- * and plays the album it lets go at.
+ * and let go moving, carries on with the momentum it had.
  *
  * Pass as `obscuredBottom` how much of the flow's bottom something floats over: the covers size and centre themselves
  * in the rest, and the lower stack runs on beneath it. */
@@ -77,9 +78,9 @@ fun VerticalCoverFlow(
     }
 
     /** Bring cover `ix` to the middle, and play it unless it plays already. */
-    fun settle(ix: Int) {
+    fun settle(ix: Int, velocity: Float = 0f) {
         if (currentCount == 0) return
-        scope.launch { position.animateTo(ix.toFloat(), SETTLE) }
+        scope.launch { position.animateTo(ix.toFloat(), SETTLE, initialVelocity = velocity) }
         if (ix != currentPlaying) currentOnPlay(ix)
     }
 
@@ -111,6 +112,7 @@ fun VerticalCoverFlow(
             .pointerInput(Unit) {
                 // Where the drag has taken the flow, which it shows once the drag is held past a flick. Kept here,
                 // since a move launched for one event has not necessarily landed by the next.
+                val tracker = VelocityTracker()
                 var target = 0f
                 // How far the drag has gone, in covers: which way a flick goes.
                 var moved = 0f
@@ -121,6 +123,7 @@ fun VerticalCoverFlow(
                 detectVerticalDragGestures(
                     onDragStart = {
                         dragging = true
+                        tracker.resetTracking()
                         target = position.value
                         moved = 0f
                         from = position.value.roundToInt()
@@ -129,6 +132,7 @@ fun VerticalCoverFlow(
                         scope.launch { position.stop() }
                     },
                     onVerticalDrag = { change, dy ->
+                        tracker.addPosition(change.uptimeMillis, change.position)
                         if (began < 0) began = change.uptimeMillis
                         held = change.uptimeMillis - began >= FLICK_MS
                         val covers = dy / (coverPx * DRAG_PER_COVER)
@@ -144,8 +148,12 @@ fun VerticalCoverFlow(
                     },
                     onDragEnd = {
                         dragging = false
-                        val to = if (held) target.roundToInt() else from + moved.sign.toInt()
-                        settle(to.coerceIn(0, last()))
+                        if (held) {
+                            val velocity = tracker.calculateVelocity().y / (coverPx * DRAG_PER_COVER)
+                            settle((target - velocity * FLING_SECONDS).roundToInt().coerceIn(0, last()), -velocity)
+                        } else {
+                            settle((from + moved.sign.toInt()).coerceIn(0, last()))
+                        }
                     },
                     onDragCancel = {
                         dragging = false
@@ -301,6 +309,9 @@ private const val TILT = 1.1f
 /** How far a finger moves the flow by one cover, as a fraction of the middle cover's edge: about as far as the middle
  * cover travels into a stack, so it stays under the finger. */
 private const val DRAG_PER_COVER = 0.6f
+
+/** How far a held drag's momentum carries on, as the seconds its velocity on letting go would last. */
+private const val FLING_SECONDS = 0.3f
 
 /** How far past either end the flow can be dragged before it stops giving. */
 private const val OVERSCROLL = 0.4f
