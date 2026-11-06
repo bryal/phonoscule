@@ -123,9 +123,10 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
 fun TrackIcicles(titles: List<String>, first: Int, scroll: TrackScroll, modifier: Modifier = Modifier) {
     val picked by remember { derivedStateOf { scroll.picked } }
     BoxWithConstraints(modifier = modifier) {
-        // As many as fit, if every one were as long as a name may hang.
+        // As many as fit, if every one were as long as a name may hang, with half a name's width to spare at each
+        // side for the ones at the ends.
         val lean = maxHeight * ICICLE_LENGTH / tan(Math.toRadians(ICICLE_TILT.toDouble())).toFloat()
-        val fits = ((maxWidth - lean) / TRACK_PITCH).toInt() + 1
+        val fits = ((maxWidth - lean - TRACK_PITCH) / TRACK_PITCH).toInt() + 1
         val shown = window(titles.size, picked - first, fits.coerceAtLeast(1))
         Icicles(titles.subList(shown.first, shown.last + 1), first + shown.first, picked)
     }
@@ -190,7 +191,7 @@ private fun Icicle(title: String, lit: Boolean) {
 private val TRACK_PITCH = 19.6.dp
 
 /** How far from flat the names read, upwards, in degrees. */
-private const val ICICLE_TILT = 80f
+private const val ICICLE_TILT = 90f
 
 /** How far below the top edge the names' ends stand. */
 private val ICICLE_MARGIN = 8.dp
