@@ -8,7 +8,7 @@ use phonoscule::config::Conf;
 use phonoscule::library::{self, Album};
 use phonoscule::search;
 use phonoscule::sort::SortOrder;
-use phonoscule::{media, player, session, volume, watcher};
+use phonoscule::{media, player, queue, session, volume, watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -471,7 +471,7 @@ pub fn boot(conf: Conf, scaling: f32, restored: session::Restored, index: Vec<Al
             root: conf.music_dir.clone(),
             // Dress the restored queue's covers first, outward from the playing album: they're
             // what a session booting into the player is looking at.
-            priority: cover_priority(&app.queue, app.current),
+            priority: queue::outward(&app.queue.iter().map(|item| item.album_id).collect::<Vec<_>>(), app.current),
             known_covers: Default::default(),
             cache_file: paths::tag_cache_file(),
             covers_dir: app.covers_dir.clone(),
@@ -585,34 +585,6 @@ pub fn hydrate_queue(queue: &mut [QueueItem], album: &Album) {
     }
 }
 
-/// The queue's albums as a cover-loading priority: distinct album ids ordered circularly outward
-/// from the playing track -- current, next, previous, next-but-one, ... -- so a session restored
-/// into the player dresses the covers nearest the flow's center first.
-fn cover_priority(queue: &[QueueItem], current: usize) -> Vec<u64> {
-    let n = queue.len();
-    let mut ids = Vec::new();
-    let mut seen = HashSet::new();
-    if n == 0 {
-        return ids;
-    }
-    let current = current.min(n - 1);
-    for d in 0..n {
-        let mut consider = |ix: usize| {
-            let id = queue[ix].album_id;
-            if seen.insert(id) {
-                ids.push(id);
-            }
-        };
-        if current + d < n {
-            consider(current + d);
-        }
-        if d > 0 && current >= d {
-            consider(current - d);
-        }
-    }
-    ids
-}
-
 /// A provisional album grouping key for a track not yet matched to the library: its parent
 /// directory (a serviceable stand-in for the tag-derived album until the tags arrive), hashed
 /// into the album-id key space. Replaced by the real album id when the scan hydrates the item.
@@ -626,14 +598,7 @@ fn dir_key(path: &std::path::Path) -> u64 {
 /// The queue's contiguous runs of tracks from the same album, as ranges into the queue. The
 /// Cover Flow shows one cover per run rather than one per track.
 pub fn album_runs(queue: &[QueueItem]) -> Vec<std::ops::Range<usize>> {
-    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
-    for (ix, item) in queue.iter().enumerate() {
-        match runs.last_mut() {
-            Some(run) if queue[run.start].album_id == item.album_id => run.end = ix + 1,
-            _ => runs.push(ix..ix + 1),
-        }
-    }
-    runs
+    queue::runs(queue.iter().map(|item| item.album_id))
 }
 
 /// The index of the run containing the given track index.
