@@ -122,8 +122,8 @@ fun PlayerScreen() {
         ) {
             GlassEdge(glow)
             NowPlaying(playback)
-            SeekBar(playback, glow)
             Transport(playback)
+            SeekBar(playback, glow)
         }
     }
 }
@@ -156,7 +156,7 @@ private fun SeekBar(playback: Playback, accent: Color) {
     val length = playback.lengthMs ?: 0
     var dragging by remember { mutableStateOf<Float?>(null) }
     val shown = dragging ?: if (length > 0) playback.positionMs.toFloat() / length else 0f
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+    Column(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp)) {
         Slider(
             value = shown.coerceIn(0f, 1f),
             onValueChange = { dragging = it },
@@ -183,7 +183,7 @@ private fun SeekBar(playback: Playback, accent: Color) {
 private fun Transport(playback: Playback) {
     var shuffling by remember { mutableStateOf(false) }
     Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
