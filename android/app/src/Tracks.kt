@@ -21,10 +21,12 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.tan
@@ -118,34 +120,47 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
  * `scroll` has picked is lit; `first` is the queue index of the first. Each hangs at most [ICICLE_LENGTH] of the
  * height, cut short at its end. They are centred, leaning and all, and take no touches.
  *
- * Where they do not all fit, those that do show, as many to either side of the picked one as it has tracks before and
- * after it, as the desktop's list does: the view only moves as the pick moves along a long album. */
+ * Where they do not all fit, a window of them shows, sliding along as the pick does, placed so the pick stands as far
+ * along it as it does along the whole album, as the desktop's list does. Between the album's ends, a name at either
+ * edge of the window may show only in part. */
 @Composable
 fun TrackIcicles(titles: List<String>, first: Int, scroll: TrackScroll, modifier: Modifier = Modifier) {
     val picked by remember { derivedStateOf { scroll.picked } }
     BoxWithConstraints(modifier = modifier) {
         // As many as fit, if every one were as long as a name may hang, with half a name's width to spare at each
-        // side for the ones at the ends.
-        val lean = maxHeight * ICICLE_LENGTH / tan(Math.toRadians(ICICLE_TILT.toDouble())).toFloat()
-        val fits = ((maxWidth - lean - TRACK_PITCH) / TRACK_PITCH).toInt() + 1
-        val shown = window(titles.size, picked - first, fits.coerceAtLeast(1))
-        Icicles(titles.subList(shown.first, shown.last + 1), first + shown.first, picked)
+        // side for the ones at the ends. In pixels.
+        val (width, hang, pitch) = with(LocalDensity.current) {
+            Triple(maxWidth.toPx(), (maxHeight * ICICLE_LENGTH).toPx(), TRACK_PITCH.toPx())
+        }
+        val lean = hang / tan(Math.toRadians(ICICLE_TILT.toDouble())).toFloat()
+        val fits = (((width - lean - pitch) / pitch).toInt() + 1).coerceAtLeast(1)
+        val count = titles.size
+        if (count <= fits) {
+            Icicles(titles, first, picked, slots = count, offset = { 0f }, lean = null)
+        } else {
+            // Which track stands at the window's first place: from the first track's, at the album's start, to the
+            // last's but `fits`, at its end, in step with the pick.
+            val start = { (scroll.position.value - first).coerceIn(0f, count - 1f) * (count - fits) / (count - 1) }
+            val from by remember(titles, first, fits) { derivedStateOf { floor(start()).toInt() } }
+            // One more to either side, which a slide brings partly in.
+            val shown = (from - 1).coerceAtLeast(0)..(from + fits).coerceAtMost(count - 1)
+            Icicles(
+                titles.subList(shown.first, shown.last + 1),
+                first + shown.first,
+                picked,
+                slots = fits,
+                offset = { start() - shown.first },
+                lean = lean,
+            )
+        }
     }
 }
 
-/** Which of `count` names show where `fits` do: all of them, or a window placed so the picked one, at `at`, stands as
- * far along it as it does along the whole. */
-private fun window(count: Int, at: Int, fits: Int): IntRange {
-    if (count <= fits) return 0 until count
-    val pick = at.coerceIn(0, count - 1)
-    val place = (pick.toFloat() / (count - 1) * (fits - 1)).roundToInt()
-    val start = (pick - place).coerceIn(0, count - fits)
-    return start until start + fits
-}
-
-/** `titles`, of queue indices from `first`, tilted and placed as [TrackIcicles] says. */
+/** `titles`, of queue indices from `first`, tilted and placed as [TrackIcicles] says: in `slots` places centred across
+ * the width, the first of them at `offset` tracks into `titles`. The centring allows for the longest of them to lean
+ * left, or for `lean` pixels if given, so that names coming and going do not shift the rest. */
 @Composable
-private fun Icicles(titles: List<String>, first: Int, picked: Int) {
+private fun Icicles(titles: List<String>, first: Int, picked: Int, slots: Int, offset: () -> Float, lean: Float?) {
     Layout(
         content = {
             titles.forEachIndexed { k, title -> Icicle(title, lit = first + k == picked) }
@@ -155,14 +170,16 @@ private fun Icicles(titles: List<String>, first: Int, picked: Int) {
         val (sin, cos) = sin(tilt).toFloat() to cos(tilt).toFloat()
         val longest = constraints.maxHeight * ICICLE_LENGTH / sin
         val placeables = measurables.map { it.measure(Constraints(maxWidth = longest.roundToInt())) }
-        // How far left of its end the longest name's start reaches.
-        val lean = (placeables.maxOfOrNull { it.width } ?: 0) * cos
+        // How far left of its end a name's start reaches.
+        val reach = lean ?: ((placeables.maxOfOrNull { it.width } ?: 0) * cos)
         val pitch = TRACK_PITCH.toPx()
-        val firstEnd = (constraints.maxWidth - lean - pitch * (placeables.size - 1)) / 2 + lean
+        val firstPlace = (constraints.maxWidth - reach - pitch * (slots - 1)) / 2 + reach
         layout(constraints.maxWidth, constraints.maxHeight) {
+            // Read here, not in composition: the window slides every frame of a drag without recomposing.
+            val at = offset()
             placeables.forEachIndexed { k, placeable ->
                 // Turned about the middle of its end, which stands at its place along the top.
-                val endX = firstEnd + pitch * k
+                val endX = firstPlace + pitch * (k - at)
                 val endY = ICICLE_MARGIN.toPx() + placeable.height / 2 * cos
                 val x = (endX - placeable.width).roundToInt()
                 placeable.placeWithLayer(x, (endY - placeable.height / 2).roundToInt()) {
