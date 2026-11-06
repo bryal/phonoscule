@@ -157,7 +157,7 @@ private fun NowPlaying(playback: Playback) {
 private fun SeekBar(playback: Playback, accent: Color) {
     val length = playback.lengthMs ?: 0
     var dragging by remember { mutableStateOf<Float?>(null) }
-    val shown = dragging ?: if (length > 0) playback.positionMs.toFloat() / length else 0f
+    val shown = dragging ?: if (length > 0) App.positionMs.toFloat() / length else 0f
     Column(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp)) {
         Slider(
             value = shown.coerceIn(0f, 1f),
@@ -174,7 +174,7 @@ private fun SeekBar(playback: Playback, accent: Color) {
             ),
         )
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-            Text(clock(((dragging?.times(length))?.toLong()) ?: playback.positionMs), style = MaterialTheme.typography.labelSmall)
+            Text(clock(((dragging?.times(length))?.toLong()) ?: App.positionMs), style = MaterialTheme.typography.labelSmall)
             Box(modifier = Modifier.weight(1f))
             Text(playback.lengthMs?.let(::clock) ?: "--:--", style = MaterialTheme.typography.labelSmall)
         }

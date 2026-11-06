@@ -72,6 +72,7 @@ object Core {
             scanProgress = resp.optObject("scan_progress")?.toScanProgress(),
             covers = resp.getJSONArray("covers").toLongs(),
             playback = resp.optObject("playback")?.toPlayback(),
+            positionMs = resp.optObject("playback")?.getLong("position_ms"),
         )
     }
 
@@ -133,7 +134,10 @@ object Core {
     /** Shuffle the queue in place, by album or by track, and all of it or all but what plays. */
     fun shuffle(albums: Boolean, all: Boolean) = request("shuffle").put("albums", albums).put("all", all).send { }
 
-    fun playback(): Playback = request("playback").send { resp -> resp.getJSONObject("playback").toPlayback() }
+    /** What is playing, and how far into it playback is, in milliseconds. */
+    fun playback(): Pair<Playback, Long> = request("playback").send { resp ->
+        resp.getJSONObject("playback").run { toPlayback() to getLong("position_ms") }
+    }
 
     /** Play the track at queue index `index`. */
     fun jumpTo(index: Int) = request("jump_to").put("index", index).send { }
@@ -199,7 +203,6 @@ private fun JSONObject.toAlbumHeader() = AlbumHeader(
 private fun JSONObject.toPlayback() = Playback(
     current = optIntOrNull("current"),
     playing = getBoolean("playing"),
-    positionMs = getLong("position_ms"),
     lengthMs = optLongOrNull("length_ms"),
     repeat = Repeat.entries.first { it.wire == getString("repeat") },
     title = getString("title"),
@@ -255,7 +258,8 @@ sealed class Answer {
 /** One entry of a directory listing. `mtime` is in milliseconds since the epoch. */
 data class Entry(val name: String, val dir: Boolean, val mtime: Long, val size: Long)
 
-/** What changed. `covers` are the albums whose cover can now be had. `playback` is null if it did not change. */
+/** What changed. `covers` are the albums whose cover can now be had. `playback`, and how far into it playback is,
+ * `positionMs`, are null if neither changed. */
 data class Notices(
     val library: Boolean,
     val queue: Boolean,
@@ -263,6 +267,7 @@ data class Notices(
     val scanProgress: ScanProgress?,
     val covers: List<Long>,
     val playback: Playback?,
+    val positionMs: Long?,
 )
 
 /** How far a scan has come: `done` of `total` in its `stage`. `total` is null when the scan cannot tell, and while
@@ -312,11 +317,11 @@ data class Queue(val tracks: List<QueueTrack>, val runs: List<Run>) {
 }
 
 /** What is playing. `current` is the queue index, null while the queue is empty.
- * `coverFile` is the cover as a JPEG, if one has been made. */
+ * `coverFile` is the cover as a JPEG, if one has been made. How far into it playback is comes apart from this, as it
+ * changes many times a second and the rest seldom. */
 data class Playback(
     val current: Int?,
     val playing: Boolean,
-    val positionMs: Long,
     val lengthMs: Long?,
     val repeat: Repeat,
     val title: String,
@@ -324,7 +329,7 @@ data class Playback(
     val coverFile: File?,
 ) {
     companion object {
-        val NONE = Playback(null, false, 0, null, Repeat.OFF, "", null, null)
+        val NONE = Playback(null, false, null, Repeat.OFF, "", null, null)
     }
 }
 

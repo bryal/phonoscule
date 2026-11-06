@@ -9,6 +9,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.util.concurrent.Executors
@@ -33,7 +34,13 @@ object App {
     var storage by mutableStateOf<Storage?>(null)
         private set
 
+    /** What is playing. Replaced only when it changes: not as playback moves through a track, which [positionMs]
+     * follows. */
     var playback by mutableStateOf(Playback.NONE)
+        private set
+
+    /** How far into the playing track playback is, in milliseconds. */
+    var positionMs by mutableLongStateOf(0L)
         private set
 
     var scanning by mutableStateOf(false)
@@ -58,24 +65,27 @@ object App {
     /** Whether a screen is showing: progress is only worth reporting many times a second then. */
     var foreground = false
 
-    private val playbackListeners = mutableListOf<(Playback) -> Unit>()
+    private val playbackListeners = mutableListOf<(Playback, Long) -> Unit>()
     private val queueListeners = mutableListOf<() -> Unit>()
     private val scanListeners = mutableListOf<() -> Unit>()
 
     fun init(context: Context) {
         this.context = context
         storage = Storage.restore(context)
-        playback = Core.playback()
+        Core.playback().let { (now, position) ->
+            playback = now
+            positionMs = position
+        }
         Workers { storage }.start()
         thread(name = "phonoscule-notices", isDaemon = true) { this.followNotices() }
     }
 
-    /** Call `listener` on the main thread whenever [playback] changes. */
-    fun onPlayback(listener: (Playback) -> Unit) {
+    /** Call `listener` on the main thread with [playback] and [positionMs] whenever either changes. */
+    fun onPlayback(listener: (Playback, Long) -> Unit) {
         playbackListeners.add(listener)
     }
 
-    fun removePlaybackListener(listener: (Playback) -> Unit) {
+    fun removePlaybackListener(listener: (Playback, Long) -> Unit) {
         playbackListeners.remove(listener)
     }
 
@@ -184,8 +194,10 @@ object App {
         }
         if (notices.library || coversChanged) this.libraryChanged()
         notices.playback?.let { new ->
+            val position = notices.positionMs ?: 0
             playback = new
-            for (listener in playbackListeners.toList()) listener(new)
+            positionMs = position
+            for (listener in playbackListeners.toList()) listener(new, position)
         }
     }
 

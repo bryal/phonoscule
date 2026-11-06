@@ -38,8 +38,8 @@ class PlaybackService : MediaSessionService() {
     private lateinit var session: MediaSession
     private lateinit var focus: Focus
 
-    private val onPlayback: (Playback) -> Unit = { playback ->
-        player.follow(playback)
+    private val onPlayback: (Playback, Long) -> Unit = { playback, positionMs ->
+        player.follow(playback, positionMs)
         focus.follow(playback.playing)
     }
 
@@ -102,9 +102,10 @@ class PlaybackService : MediaSessionService() {
 private class CorePlayer(looper: Looper) : SimpleBasePlayer(looper) {
     private var queue = Queue.EMPTY
 
-    /** The playback the state was last built for, and the playlist built with it, starting at queue index
-     * [windowStart]. */
+    /** The playback the state was last built for, how far into it, and the playlist built with it, starting at queue
+     * index [windowStart]. */
     private var shown: Playback? = null
+    private var shownPositionMs = 0L
     private var playlist = emptyList<MediaItemData>()
     private var windowStart = 0
 
@@ -114,20 +115,19 @@ private class CorePlayer(looper: Looper) : SimpleBasePlayer(looper) {
         this.invalidateState()
     }
 
-    /** Rebuild the state if `playback` changed more than its position has, which the session extrapolates by itself
-     * while playing. A seek moves it further than playing could have. */
-    fun follow(playback: Playback) {
-        val last = shown
-        val same = last != null &&
-            last.copy(positionMs = 0) == playback.copy(positionMs = 0) &&
-            abs(playback.positionMs - last.positionMs) < SEEK_THRESHOLD_MS
+    /** Rebuild the state if `playback` changed, or its position more than playing moves it, which the session
+     * extrapolates by itself. A seek moves it further than playing could have. */
+    fun follow(playback: Playback, positionMs: Long) {
+        val same = shown == playback && abs(positionMs - shownPositionMs) < SEEK_THRESHOLD_MS
         if (!same) this.invalidateState()
     }
 
     override fun getState(): State {
         val playback = App.playback
-        if (shown?.copy(positionMs = 0) != playback.copy(positionMs = 0)) playlist = this.playlist(playback)
+        val positionMs = App.positionMs
+        if (shown != playback) playlist = this.playlist(playback)
         shown = playback
+        shownPositionMs = positionMs
         val builder = State.Builder()
             .setAvailableCommands(COMMANDS)
             .setPlayWhenReady(playback.playing, PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
@@ -138,9 +138,9 @@ private class CorePlayer(looper: Looper) : SimpleBasePlayer(looper) {
             builder.setCurrentMediaItemIndex(current - windowStart)
             builder.setContentPositionMs(
                 if (playback.playing) {
-                    PositionSupplier.getExtrapolating(playback.positionMs, 1f)
+                    PositionSupplier.getExtrapolating(positionMs, 1f)
                 } else {
-                    PositionSupplier.getConstant(playback.positionMs)
+                    PositionSupplier.getConstant(positionMs)
                 },
             )
         }
