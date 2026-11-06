@@ -136,14 +136,14 @@
       <rect width="256" height="300" fill="url(#fade-far-right)"/>
     </mask>
     <!-- The covers' linen weave, as fine noise stretched one way crossed with the same stretched
-         the other: each colour times 0.84 to 1.16 with the weave. Every cover is woven from the
+         the other: each colour times 0.79 to 1.21 with the weave. Every cover is woven from the
          one field, so the weave runs on from one to the next. -->
     <filter id="linen" x="0" y="0" width="256" height="300" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feTurbulence type="fractalNoise" baseFrequency="2.5 0.1" numOctaves="2" seed="3" result="warp"/>
-      <feTurbulence type="fractalNoise" baseFrequency="0.1 2.5" numOctaves="2" seed="5" result="weft"/>
+      <feTurbulence type="fractalNoise" baseFrequency="2.7 0.11" numOctaves="2" seed="3" result="warp"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.11 2.7" numOctaves="2" seed="5" result="weft"/>
       <feComposite in="warp" in2="weft" operator="arithmetic" k2="0.5" k3="0.5" result="noise"/>
       <feColorMatrix in="noise" type="matrix" values="1 0 0 0 0  1 0 0 0 0  1 0 0 0 0  0 0 0 0 1" result="grey"/>
-      <feComposite in="SourceGraphic" in2="grey" operator="arithmetic" k1="0.32" k2="0.84"/>
+      <feComposite in="SourceGraphic" in2="grey" operator="arithmetic" k1="0.42" k2="0.79"/>
     </filter>
   </defs>
 
