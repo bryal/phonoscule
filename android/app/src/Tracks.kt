@@ -74,8 +74,9 @@ fun rememberTrackScroll(tracks: IntRange, playing: Int?, onPlay: (Int) -> Unit):
     return scroll
 }
 
-/** Moves `scroll` along the album's tracks as a sideways drag goes, a track per name passed, and on letting go plays
- * the one it comes to. Vertical drags and taps are left to what is beneath. */
+/** Moves `scroll` along the album's tracks a track per name's width dragged sideways, as if the names were pulled along
+ * under the pick, so a drag rightwards picks earlier tracks; on letting go, plays the one it comes to. Vertical drags
+ * and taps are left to what is beneath. */
 fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll) {
     val tracker = VelocityTracker()
     // Where the drag has taken the pick. Kept here, since a snap launched for one move has not necessarily landed by
@@ -94,7 +95,7 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
             tracker.addPosition(change.uptimeMillis, change.position)
             val range = scroll.tracks
             if (range.isEmpty()) return@detectHorizontalDragGestures
-            target = (target + dx / pitch).coerceIn(range.first.toFloat(), range.last.toFloat())
+            target = (target - dx / pitch).coerceIn(range.first.toFloat(), range.last.toFloat())
             scroll.snapTo(target)
         },
         onDragEnd = {
@@ -102,7 +103,7 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
             val range = scroll.tracks
             if (range.isEmpty()) return@detectHorizontalDragGestures
             val velocity = tracker.calculateVelocity().x / pitch
-            scroll.settle((target + velocity * FLING_SECONDS).roundToInt().coerceIn(range), velocity)
+            scroll.settle((target - velocity * FLING_SECONDS).roundToInt().coerceIn(range), -velocity)
         },
         onDragCancel = {
             scroll.dragging = false
