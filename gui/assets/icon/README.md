@@ -9,14 +9,18 @@ taskbar or dock is, light or dark.
 |---|---|
 | `phonoscule.svg` | the artwork, and the only copy of it |
 | `phonoscule-small.svg` | the same mark for 16-32px, where the full one turns to mud: one cover either side, larger, on whole pixels, and only the middle notes |
+| `phonoscule-vertical.svg` | the mark stood on end, for the Android launcher |
 
 There is nothing generated to commit. [`../../build.rs`](../../build.rs) renders these at build time
 and, on Windows, packs them into the `.ico` it compiles into the executable; the running player uses
 the 256px render as its window icon on every platform. resvg carries its own rasteriser, so this
 asks for no tool on the machine, and editing the artwork is the whole of changing the icon.
 
-The Android app's launcher icon is the same `phonoscule.svg`, on a backdrop of its own (see
+The Android app's launcher icon is `phonoscule-vertical.svg`, the same mark stood on end as that
+app's flow is, without reflections, on a backdrop of its own (see
 [`../../../android/app/res/drawable/ic_launcher.xml`](../../../android/app/res/drawable/ic_launcher.xml)).
+Its notes, colours, leather and linen are copied from `phonoscule.svg`, so a change to those there
+wants making here too.
 
 ## Editing
 
