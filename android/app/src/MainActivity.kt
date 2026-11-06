@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -25,6 +26,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
@@ -42,7 +46,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         this.enableEdgeToEdge()
         this.setContent {
-            MaterialTheme(colorScheme = darkColorScheme(background = Color.Black, surface = Color.Black)) {
+            MaterialTheme(
+                colorScheme = darkColorScheme(background = Color.Black, surface = Color.Black),
+                typography = IOSEVKA_TYPOGRAPHY,
+            ) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(modifier = Modifier.safeDrawingPadding()) {
                         Screens(onChooseFolder = { chooseFolder.launch(null) })
@@ -139,4 +146,28 @@ private fun Screens(onChooseFolder: () -> Unit) {
             }
         }
     }
+}
+
+/** The desktop player's font, Iosevka, in every style, its regular weight standing in for the heavier ones as on the
+ * desktop. What it lacks, such as Japanese, falls back to the system's font. */
+private val IOSEVKA_TYPOGRAPHY = Typography().let { t ->
+    val iosevka = FontFamily(Font(R.font.iosevka))
+    fun TextStyle.inIosevka() = this.copy(fontFamily = iosevka)
+    t.copy(
+        displayLarge = t.displayLarge.inIosevka(),
+        displayMedium = t.displayMedium.inIosevka(),
+        displaySmall = t.displaySmall.inIosevka(),
+        headlineLarge = t.headlineLarge.inIosevka(),
+        headlineMedium = t.headlineMedium.inIosevka(),
+        headlineSmall = t.headlineSmall.inIosevka(),
+        titleLarge = t.titleLarge.inIosevka(),
+        titleMedium = t.titleMedium.inIosevka(),
+        titleSmall = t.titleSmall.inIosevka(),
+        bodyLarge = t.bodyLarge.inIosevka(),
+        bodyMedium = t.bodyMedium.inIosevka(),
+        bodySmall = t.bodySmall.inIosevka(),
+        labelLarge = t.labelLarge.inIosevka(),
+        labelMedium = t.labelMedium.inIosevka(),
+        labelSmall = t.labelSmall.inIosevka(),
+    )
 }

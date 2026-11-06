@@ -13,6 +13,10 @@ val crateVersion: String = rootDir.parentFile.resolve("Cargo.toml").readLines()
 // The launcher icon, rendered from the desktop player's artwork rather than committed as a copy.
 val iconRes = layout.buildDirectory.dir("generated/icon/res")
 
+// The desktop player's font, and its licence, which has to travel with it: copied in, not committed as copies.
+val fontRes = layout.buildDirectory.dir("generated/font/res")
+val fontAssets = layout.buildDirectory.dir("generated/font/assets")
+
 android {
     namespace = "zone.jo.phonoscule"
     compileSdk = 36
@@ -35,7 +39,8 @@ android {
     sourceSets["main"].apply {
         manifest.srcFile("AndroidManifest.xml")
         kotlin.srcDirs("src")
-        res.srcDirs("res", iconRes)
+        res.srcDirs("res", iconRes, fontRes)
+        assets.srcDirs(fontAssets)
         jniLibs.srcDirs("jniLibs")
     }
 
@@ -96,3 +101,21 @@ val renderIcon by tasks.registering(Exec::class) {
 }
 
 tasks.named("preBuild") { dependsOn(renderIcon) }
+
+// Only the face the app draws in; the others are a megabyte and a half each.
+val copyFont by tasks.registering(Sync::class) {
+    val dir = rootDir.parentFile.parentFile.resolve("gui/assets/font-iosevka")
+    into(layout.buildDirectory.dir("generated/font"))
+    from(dir) {
+        include("IosevkaFixedSS05-Regular.ttf")
+        rename { "iosevka.ttf" }
+        into("res/font")
+    }
+    from(dir) {
+        include("LICENSE.md")
+        rename { "iosevka-license.md" }
+        into("assets")
+    }
+}
+
+tasks.named("preBuild") { dependsOn(copyFont) }
