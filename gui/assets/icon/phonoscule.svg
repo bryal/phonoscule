@@ -12,35 +12,39 @@
     as no nearer reflection hides, and fades down its own length the way the player's does
     (coverflow.wgsl): from 0.3 at the seam, quadratically, to nothing.
 
-    Notes are printed on the playing cover and on the near pair, and so shows in their reflections
+    Notes are printed on the playing cover and on the near pair, and so show in their reflections
     too. Each is drawn once, in a cover's own 100-unit square, and put on a tilted cover by the
     perspective that carries the cover's corners there, taken at the note's middle. Those on the
     near pair sit in the middle of what shows of their covers.
   -->
   <defs>
-    <!-- The playing cover: no real album art, so a warm sweep, which reads on a light or a dark
-         taskbar alike. Mirrored for the reflection. -->
-    <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffd76a"/>
-      <stop offset="0.52" stop-color="#f6603c"/>
-      <stop offset="1" stop-color="#d92b7a"/>
+    <!-- No real album art, so one sweep across the whole mark, which reads on a light or a dark
+         taskbar alike. -->
+    <linearGradient id="sweep" x1="0" y1="0" x2="256" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4b7bff"/>
+      <stop offset="0.5" stop-color="#b39dff"/>
+      <stop offset="1" stop-color="#ff6eb4"/>
     </linearGradient>
-    <linearGradient id="cover-mirrored" href="#cover" x1="0" y1="1" x2="1" y2="0"/>
 
-    <!-- The neighbours: cool against the playing cover, lit on the near edge and shaded where they
-         go behind, from their outer edge to their inner one. The far pair is darker still. -->
-    <linearGradient id="near" x1="0" y1="0" x2="1" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#9d8cff"/>
-      <stop offset="1" stop-color="#5a46c8"/>
+    <!-- The neighbours: the sweep where they are, shaded towards the edge that goes behind. Each
+         stop is the sweep's colour at that edge, times 1 at the outer edge and 0.72 at the inner,
+         or 0.8 and 0.58 for the far pair. -->
+    <linearGradient id="near-left" x1="21" y1="0" x2="79" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5c81ff"/>
+      <stop offset="1" stop-color="#6468b8"/>
     </linearGradient>
-    <linearGradient id="near-left" href="#near" x1="21" x2="79"/>
-    <linearGradient id="near-right" href="#near" x1="235" x2="177"/>
-    <linearGradient id="far" x1="0" y1="0" x2="1" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#6f5fd6"/>
-      <stop offset="1" stop-color="#3f2f99"/>
+    <linearGradient id="near-right" x1="235" y1="0" x2="177" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f376c0"/>
+      <stop offset="1" stop-color="#9664a3"/>
     </linearGradient>
-    <linearGradient id="far-left" href="#far" x1="1" x2="61"/>
-    <linearGradient id="far-right" href="#far" x1="255" x2="195"/>
+    <linearGradient id="far-left" x1="1" y1="0" x2="61" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3d63cc"/>
+      <stop offset="1" stop-color="#485194"/>
+    </linearGradient>
+    <linearGradient id="far-right" x1="255" y1="0" x2="195" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#cc5890"/>
+      <stop offset="1" stop-color="#7f4d7d"/>
+    </linearGradient>
 
     <!-- Two beamed eighth notes for the playing cover, one eighth for each neighbour. -->
     <path id="flag" d="M0,0 C1.5,8 8.5,12 12.5,18 C16.5,24 17.5,33 13.5,42 C15.5,33 12.5,27 7.5,22 C4.5,19 1.5,15 0,11 Z"/>
@@ -100,7 +104,7 @@
       <use href="#eighth" transform="matrix(0.5796 -0.2399 -0.0213 -0.8829 20.66 235.45)"/>
     </g>
     <g mask="url(#middle-reflection)">
-      <rect x="66" y="156" width="124" height="124" fill="url(#cover-mirrored)"/>
+      <rect x="66" y="156" width="124" height="124" fill="url(#sweep)"/>
       <use href="#beamed-eighths" transform="matrix(1.24 0 0 -1.24 66 280)"/>
     </g>
     <g clip-path="url(#near-right-shown)" mask="url(#near-right-reflection)">
@@ -116,7 +120,7 @@
     <use href="#eighth" transform="matrix(0.5949 -0.0538 0.0157 0.9291 16.11 45.35)"/>
     <polygon points="178,45 235,41 233,141 177,127" fill="url(#near-right)"/>
     <use href="#eighth" transform="matrix(0.5724 0.0518 -0.0147 0.9114 180.60 40.87)"/>
-    <rect x="66" y="32" width="124" height="124" fill="url(#cover)"/>
+    <rect x="66" y="32" width="124" height="124" fill="url(#sweep)"/>
     <use href="#beamed-eighths" transform="matrix(1.24 0 0 1.24 66 32)"/>
   </g>
 </svg>

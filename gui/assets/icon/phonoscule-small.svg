@@ -10,17 +10,20 @@
     only where it shows, from the edge to the playing cover.
   -->
   <defs>
-    <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffd76a"/>
-      <stop offset="0.52" stop-color="#f6603c"/>
-      <stop offset="1" stop-color="#d92b7a"/>
+    <!-- The full mark's sweep, and its near pair's shading, which is 0.78 at the playing cover. -->
+    <linearGradient id="sweep" x1="0" y1="0" x2="256" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4b7bff"/>
+      <stop offset="0.5" stop-color="#b39dff"/>
+      <stop offset="1" stop-color="#ff6eb4"/>
     </linearGradient>
-    <linearGradient id="cover-mirrored" href="#cover" x1="0" y1="1" x2="1" y2="0"/>
     <linearGradient id="left" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#9d8cff"/>
-      <stop offset="1" stop-color="#5a46c8"/>
+      <stop offset="0" stop-color="#4b7bff"/>
+      <stop offset="1" stop-color="#596ac7"/>
     </linearGradient>
-    <linearGradient id="right" href="#left" x1="1" x2="0"/>
+    <linearGradient id="right" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0" stop-color="#ff6eb4"/>
+      <stop offset="1" stop-color="#b164a2"/>
+    </linearGradient>
 
     <!-- The full mark's notes for the playing cover, in a cover's own 100-unit square. -->
     <g id="beamed-eighths" fill="#ffffff">
@@ -58,13 +61,13 @@
     <polygon points="0,160 48,144 48,240 0,288" fill="url(#left)" mask="url(#left-reflection)"/>
     <polygon points="208,144 256,160 256,288 208,240" fill="url(#right)" mask="url(#right-reflection)"/>
     <g mask="url(#middle-reflection)">
-      <rect x="48" y="176" width="160" height="160" fill="url(#cover-mirrored)"/>
+      <rect x="48" y="176" width="160" height="160" fill="url(#sweep)"/>
       <use href="#beamed-eighths" transform="matrix(1.6 0 0 -1.6 48 336)"/>
     </g>
 
     <polygon points="0,32 48,48 48,144 0,160" fill="url(#left)"/>
     <polygon points="208,48 256,32 256,160 208,144" fill="url(#right)"/>
-    <rect x="48" y="16" width="160" height="160" fill="url(#cover)"/>
+    <rect x="48" y="16" width="160" height="160" fill="url(#sweep)"/>
     <use href="#beamed-eighths" transform="matrix(1.6 0 0 1.6 48 16)"/>
   </g>
 </svg>
