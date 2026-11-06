@@ -381,8 +381,9 @@ private fun SearchField(query: String, onQuery: (String) -> Unit, modifier: Modi
     )
 }
 
-/** `filter`'s row: a chip for each value picked of it, which unpicks that value, scrolling sideways when they do not
- * fit; then at the right, for the thumb, and at the same place in every row, its name, which opens its picker. */
+/** `filter`'s row: a chip for each value picked of it, which unpicks that value; then at the right, for the thumb, and
+ * at the same place in every row, its name, which opens its picker. The chips run alphabetically leftwards from the
+ * name, and scroll that way when they do not fit. */
 @Composable
 private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, onPick: (List<String>) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -397,9 +398,10 @@ private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, 
         } else {
             LazyRow(
                 modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(CHIP_GAP, Alignment.End),
+                reverseLayout = true,
+                horizontalArrangement = Arrangement.spacedBy(CHIP_GAP),
             ) {
-                items(picked, key = { it }) { value ->
+                items(picked.sortedWith(String.CASE_INSENSITIVE_ORDER), key = { it }) { value ->
                     InputChip(
                         selected = true,
                         onClick = { onPick(picked - value) },
