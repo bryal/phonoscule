@@ -3,6 +3,7 @@ package zone.jo.phonoscule
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -55,10 +56,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,9 +69,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-/** The library: a wall of covers to search, filter by genre and sort, with what is playing along the bottom. */
+/** The library: a wall of covers to search, filter by genre and sort, with what is playing along the bottom.
+ *
+ * Back clears the search and the genre, and leaves the search field, before it leaves the app. Pass `covered` while
+ * another screen is open over this one, which then has Back to itself. */
 @Composable
-fun LibraryScreen(onOpenAlbum: (Long) -> Unit, onOpenPlayer: () -> Unit, onChooseFolder: () -> Unit) {
+fun LibraryScreen(covered: Boolean, onOpenAlbum: (Long) -> Unit, onOpenPlayer: () -> Unit, onChooseFolder: () -> Unit) {
     if (App.storage == null) {
         ChooseFolder(onChooseFolder)
         return
@@ -78,6 +84,14 @@ fun LibraryScreen(onOpenAlbum: (Long) -> Unit, onOpenPlayer: () -> Unit, onChoos
     var genre by rememberSaveable { mutableStateOf<String?>(null) }
     var albums by remember { mutableStateOf(emptyList<AlbumSummary>()) }
     var genres by remember { mutableStateOf(emptyList<String>()) }
+    var searching by remember { mutableStateOf(false) }
+
+    val focus = LocalFocusManager.current
+    BackHandler(enabled = !covered && (query.isNotEmpty() || genre != null || searching)) {
+        query = ""
+        genre = null
+        focus.clearFocus()
+    }
 
     LaunchedEffect(query, genre, App.libraryVersion) {
         val (found, all) = withContext(Dispatchers.IO) { Core.albums(query, genre) to Core.genres() }
@@ -93,7 +107,7 @@ fun LibraryScreen(onOpenAlbum: (Long) -> Unit, onOpenPlayer: () -> Unit, onChoos
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).onFocusChanged { searching = it.isFocused },
                 singleLine = true,
                 placeholder = { Text("Search albums") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },

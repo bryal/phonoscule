@@ -95,6 +95,7 @@ private fun Screens(onChooseFolder: () -> Unit) {
         // Kept under whatever is open, hidden, so that it comes back as it was left: scrolled, searched and filtered.
         Box(modifier = if (covered) Modifier.graphicsLayer { alpha = 0f }.clearAndSetSemantics {} else Modifier) {
             LibraryScreen(
+                covered = covered,
                 onOpenAlbum = { album = it },
                 onOpenPlayer = { player = true },
                 onChooseFolder = onChooseFolder,
