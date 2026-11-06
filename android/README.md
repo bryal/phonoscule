@@ -3,31 +3,41 @@ Phonoscule for Android
 Android version of `phonoscule-gui`: the same album-centric player on a phone.
 Not a port of the desktop player but a sibling of it, the way the
 [terminal player](../tui/README.md) is. A wall of covers to browse, search and
-filter by genre, and a Cover Flow to play into - stood on end, since a phone is
-taller than it is wide.
+filter by genre and artist, and a Cover Flow to play into - stood on end, since
+a phone is taller than it is wide.
 
-Status: early. Tried on one phone, a Galaxy S23 on Android 16.
+Status: in daily use on one phone, a Galaxy S23 on Android 16.
 
 
 Features
 ------------------------------------------------------------
 - **Library.** A grid of album covers, grouped from the tags exactly as on the
-  desktop. Fuzzy search over titles and artists, genre chips, and the desktop's
-  sort orders. Long-press an album to enqueue it. Pull down to scan the folder
-  again, which carries on in the background. Nothing scans unasked: through SAF
-  a scan costs the system tens of seconds of CPU.
+  desktop, under a translucent header tinted with the playing cover's colour.
+  Fuzzy search over titles and artists, and the desktop's sort orders. A row
+  each for genres and artists shows what is picked; open one to pick from all
+  of them: tap a value to show only it, long-press to add it. Back clears the
+  search and the picks before it leaves the app. Long-press an album to enqueue
+  it.
+- **Scanning.** Pull down to scan the folder again, which carries on in the
+  background with a notification counting the albums. Nothing scans unasked:
+  through SAF a scan costs the system tens of seconds of CPU. A folder that
+  cannot be read keeps its albums rather than losing them.
 - **Album.** The cover and tags, Play and Enqueue, and the tracks: tap one to
   play the album from it, or enqueue it alone.
 - **Player.** The queue's albums as a vertical Cover Flow over a backdrop glowing
   with the playing cover's colour. As on the desktop, the album the flow rests
   on plays: drag or fling to another, or tap one. Tap the playing album to pause
-  and resume. Beneath it, the seek bar, repeat, previous/next, and the four
-  shuffles.
+  and resume. The playing album's track names hang from the top; drag sideways
+  across the flow to pick one, or flick to step a track, on into the next album
+  at either end. Beneath, the title, repeat, previous/play/next, the four
+  shuffles, and the seek bar.
+- **Starts where you left off.** With a queue, the app opens on the player. The
+  queue, position, repeat mode and sort order are restored across runs.
+- **The desktop's font**, Iosevka, copied in from the GUI's assets at build
+  time. What it lacks, such as Japanese, falls back to the system's font.
 - **Playback in the background.** A media session puts the player on the lock
   screen, in the notification shade, and under the headset's buttons. It pauses
   when another app takes the audio or the headphones come out.
-- **The session** - queue, position, repeat mode and sort order - is restored
-  across runs.
 
 
 Architecture

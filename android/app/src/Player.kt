@@ -51,8 +51,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** The player: the queue as a vertical Cover Flow over a backdrop glowing with the playing cover's colour, and the
- * transport beneath. */
+/** The player: the queue as a vertical Cover Flow over a backdrop glowing with the playing cover's colour, the playing
+ * album's track names hanging over it, and the transport beneath. */
 @Composable
 fun PlayerScreen() {
     var queue by remember { mutableStateOf(Queue.EMPTY) }

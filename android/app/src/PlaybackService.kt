@@ -97,7 +97,8 @@ class PlaybackService : MediaSessionService() {
  * rebuilds and sends the whole playlist on every change of track, which for a queue of thousands stalls the main
  * thread. Its indices are offsets from [windowStart].
  *
- * Holds no state of its own beyond the last queue it was given. Call [follow] when the playback changes. */
+ * Shows what it was last told, and keeps nothing the core does not: call [setQueue] when the queue changes, and
+ * [follow] when the playback does. */
 @OptIn(UnstableApi::class)
 private class CorePlayer(looper: Looper) : SimpleBasePlayer(looper) {
     private var queue = Queue.EMPTY

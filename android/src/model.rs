@@ -23,11 +23,11 @@ use crate::saf::{self, Saf};
 /// is read from, so they are small.
 const THUMB_EDGE: u32 = 64;
 
-/// The order the library starts in, before the listener picks one: by artist, then by year within
-/// each artist, as in the terminal player.
 /// How near a reported position must come to a pending seek's target for the seek to have landed.
 const SEEK_SETTLE: Duration = Duration::from_secs(1);
 
+/// The order the library starts in, before the listener picks one: by artist, then by year within
+/// each artist, as in the terminal player.
 const INITIAL_SORT: SortOrder = SortOrder { group_by_artist: Some(Dir::Asc), field: SortField::Year, field_dir: Dir::Asc };
 
 /// Where the core keeps its own files. The listener's music is never among them: that is read
