@@ -55,6 +55,7 @@ object App {
 
     private val playbackListeners = mutableListOf<(Playback) -> Unit>()
     private val queueListeners = mutableListOf<() -> Unit>()
+    private val scanEndListeners = mutableListOf<() -> Unit>()
 
     fun init(context: Context) {
         this.context = context
@@ -93,7 +94,7 @@ object App {
                 main.post {
                     // Before the scan, which the workers serve from it.
                     storage = adopted
-                    this.command { Core.scan() }
+                    this.scan()
                 }
             } catch (e: Exception) {
                 main.post { Toast.makeText(context, e.message ?: e.toString(), Toast.LENGTH_LONG).show() }
@@ -101,28 +102,33 @@ object App {
         }
     }
 
-    /** Call on every return to the foreground. There is nothing to watch a folder with through SAF, so look again, and
-     * keep looking every few minutes until [pause]. */
+    /** Call on every return to the foreground. */
     fun resume() {
         foreground = true
         // The grant can be revoked while the app is in the background. The same folder keeps its storage, which has
         // learned where the documents are.
         val restored = Storage.restore(context)
         if (restored?.tree != storage?.tree) storage = restored
-        main.removeCallbacks(this.rescan)
-        this.rescan.run()
     }
 
     fun pause() {
         foreground = false
-        main.removeCallbacks(this.rescan)
     }
 
-    private val rescan: Runnable = object : Runnable {
-        override fun run() {
-            if (storage != null) command { Core.scan() }
-            main.postDelayed(this, RESCAN_MS)
-        }
+    /** Scan the music folder, carrying on in the background until done. Only when asked to: a scan through SAF costs
+     * the system tens of seconds of CPU. Call it while a screen shows, as Android lets only a foreground app start what
+     * keeps the scan going in the background. */
+    fun scan() {
+        if (storage != null) command { Core.scan() }
+    }
+
+    /** Call `listener` on the main thread when a scan ends. */
+    fun onScanEnd(listener: () -> Unit) {
+        scanEndListeners.add(listener)
+    }
+
+    fun removeScanEndListener(listener: () -> Unit) {
+        scanEndListeners.remove(listener)
     }
 
     /** Run `action` on a thread of its own, toasting rather than crashing if it fails. For commands, which are quick
@@ -154,7 +160,10 @@ object App {
     }
 
     private fun apply(notices: Notices) {
-        scanning = notices.scanning
+        if (notices.scanning != scanning) {
+            scanning = notices.scanning
+            if (scanning) ScanService.start(context) else for (listener in scanEndListeners.toList()) listener()
+        }
         if (notices.queue) {
             queueVersion++
             for (listener in queueListeners.toList()) listener()
@@ -188,8 +197,5 @@ object App {
     }
 
     private const val LIBRARY_CHANGE_MS = 300L
-
-    /** How often to rescan while a screen shows, as the desktop player does. */
-    private const val RESCAN_MS = 5 * 60 * 1000L
     private const val TAG = "phonoscule"
 }

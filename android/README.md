@@ -6,14 +6,16 @@ Not a port of the desktop player but a sibling of it, the way the
 filter by genre, and a Cover Flow to play into - stood on end, since a phone is
 taller than it is wide.
 
-Status: early, and not yet run on a device.
+Status: early. Tried on one phone, a Galaxy S23 on Android 16.
 
 
 Features
 ------------------------------------------------------------
 - **Library.** A grid of album covers, grouped from the tags exactly as on the
   desktop. Fuzzy search over titles and artists, genre chips, and the desktop's
-  sort orders. Long-press an album to enqueue it.
+  sort orders. Long-press an album to enqueue it. Pull down to scan the folder
+  again, which carries on in the background. Nothing scans unasked: through SAF
+  a scan costs the system tens of seconds of CPU.
 - **Album.** The cover and tags, Play and Enqueue, and the tracks: tap one to
   play the album from it, or enqueue it alone.
 - **Player.** The queue's albums as a vertical Cover Flow over a backdrop glowing

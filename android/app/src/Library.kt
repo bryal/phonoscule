@@ -20,7 +20,9 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.MoreVert
@@ -34,10 +36,10 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -55,6 +57,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /** The library: a wall of covers to search, filter by genre and sort, with what is playing along the bottom. */
@@ -99,17 +102,38 @@ fun LibraryScreen(onOpenAlbum: (Long) -> Unit, onOpenPlayer: () -> Unit, onChoos
 
         GenreChips(genres, genre, onPick = { genre = it })
 
-        // Only while there is nothing to show yet: an indeterminate bar redraws the screen every frame, which over a
-        // routine rescan costs more CPU than the scan.
-        if (App.scanning && albums.isEmpty()) LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) else HorizontalDivider()
+        HorizontalDivider()
 
-        Box(modifier = Modifier.weight(1f)) {
+        // Spinning from the pull until the core says it is scanning, so the indicator does not retract in between.
+        var pulled by remember { mutableStateOf(false) }
+        LaunchedEffect(App.scanning) { pulled = false }
+        LaunchedEffect(pulled) {
+            if (pulled) {
+                delay(PULL_GRACE_MS)
+                pulled = false
+            }
+        }
+        PullToRefreshBox(
+            isRefreshing = pulled || App.scanning,
+            onRefresh = {
+                pulled = true
+                App.scan()
+            },
+            modifier = Modifier.weight(1f),
+        ) {
             if (albums.isEmpty()) {
-                if (!App.scanning) {
-                    Text(
-                        text = if (query.isEmpty() && genre == null) "No albums here yet." else "Nothing matches.",
-                        modifier = Modifier.padding(24.dp),
-                    )
+                // Scrollable, or there would be nothing to pull.
+                Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    if (!App.scanning) {
+                        Text(
+                            text = if (query.isEmpty() && genre == null) {
+                                "No albums here yet. Pull down to scan."
+                            } else {
+                                "Nothing matches."
+                            },
+                            modifier = Modifier.padding(24.dp),
+                        )
+                    }
                 }
             } else {
                 LazyVerticalGrid(
@@ -145,10 +169,6 @@ private fun LibraryMenu(albums: List<AlbumSummary>, onChooseFolder: () -> Unit) 
             DropdownMenuItem(text = { Text("Order...") }, onClick = {
                 open = false
                 sorting = true
-            })
-            DropdownMenuItem(text = { Text("Rescan") }, onClick = {
-                open = false
-                App.command { Core.scan() }
             })
             DropdownMenuItem(text = { Text("Change folder") }, onClick = {
                 open = false
@@ -296,3 +316,6 @@ private fun ChooseFolder(onChooseFolder: () -> Unit) {
         )
     }
 }
+
+/** How long the pull-to-refresh indicator spins on a pull alone, should the core never say it started scanning. */
+private const val PULL_GRACE_MS = 1000L
