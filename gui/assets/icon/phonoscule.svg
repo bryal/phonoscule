@@ -8,50 +8,76 @@
 
     The covers are where the player's own camera (gui/src/coverflow.rs) sees them, so a side
     cover's outer edge is its nearest and tallest, and its inner edge tucks behind the cover in
-    front of it. Every reflection is its cover mirrored about that cover's bottom edge, faded by
-    the `reflection` mask.
+    front of it. Each reflection is its cover mirrored about that cover's bottom edge, as much of it
+    as no nearer reflection hides, and fades down its own length the way the player's does
+    (coverflow.wgsl): from 0.3 at the seam, quadratically, to nothing.
   -->
   <defs>
     <!-- The playing cover: no real album art, so a warm sweep, which reads on a light or a dark
-         taskbar alike. -->
+         taskbar alike. Mirrored for the reflection. -->
     <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ffd76a"/>
       <stop offset="0.52" stop-color="#f6603c"/>
       <stop offset="1" stop-color="#d92b7a"/>
     </linearGradient>
+    <linearGradient id="cover-mirrored" href="#cover" x1="0" y1="1" x2="1" y2="0"/>
 
     <!-- The neighbours: cool against the playing cover, lit on the near edge and shaded where they
-         go behind. The far pair is darker still. -->
-    <linearGradient id="near-left" x1="0" y1="0" x2="1" y2="0">
+         go behind, from their outer edge to their inner one. The far pair is darker still. -->
+    <linearGradient id="near" x1="0" y1="0" x2="1" y2="0" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#9d8cff"/>
       <stop offset="1" stop-color="#5a46c8"/>
     </linearGradient>
-    <linearGradient id="near-right" href="#near-left" x1="1" x2="0"/>
-    <linearGradient id="far-left" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="near-left" href="#near" x1="21" x2="79"/>
+    <linearGradient id="near-right" href="#near" x1="235" x2="177"/>
+    <linearGradient id="far" x1="0" y1="0" x2="1" y2="0" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#6f5fd6"/>
       <stop offset="1" stop-color="#3f2f99"/>
     </linearGradient>
-    <linearGradient id="far-right" href="#far-left" x1="1" x2="0"/>
+    <linearGradient id="far-left" href="#far" x1="1" x2="61"/>
+    <linearGradient id="far-right" href="#far" x1="255" x2="195"/>
 
-    <!-- Fades each reflection out over the top half of its own box. -->
-    <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.4"/>
-      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
+    <!-- The fade, 0.3 * (1 - v)^2 down a reflection, and where v runs for each: from the middle of
+         its seam, square to the seam, to the middle of its lower edge. -->
+    <linearGradient id="fade" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="0.2" stop-color="#ffffff" stop-opacity="0.192"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0.108"/>
+      <stop offset="0.6" stop-color="#ffffff" stop-opacity="0.048"/>
+      <stop offset="0.8" stop-color="#ffffff" stop-opacity="0.012"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
-    <mask id="reflection" maskContentUnits="objectBoundingBox">
-      <rect width="1" height="1" fill="url(#fade)"/>
+    <linearGradient id="fade-far-left" href="#fade" x1="32" y1="131.5" x2="50.1" y2="212.4"/>
+    <linearGradient id="fade-near-left" href="#fade" x1="51" y1="134" x2="71.5" y2="215.9"/>
+    <linearGradient id="fade-middle" href="#fade" x1="0" y1="156" x2="0" y2="280"/>
+    <linearGradient id="fade-near-right" href="#fade" x1="205" y1="134" x2="184.5" y2="215.9"/>
+    <linearGradient id="fade-far-right" href="#fade" x1="224" y1="131.5" x2="205.9" y2="212.4"/>
+    <mask id="far-left-reflection" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="300">
+      <rect width="256" height="300" fill="url(#fade-far-left)"/>
+    </mask>
+    <mask id="near-left-reflection" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="300">
+      <rect width="256" height="300" fill="url(#fade-near-left)"/>
+    </mask>
+    <mask id="middle-reflection" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="300">
+      <rect width="256" height="300" fill="url(#fade-middle)"/>
+    </mask>
+    <mask id="near-right-reflection" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="300">
+      <rect width="256" height="300" fill="url(#fade-near-right)"/>
+    </mask>
+    <mask id="far-right-reflection" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="300">
+      <rect width="256" height="300" fill="url(#fade-far-right)"/>
     </mask>
   </defs>
 
-  <!-- Lowered, so the covers look centred, their faint reflections hardly counting. Back to front,
-       reflections first, so each cover hides what is behind it. -->
+  <!-- Lowered, so the covers look centred, their faint reflections hardly counting. -->
   <g transform="translate(0 12)">
-    <polygon points="3,138 61,125 62,202 6,230" fill="url(#far-left)" mask="url(#reflection)"/>
-    <polygon points="195,125 253,138 250,230 194,202" fill="url(#far-right)" mask="url(#reflection)"/>
-    <polygon points="23,141 79,127 80,205 26,236" fill="url(#near-left)" mask="url(#reflection)"/>
-    <polygon points="177,127 233,141 230,236 176,205" fill="url(#near-right)" mask="url(#reflection)"/>
-    <rect x="66" y="156" width="124" height="124" fill="url(#cover)" mask="url(#reflection)"/>
+    <polygon points="3,138 23,133.5 26,220 6,230" fill="url(#far-left)" mask="url(#far-left-reflection)"/>
+    <polygon points="23,141 66,130.3 66,213 26,236" fill="url(#near-left)" mask="url(#near-left-reflection)"/>
+    <rect x="66" y="156" width="124" height="124" fill="url(#cover-mirrored)" mask="url(#middle-reflection)"/>
+    <polygon points="233,141 190,130.3 190,213 230,236" fill="url(#near-right)" mask="url(#near-right-reflection)"/>
+    <polygon points="253,138 233,133.5 230,220 250,230" fill="url(#far-right)" mask="url(#far-right-reflection)"/>
 
+    <!-- Back to front, so each cover hides what is behind it. -->
     <polygon points="1,42 60,46 61,125 3,138" fill="url(#far-left)"/>
     <polygon points="196,46 255,42 253,138 195,125" fill="url(#far-right)"/>
     <polygon points="21,41 78,45 79,127 23,141" fill="url(#near-left)"/>
