@@ -188,7 +188,7 @@ private class Flow(width: Float, val height: Float) {
     private val cy = height / 2
 
     /** The middle cover's edge in pixels. */
-    val coverPx = min(width * 0.8f, height * 0.5f)
+    val coverPx = min(width * 0.9f, height * 0.56f)
 
     /** Pixels per world unit at the origin's depth. */
     private val focal = coverPx * CAMERA_Z
