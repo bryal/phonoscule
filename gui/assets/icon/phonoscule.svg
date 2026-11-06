@@ -84,15 +84,15 @@
       <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.48" mask="url(#beamed-eighths-dark-rim)"/>
       <use href="#beamed-eighths-shape" filter="url(#leather)"/>
     </g>
-    <!-- The faces: a dusky indigo, hsl(240, 35%, 30%), in the frame a note is drawn in. The near
+    <!-- The faces: a dusky indigo, hsl(250, 35%, 30%), in the frame a note is drawn in. The near
          pair's darken with their covers' shading, from the outer edge to the inner. -->
     <linearGradient id="near-left-face" x1="11.25" y1="0" x2="111.25" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#2f2f61"/>
-      <stop offset="1" stop-color="#25254d"/>
+      <stop offset="0" stop-color="#372f61"/>
+      <stop offset="1" stop-color="#2c254d"/>
     </linearGradient>
     <linearGradient id="near-right-face" x1="90.25" y1="0" x2="-9.75" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#2c2c5b"/>
-      <stop offset="1" stop-color="#232348"/>
+      <stop offset="0" stop-color="#342c5b"/>
+      <stop offset="1" stop-color="#292348"/>
     </linearGradient>
     <!-- Leather grain, in the same frame: each colour times 0.82 to 1.18 with fine mottled noise. -->
     <filter id="leather" x="-10" y="-10" width="120" height="120" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
@@ -156,7 +156,7 @@
     </g>
     <g mask="url(#middle-reflection)">
       <rect x="66" y="156" width="124" height="124" fill="#b39dff" filter="url(#linen)"/>
-      <use href="#beamed-eighths" fill="#323268" transform="matrix(1.24 0 0 -1.24 66 280)"/>
+      <use href="#beamed-eighths" fill="#3b3268" transform="matrix(1.24 0 0 -1.24 66 280)"/>
     </g>
     <g clip-path="url(#near-right-shown)" mask="url(#near-right-reflection)">
       <rect width="256" height="256" fill="url(#near-right)" filter="url(#linen)"/>
@@ -172,6 +172,6 @@
     <polygon points="178,45 235,41 233,141 177,127" fill="url(#near-right)" filter="url(#linen)"/>
     <use href="#eighth" fill="url(#near-right-face)" transform="matrix(0.5724 0.0518 -0.0147 0.9114 180.60 40.87)"/>
     <rect x="66" y="32" width="124" height="124" fill="#b39dff" filter="url(#linen)"/>
-    <use href="#beamed-eighths" fill="#323268" transform="matrix(1.24 0 0 1.24 66 32)"/>
+    <use href="#beamed-eighths" fill="#3b3268" transform="matrix(1.24 0 0 1.24 66 32)"/>
   </g>
 </svg>
