@@ -112,6 +112,9 @@ pub enum Cmd {
     /// Jump to the given queue index.
     JumpTo(usize),
     TogglePlayPause,
+    /// Play or pause, whichever the engine is doing now. Unlike a toggle, sending the same one twice
+    /// is the same as sending it once, so it is what a system media control should send.
+    SetPlayState(PlayState),
     Next,
     Prev,
     /// Absolute seek within the current track.
@@ -257,6 +260,10 @@ async fn player_loop(client: Client, fs: &dyn Fs, cmd_rx: channel::Receiver<Cmd>
             }
             Cmd::TogglePlayPause => {
                 *play_state = play_state.toggled();
+                AfterCmd::Continue
+            }
+            Cmd::SetPlayState(state) => {
+                *play_state = state;
                 AfterCmd::Continue
             }
             Cmd::Seek(_) => AfterCmd::Continue, // meaningless without an open track

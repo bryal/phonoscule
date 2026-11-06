@@ -1086,11 +1086,20 @@ pub async fn cache_full_cover(fs: &dyn Fs, file: &Path, cache_path: PathBuf, edg
 
 /// Encodes `edge`²  RGB pixels into the full-size cache. Best-effort, like the thumbnails': a
 /// failure just means the cover is decoded from its artwork again next time.
+///
+/// Atomic, because a reader takes an entry that exists for a whole one: the scan fills the cache
+/// while a player may be asking for the same cover. Each write has a partial file of its own, so two
+/// writers of one cover cannot interleave either.
 async fn write_full_cover(rgb: Vec<u8>, edge: u32, cache_path: PathBuf) {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     smol::unblock(move || match encode_full_cover(&rgb, edge) {
         Some(encoded) => {
-            if let Err(e) = std::fs::write(&cache_path, &encoded) {
+            let partial = cache_path.with_extension(format!("{n}.partial"));
+            let write = std::fs::write(&partial, &encoded).and_then(|()| std::fs::rename(&partial, &cache_path));
+            if let Err(e) = write {
                 log::warn!("could not cache cover {cache_path:?}: {e}");
+                let _ = std::fs::remove_file(&partial);
             }
         }
         None => log::warn!("could not encode cover {cache_path:?}"),

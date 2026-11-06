@@ -58,8 +58,11 @@ impl Sink {
 
     /// Reopens the stream at `rate` if it differs from the current one. The frames we output are
     /// always 16-bit stereo, so the rate is the only thing that can change between tracks.
+    ///
+    /// Also tries for a device again if there was none, so that one failed open - a route still
+    /// changing when the stream was reopened, say - silences a track rather than the rest of the run.
     pub fn ensure_rate(&mut self, rate: u32) {
-        if self.rate != rate {
+        if self.rate != rate || matches!(self.out, Out::Silent(_)) {
             *self = Self::new(&self.client.clone(), rate);
         }
     }
