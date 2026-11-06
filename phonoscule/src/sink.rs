@@ -454,8 +454,6 @@ mod backend {
     }
 }
 
-/// The deviceless fallback for platforms with no backend of their own: opening always fails, so
-/// [`Sink`] plays through [`Silence`].
 /// The AAudio backend. A blocking `AAudioStream_write` is exactly the contract [`Sink::write`]
 /// wants, as with Pulse.
 ///
@@ -465,7 +463,7 @@ mod backend {
 #[cfg(target_os = "android")]
 mod backend {
     use super::{Client, Frame};
-    use ndk::audio::{AudioFormat, AudioPerformanceMode, AudioStream, AudioStreamBuilder};
+    use ndk::audio::{AudioError, AudioFormat, AudioPerformanceMode, AudioStream, AudioStreamBuilder};
 
     /// How long one write may wait for room before looking again. Only bounds a stalled stream's
     /// hold on the audio thread; a timeout is not an error.
@@ -507,8 +505,12 @@ mod backend {
             while !rest.is_empty() {
                 // `Frame` is interleaved 16-bit little-endian stereo, the PCM_I16 stereo layout the
                 // stream was opened with.
-                let n = unsafe { self.stream.write(rest.as_ptr().cast(), rest.len() as i32, WAIT_NANOS) }
-                    .map_err(|e| e.to_string())?;
+                let n = match unsafe { self.stream.write(rest.as_ptr().cast(), rest.len() as i32, WAIT_NANOS) } {
+                    Ok(n) => n,
+                    // ndk 0.9 mistakes any count but zero for an error code. Error codes are negative.
+                    Err(AudioError::__Unknown(n)) if n > 0 => n as u32,
+                    Err(e) => return Err(e.to_string()),
+                };
                 rest = &rest[(n as usize).min(rest.len())..];
             }
             Ok(())
@@ -529,6 +531,8 @@ mod backend {
     }
 }
 
+/// The deviceless fallback for platforms with no backend of their own: opening always fails, so
+/// [`Sink`] plays through [`Silence`].
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
 mod backend {
     use super::{Client, Frame};
