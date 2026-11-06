@@ -37,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -47,6 +48,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,8 +70,10 @@ fun PlayerScreen() {
     val playback = App.playback
     val glow by animateColorAsState(accentColor(playback.album?.accent), tween(GLOW_MS), label = "glow")
     var showTracks by remember { mutableStateOf(false) }
+    var footerPx by remember { mutableIntStateOf(0) }
+    val footer = with(LocalDensity.current) { footerPx.toDp() }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
@@ -81,36 +87,50 @@ fun PlayerScreen() {
                 )
             },
     ) {
-        Row(modifier = Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.End) {
-            IconButton(onClick = { showTracks = !showTracks }) {
-                Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Tracks")
+        // The flow runs on under the controls, which float over it.
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(modifier = Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.End) {
+                IconButton(onClick = { showTracks = !showTracks }) {
+                    Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Tracks")
+                }
+            }
+
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (queue.runs.isEmpty()) {
+                    Text(
+                        "Nothing queued. Play an album from the library.",
+                        modifier = Modifier.align(Alignment.Center).padding(bottom = footer).padding(24.dp),
+                        textAlign = TextAlign.Center,
+                    )
+                } else {
+                    VerticalCoverFlow(
+                        covers = covers,
+                        playing = queue.runOf(playback.current),
+                        onPlay = { run ->
+                            val start = queue.runs[run].start
+                            App.command { Core.jumpTo(start) }
+                        },
+                        onToggle = { App.command { Core.togglePlaying() } },
+                        modifier = Modifier.fillMaxSize(),
+                        obscuredBottom = footer,
+                    )
+                }
+                if (showTracks) {
+                    RunTracks(queue, playback, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = footer))
+                }
             }
         }
 
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            if (queue.runs.isEmpty()) {
-                Text(
-                    "Nothing queued. Play an album from the library.",
-                    modifier = Modifier.align(Alignment.Center).padding(24.dp),
-                    textAlign = TextAlign.Center,
-                )
-            } else {
-                VerticalCoverFlow(
-                    covers = covers,
-                    playing = queue.runOf(playback.current),
-                    onPlay = { run ->
-                        val start = queue.runs[run].start
-                        App.command { Core.jumpTo(start) }
-                    },
-                    onToggle = { App.command { Core.togglePlaying() } },
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-            if (showTracks) RunTracks(queue, playback, modifier = Modifier.align(Alignment.BottomCenter))
-        }
-
-        // On the glass the library's bars are of, tinted with the glow.
-        Column(modifier = Modifier.fillMaxWidth().background(glass(glow))) {
+        // On the glass the library's bars are of, tinted with the glow. It takes every touch on it, so that none
+        // reaches a cover seen through it.
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(glass(glow))
+                .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } }
+                .onSizeChanged { footerPx = it.height },
+        ) {
             GlassEdge(glow)
             NowPlaying(playback)
             SeekBar(playback, glow)
