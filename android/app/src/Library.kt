@@ -45,7 +45,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
@@ -54,10 +53,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -73,6 +75,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -125,40 +128,15 @@ fun LibraryScreen(
         albums = withContext(Dispatchers.IO) { Core.albums(query, genres, artists) }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.weight(1f).onFocusChanged { searching = it.isFocused },
-                singleLine = true,
-                placeholder = { Text("Search albums") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) { Icon(Icons.Default.Clear, contentDescription = "Clear") }
-                    }
-                },
-            )
-            LibraryMenu(albums, onChooseFolder)
-        }
+    // The wall runs the full height, under the bars that float over it, and clears them by their heights.
+    val accent = accentColor(App.playback.album?.accent)
+    val playing = App.playback.current != null
+    var headerPx by remember { mutableIntStateOf(0) }
+    var footerPx by remember { mutableIntStateOf(0) }
+    val header = with(LocalDensity.current) { headerPx.toDp() }
+    val footer = with(LocalDensity.current) { (if (playing) footerPx else 0).toDp() }
 
-        // Compact rows: padded out to Material's 48dp touch target, two of them would take a sixth of the screen.
-        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
-            Column(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = CHIP_GAP),
-                verticalArrangement = Arrangement.spacedBy(CHIP_GAP),
-            ) {
-                FilterRow(Filter.GENRES, genres, onOpen = { onOpenFilter(Filter.GENRES) }, onPick = onPickGenres)
-                FilterRow(Filter.ARTISTS, artists, onOpen = { onOpenFilter(Filter.ARTISTS) }, onPick = onPickArtists)
-            }
-        }
-
-        HorizontalDivider()
-
+    Box(modifier = Modifier.fillMaxSize()) {
         // Spinning from the pull until the core says it is scanning, so the indicator does not retract in between.
         var pulled by remember { mutableStateOf(false) }
         LaunchedEffect(App.scanning) { pulled = false }
@@ -171,8 +149,10 @@ fun LibraryScreen(
         // Asked before the scan starts, as its notification is hidden for good if posted without.
         val context = LocalContext.current
         val askToNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { App.scan() }
+        val pull = rememberPullToRefreshState()
+        val refreshing = pulled || App.scanning
         PullToRefreshBox(
-            isRefreshing = pulled || App.scanning,
+            isRefreshing = refreshing,
             onRefresh = {
                 pulled = true
                 if (Build.VERSION.SDK_INT >= 33 &&
@@ -183,11 +163,24 @@ fun LibraryScreen(
                     App.scan()
                 }
             },
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.fillMaxSize(),
+            state = pull,
+            indicator = {
+                PullToRefreshDefaults.Indicator(
+                    state = pull,
+                    isRefreshing = refreshing,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = header),
+                )
+            },
         ) {
             if (albums.isEmpty()) {
                 // Scrollable, or there would be nothing to pull.
-                Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(top = header, bottom = footer),
+                ) {
                     if (!App.scanning) {
                         Text(
                             text = if (!filtered) {
@@ -205,7 +198,12 @@ fun LibraryScreen(
                     columns = GridCells.Adaptive(140.dp),
                     modifier = Modifier.scrollBar(grid),
                     state = grid,
-                    contentPadding = PaddingValues(12.dp),
+                    contentPadding = PaddingValues(
+                        start = 12.dp,
+                        end = 12.dp,
+                        top = header + 12.dp,
+                        bottom = footer + 12.dp,
+                    ),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
@@ -214,12 +212,65 @@ fun LibraryScreen(
             }
         }
 
-        NowPlayingBar(onOpenPlayer)
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .background(glass(accent))
+                .onSizeChanged { headerPx = it.height },
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.weight(1f).onFocusChanged { searching = it.isFocused },
+                    singleLine = true,
+                    placeholder = { Text("Search albums") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear")
+                            }
+                        }
+                    },
+                )
+                LibraryMenu(albums, onChooseFolder)
+            }
+
+            // Compact rows: padded out to Material's 48dp touch target, two of them would take a sixth of the screen.
+            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = CHIP_GAP),
+                    verticalArrangement = Arrangement.spacedBy(CHIP_GAP),
+                ) {
+                    FilterRow(Filter.GENRES, genres, onOpen = { onOpenFilter(Filter.GENRES) }, onPick = onPickGenres)
+                    FilterRow(
+                        Filter.ARTISTS,
+                        artists,
+                        onOpen = { onOpenFilter(Filter.ARTISTS) },
+                        onPick = onPickArtists,
+                    )
+                }
+            }
+
+            GlassEdge(accent)
+        }
+
+        if (playing) {
+            NowPlayingBar(
+                onOpenPlayer,
+                modifier = Modifier.align(Alignment.BottomCenter).onSizeChanged { footerPx = it.height },
+            )
+        }
     }
 }
 
 /** A thin bar down the right edge of the grid, always shown, for where the view is in the whole of it and how much of it
- * shows. Rows are taken to be of equal height. */
+ * shows. It runs between the grid's content padding, and takes rows to be of equal height. */
 fun Modifier.scrollBar(state: LazyGridState): Modifier = this.drawWithContent {
     drawContent()
     val info = state.layoutInfo
@@ -236,11 +287,12 @@ fun Modifier.scrollBar(state: LazyGridState): Modifier = this.drawWithContent {
 
     val margin = SCROLL_BAR_MARGIN.toPx()
     val width = SCROLL_BAR_WIDTH.toPx()
-    val track = size.height - 2 * margin
+    val top = maxOf(margin, info.beforeContentPadding.toFloat())
+    val track = size.height - maxOf(margin, info.afterContentPadding.toFloat()) - top
     val thumb = (track * viewport / content).coerceAtLeast(SCROLL_BAR_MIN.toPx()).coerceAtMost(track)
     drawRoundRect(
         color = Color.White.copy(alpha = SCROLL_BAR_ALPHA),
-        topLeft = Offset(size.width - margin - width, margin + (track - thumb) * fraction),
+        topLeft = Offset(size.width - margin - width, top + (track - thumb) * fraction),
         size = Size(width, thumb),
         cornerRadius = CornerRadius(width / 2),
     )
@@ -383,17 +435,34 @@ fun CoverImage(cover: Long?, accent: Int?, edge: androidx.compose.ui.unit.Dp, mo
 /** An album's accent as a colour, or a dim grey before it is known. */
 fun accentColor(accent: Int?): Color = accent?.let { Color(0xff000000 or it.toLong()) } ?: Color(0xff2a2a30)
 
-/** What is playing, along the bottom of the library. Tapping it opens the player. Shows nothing while the queue is
- * empty. */
+/** A bar floating over the library, as the desktop player's are: glass, the `accent` darkened and translucent. */
+private fun glass(accent: Color) = Color(accent.red * 0.18f, accent.green * 0.18f, accent.blue * 0.18f, 0.68f)
+
+/** The glass's edge where it meets what it floats over, catching the light. */
 @Composable
-private fun NowPlayingBar(onOpenPlayer: () -> Unit) {
+private fun GlassEdge(accent: Color) {
+    val edge = Color(accent.red * 0.7f, accent.green * 0.7f, accent.blue * 0.7f, 0.35f)
+    Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(edge))
+}
+
+/** What is playing, along the bottom of the library, on the same glass as its header. Tapping it opens the player.
+ * Shows nothing while the queue is empty. */
+@Composable
+private fun NowPlayingBar(onOpenPlayer: () -> Unit, modifier: Modifier = Modifier) {
     val playback = App.playback
     if (playback.current == null) return
-    HorizontalDivider()
+    val accent = accentColor(playback.album?.accent)
+    Column(modifier = modifier.fillMaxWidth().background(glass(accent))) {
+        GlassEdge(accent)
+        NowPlaying(playback, onOpenPlayer)
+    }
+}
+
+@Composable
+private fun NowPlaying(playback: Playback, onOpenPlayer: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(accentColor(playback.album?.accent).copy(alpha = 0.15f))
             .clickable(onClick = onOpenPlayer)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
