@@ -23,11 +23,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -150,12 +152,8 @@ fun LibraryScreen(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = CHIP_GAP),
                 verticalArrangement = Arrangement.spacedBy(CHIP_GAP),
             ) {
-                FilterRow(Filter.GENRES, genres, onOpen = { onOpenFilter(Filter.GENRES) }, onClear = {
-                    onPickGenres(emptyList())
-                })
-                FilterRow(Filter.ARTISTS, artists, onOpen = { onOpenFilter(Filter.ARTISTS) }, onClear = {
-                    onPickArtists(emptyList())
-                })
+                FilterRow(Filter.GENRES, genres, onOpen = { onOpenFilter(Filter.GENRES) }, onPick = onPickGenres)
+                FilterRow(Filter.ARTISTS, artists, onOpen = { onOpenFilter(Filter.ARTISTS) }, onPick = onPickArtists)
             }
         }
 
@@ -295,10 +293,10 @@ private fun SortMenu(expanded: Boolean, onDismiss: () -> Unit) {
     }
 }
 
-/** `filter`'s row: its name, at the same place in every row, which opens its picker, then what is picked of it, which
- * clears it. */
+/** `filter`'s row: its name, at the same place in every row, which opens its picker, then a chip for each value picked
+ * of it, scrolling sideways when they do not fit, which unpicks that value. */
 @Composable
-private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, onClear: () -> Unit) {
+private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, onPick: (List<String>) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AssistChip(
             onClick = onOpen,
@@ -309,14 +307,16 @@ private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, 
         if (picked.isEmpty()) {
             Text("All", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            val label = if (picked.size == 1) picked[0] else "${picked.size} ${filter.title.lowercase()}"
-            InputChip(
-                selected = true,
-                onClick = onClear,
-                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                trailingIcon = { Icon(Icons.Default.Clear, contentDescription = "Clear") },
-                modifier = Modifier.weight(1f, fill = false),
-            )
+            LazyRow(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(CHIP_GAP)) {
+                items(picked, key = { it }) { value ->
+                    InputChip(
+                        selected = true,
+                        onClick = { onPick(picked - value) },
+                        label = { Text(value, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        trailingIcon = { Icon(Icons.Default.Clear, contentDescription = "Unpick $value") },
+                    )
+                }
+            }
         }
     }
 }

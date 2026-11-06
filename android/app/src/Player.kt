@@ -17,7 +17,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -58,7 +57,7 @@ import kotlinx.coroutines.withContext
 /** The player: the queue as a vertical Cover Flow over a backdrop glowing with the playing cover's colour, and the
  * transport beneath. */
 @Composable
-fun PlayerScreen(onBack: () -> Unit) {
+fun PlayerScreen() {
     var queue by remember { mutableStateOf(Queue.EMPTY) }
     LaunchedEffect(App.queueVersion, App.libraryVersion) {
         queue = withContext(Dispatchers.IO) { Core.queue() }
@@ -82,9 +81,7 @@ fun PlayerScreen(onBack: () -> Unit) {
                 )
             },
     ) {
-        Row(modifier = Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Library") }
-            Text("Player", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        Row(modifier = Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.End) {
             IconButton(onClick = { showTracks = !showTracks }) {
                 Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Tracks")
             }

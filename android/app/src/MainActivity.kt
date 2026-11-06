@@ -122,7 +122,7 @@ private fun Screens(onChooseFolder: () -> Unit) {
             }
             Box(modifier = Modifier.fillMaxSize().then(takeTouches)) {
                 if (player) {
-                    PlayerScreen(onBack = { player = false })
+                    PlayerScreen()
                 } else if (openAlbum != null) {
                     AlbumScreen(openAlbum, onBack = { album = null }, onPlayed = {
                         album = null
