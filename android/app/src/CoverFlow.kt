@@ -23,6 +23,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -98,6 +99,8 @@ fun VerticalCoverFlow(
 
     Canvas(
         modifier = modifier
+            // The stacks' far ends, mostly faded, reach past the edges.
+            .clipToBounds()
             .pointerInput(Unit) {
                 val tracker = VelocityTracker()
                 // Where the drag has taken the flow. Kept here, since a snap launched for one move has not
@@ -189,7 +192,7 @@ private class Flow(width: Float, val height: Float) {
     private val cy = height / 2
 
     /** The middle cover's edge in pixels. */
-    val coverPx = min(width * 0.72f, height * 0.42f)
+    val coverPx = min(width * 0.8f, height * 0.5f)
 
     /** Pixels per world unit at the origin's depth. */
     private val focal = coverPx * CAMERA_Z
@@ -280,8 +283,9 @@ private const val STEP_Z = -0.12f
 /** The stacks' tilt, in radians. */
 private const val TILT = 1.1f
 
-/** How far a finger moves the flow by one cover, as a fraction of the middle cover's edge. */
-private const val DRAG_PER_COVER = 0.35f
+/** How far a finger moves the flow by one cover, as a fraction of the middle cover's edge: about as far as the middle
+ * cover travels into a stack, so it stays under the finger. */
+private const val DRAG_PER_COVER = 0.6f
 
 /** How far a fling carries on, as the seconds its release velocity would last. */
 private const val FLING_SECONDS = 0.3f
