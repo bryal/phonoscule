@@ -399,7 +399,7 @@ private fun FilterRow(filter: Filter, picked: List<String>, onOpen: () -> Unit, 
             LazyRow(
                 modifier = Modifier.weight(1f),
                 reverseLayout = true,
-                horizontalArrangement = Arrangement.spacedBy(CHIP_GAP),
+                horizontalArrangement = Arrangement.spacedBy(CHIP_GAP, Alignment.End),
             ) {
                 items(picked.sortedWith(String.CASE_INSENSITIVE_ORDER), key = { it }) { value ->
                     InputChip(
