@@ -1,82 +1,61 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
   <title>Phonoscule</title>
   <!--
-    The Cover Flow, abstracted: the playing album lit up front, its neighbours receding either side,
-    all of it standing on the reflective black floor under the backdrop glow. See ./README.md for
-    how the raster forms are generated, and phonoscule-small.svg for the one small sizes use.
+    The Cover Flow: the playing album square on, two covers either side tilted towards it, each
+    above its reflection. No backdrop: the mark stands on whatever the taskbar or launcher is.
+    See ./README.md for how the raster forms are generated, and phonoscule-small.svg for the one
+    small sizes use.
 
-    The floor is y=150. Every reflection is its shape mirrored about that line, faded out by the
-    `floor` mask.
+    The covers are where the player's own camera (gui/src/coverflow.rs) sees them, so a side
+    cover's outer edge is its nearest and tallest, and its inner edge tucks behind the cover in
+    front of it. Every reflection is its cover mirrored about that cover's bottom edge, faded by
+    the `reflection` mask.
   -->
   <defs>
-    <linearGradient id="backdrop" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#15131d"/>
-      <stop offset="1" stop-color="#06060a"/>
-    </linearGradient>
-
-    <!-- The accent glow. Off-centre and above the floor, where the player puts it. -->
-    <radialGradient id="glow" cx="0.5" cy="0.40" r="0.46">
-      <stop offset="0" stop-color="#b49bff" stop-opacity="0.55"/>
-      <stop offset="0.5" stop-color="#7c3aed" stop-opacity="0.20"/>
-      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
-    </radialGradient>
-
-    <!-- The playing cover: no real album art, so the warm-to-magenta sweep the glow screenshots
-         run through, which also keeps the mark legible on a light or a dark taskbar. -->
+    <!-- The playing cover: no real album art, so a warm sweep, which reads on a light or a dark
+         taskbar alike. -->
     <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ffd76a"/>
       <stop offset="0.52" stop-color="#f6603c"/>
       <stop offset="1" stop-color="#d92b7a"/>
     </linearGradient>
 
-    <!-- The neighbours, turned away from the light: cool and dimmer than the middle, but still
-         plainly covers rather than shadows, since they carry the whole idea of a queue to flip
-         through. -->
-    <linearGradient id="side-left" x1="1" y1="0" x2="0" y2="0">
-      <stop offset="0" stop-color="#7a6dbe"/>
-      <stop offset="1" stop-color="#332d4d"/>
+    <!-- The neighbours: cool against the playing cover, lit on the near edge and shaded where they
+         go behind. The far pair is darker still. -->
+    <linearGradient id="near-left" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#9d8cff"/>
+      <stop offset="1" stop-color="#5a46c8"/>
     </linearGradient>
-    <linearGradient id="side-right" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#7a6dbe"/>
-      <stop offset="1" stop-color="#332d4d"/>
+    <linearGradient id="near-right" href="#near-left" x1="1" x2="0"/>
+    <linearGradient id="far-left" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#6f5fd6"/>
+      <stop offset="1" stop-color="#3f2f99"/>
     </linearGradient>
+    <linearGradient id="far-right" href="#far-left" x1="1" x2="0"/>
 
-    <!-- Luminance fade for the reflections: full at the floor, gone well before the lower edge. -->
-    <linearGradient id="fade" x1="0" y1="150" x2="0" y2="205" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#000000"/>
+    <!-- Fades each reflection out over the top half of its own box. -->
+    <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.4"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
-    <mask id="floor">
-      <rect x="0" y="150" width="256" height="72" fill="url(#fade)"/>
+    <mask id="reflection" maskContentUnits="objectBoundingBox">
+      <rect width="1" height="1" fill="url(#fade)"/>
     </mask>
-
-    <!-- Everything stays inside the tile. -->
-    <clipPath id="tile">
-      <rect x="0" y="0" width="256" height="256" rx="56" ry="56"/>
-    </clipPath>
   </defs>
 
-  <g clip-path="url(#tile)">
-    <rect x="0" y="0" width="256" height="256" fill="url(#backdrop)"/>
-    <rect x="0" y="0" width="256" height="256" fill="url(#glow)"/>
+  <!-- Lowered, so the covers look centred, their faint reflections hardly counting. Back to front,
+       reflections first, so each cover hides what is behind it. -->
+  <g transform="translate(0 12)">
+    <polygon points="3,138 61,125 62,202 6,230" fill="url(#far-left)" mask="url(#reflection)"/>
+    <polygon points="195,125 253,138 250,230 194,202" fill="url(#far-right)" mask="url(#reflection)"/>
+    <polygon points="23,141 79,127 80,205 26,236" fill="url(#near-left)" mask="url(#reflection)"/>
+    <polygon points="177,127 233,141 230,236 176,205" fill="url(#near-right)" mask="url(#reflection)"/>
+    <rect x="66" y="156" width="124" height="124" fill="url(#cover)" mask="url(#reflection)"/>
 
-    <!-- Reflections first, so the covers sit on top of their own. -->
-    <g mask="url(#floor)" opacity="0.55">
-      <polygon points="79,150 79,220 40,200 40,162" fill="url(#side-left)"/>
-      <polygon points="177,150 177,220 216,200 216,162" fill="url(#side-right)"/>
-      <rect x="87" y="150" width="82" height="82" fill="url(#cover)"/>
-    </g>
-
-    <!-- The neighbours: inner edge tall and near, outer edge short and far. They stop short of the
-         playing cover rather than tucking behind it, so the dark gap between reads as the depth
-         between them; run together, the pair looks like one band with a square on top. -->
-    <polygon points="79,80 79,150 40,138 40,100" fill="url(#side-left)"/>
-    <polygon points="177,80 177,150 216,138 216,100" fill="url(#side-right)"/>
-
-    <!-- The playing cover, square on to us. -->
-    <rect x="87" y="68" width="82" height="82" fill="url(#cover)"/>
-    <!-- A hairline of the glow catching its top edge; lost at small sizes, which is what the
-         small variant is for. -->
-    <rect x="87" y="68" width="82" height="82" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="2"/>
+    <polygon points="1,42 60,46 61,125 3,138" fill="url(#far-left)"/>
+    <polygon points="196,46 255,42 253,138 195,125" fill="url(#far-right)"/>
+    <polygon points="21,41 78,45 79,127 23,141" fill="url(#near-left)"/>
+    <polygon points="178,45 235,41 233,141 177,127" fill="url(#near-right)"/>
+    <rect x="66" y="32" width="124" height="124" fill="url(#cover)"/>
   </g>
 </svg>

@@ -1,48 +1,42 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
   <title>Phonoscule (small sizes)</title>
   <!--
-    The same mark for 16, 24 and 32 pixels, where the full one (./phonoscule.svg) turns to mud: the
-    receding neighbours are a few grey pixels at that size and the hairline edge is none at all. So
-    only the playing cover remains, larger, on its reflection, which at 16px is what anyone actually
-    sees of the full mark anyway.
+    The same mark for 16, 24 and 32 pixels, where the full one (./phonoscule.svg) turns to mud: one
+    cover either side rather than two, all of them larger, and the perspective a little steeper so a
+    side cover still narrows towards the middle when it is three pixels wide.
+
+    Edges sit on whole pixels at 16 and 32, where a unit is 16 and 8 of them. A side cover is drawn
+    only where it shows, from the edge to the playing cover.
   -->
   <defs>
-    <linearGradient id="backdrop" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#15131d"/>
-      <stop offset="1" stop-color="#06060a"/>
-    </linearGradient>
-
-    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.52">
-      <stop offset="0" stop-color="#b49bff" stop-opacity="0.55"/>
-      <stop offset="0.5" stop-color="#7c3aed" stop-opacity="0.20"/>
-      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
-    </radialGradient>
-
     <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ffd76a"/>
       <stop offset="0.52" stop-color="#f6603c"/>
       <stop offset="1" stop-color="#d92b7a"/>
     </linearGradient>
-
-    <linearGradient id="fade" x1="0" y1="172" x2="0" y2="216" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#000000"/>
+    <linearGradient id="left" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#9d8cff"/>
+      <stop offset="1" stop-color="#5a46c8"/>
     </linearGradient>
-    <mask id="floor">
-      <rect x="0" y="172" width="256" height="60" fill="url(#fade)"/>
-    </mask>
+    <linearGradient id="right" href="#left" x1="1" x2="0"/>
 
-    <clipPath id="tile">
-      <rect x="0" y="0" width="256" height="256" rx="56" ry="56"/>
-    </clipPath>
+    <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.4"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <mask id="reflection" maskContentUnits="objectBoundingBox">
+      <rect width="1" height="1" fill="url(#fade)"/>
+    </mask>
   </defs>
 
-  <g clip-path="url(#tile)">
-    <rect x="0" y="0" width="256" height="256" fill="url(#backdrop)"/>
-    <rect x="0" y="0" width="256" height="256" fill="url(#glow)"/>
-    <g mask="url(#floor)" opacity="0.55">
-      <rect x="66" y="172" width="124" height="124" fill="url(#cover)"/>
-    </g>
-    <rect x="66" y="48" width="124" height="124" fill="url(#cover)"/>
+  <!-- Lowered a pixel, so the covers look centred, their faint reflections hardly counting. -->
+  <g transform="translate(0 16)">
+    <polygon points="0,160 48,144 48,240 0,288" fill="url(#left)" mask="url(#reflection)"/>
+    <polygon points="208,144 256,160 256,288 208,240" fill="url(#right)" mask="url(#reflection)"/>
+    <rect x="48" y="176" width="160" height="160" fill="url(#cover)" mask="url(#reflection)"/>
+
+    <polygon points="0,32 48,48 48,144 0,160" fill="url(#left)"/>
+    <polygon points="208,48 256,32 256,160 208,144" fill="url(#right)"/>
+    <rect x="48" y="16" width="160" height="160" fill="url(#cover)"/>
   </g>
 </svg>
