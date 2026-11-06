@@ -64,7 +64,9 @@ fun PlayerScreen() {
     val glow by animateColorAsState(accentColor(playback.album?.accent), tween(GLOW_MS), label = "glow")
     val run = queue.runs.getOrNull(queue.runOf(playback.current))
     val runTracks = if (run == null) IntRange.EMPTY else run.start until run.end
-    val tracks = rememberTrackScroll(runTracks, playback.current, onPlay = { App.command { Core.jumpTo(it) } })
+    val tracks = rememberTrackScroll(runTracks, queue.tracks.size, playback.current, onPlay = {
+        App.command { Core.jumpTo(it) }
+    })
     var footerPx by remember { mutableIntStateOf(0) }
     val footer = with(LocalDensity.current) { footerPx.toDp() }
 

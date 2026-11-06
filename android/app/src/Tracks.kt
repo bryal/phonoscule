@@ -39,6 +39,7 @@ class TrackScroll internal constructor(private val scope: CoroutineScope, first:
     val position = Animatable(first.toFloat())
     internal var dragging = false
     internal var tracks = IntRange.EMPTY
+    internal var queue = IntRange.EMPTY
     internal var playing: Int? = null
     internal var onPlay: (Int) -> Unit = {}
 
@@ -66,13 +67,14 @@ class TrackScroll internal constructor(private val scope: CoroutineScope, first:
     }
 }
 
-/** A [TrackScroll] over the queue indices `tracks`, the playing album's, following `playing` while not dragged.
- * Coming to rest on a track other than `playing` calls `onPlay` with it. */
+/** A [TrackScroll] over the queue indices `tracks`, the playing album's, of a queue of `queued` tracks, following
+ * `playing` while not dragged. Coming to rest on a track other than `playing` calls `onPlay` with it. */
 @Composable
-fun rememberTrackScroll(tracks: IntRange, playing: Int?, onPlay: (Int) -> Unit): TrackScroll {
+fun rememberTrackScroll(tracks: IntRange, queued: Int, playing: Int?, onPlay: (Int) -> Unit): TrackScroll {
     val scope = rememberCoroutineScope()
     val scroll = remember { TrackScroll(scope, playing ?: 0) }
     scroll.tracks = tracks
+    scroll.queue = 0 until queued
     scroll.playing = playing
     scroll.onPlay = onPlay
     LaunchedEffect(playing) {
@@ -85,12 +87,15 @@ fun rememberTrackScroll(tracks: IntRange, playing: Int?, onPlay: (Int) -> Unit):
  * under the pick, so a drag rightwards picks earlier tracks; on letting go, plays the one it comes to.
  *
  * A flick, a drag let go within [FLICK_MS], steps just one track, and the pick goes no further than that one while it
- * might yet be a flick. A drag held longer is deliberate: the pick catches up with it and follows it from then on.
- * Vertical drags and taps are left to what is beneath. */
+ * might yet be a flick; it may step off the album, to the last track of the album before or the first of the next. A
+ * drag held longer is deliberate: the pick catches up with it and follows it from then on, within the album. Vertical
+ * drags and taps are left to what is beneath. */
 fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll) {
     // Where the drag has taken the pick, which it shows once the drag is held past a flick. Kept here, since a move
     // launched for one event has not necessarily landed by the next.
     var target = 0f
+    // How far the drag has gone, in tracks, the album's ends notwithstanding: which way a flick goes.
+    var moved = 0f
     var from = 0
     var began = -1L
     var held = false
@@ -99,6 +104,7 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
         onDragStart = {
             scroll.dragging = true
             target = scroll.position.value
+            moved = 0f
             from = scroll.picked
             began = -1L
             held = false
@@ -111,14 +117,23 @@ fun Modifier.trackDrag(scroll: TrackScroll): Modifier = this.pointerInput(scroll
             if (began < 0) began = change.uptimeMillis
             held = change.uptimeMillis - began >= FLICK_MS
             target = (target - dx / pitch).coerceIn(range.first.toFloat(), range.last.toFloat())
-            if (held) scroll.follow(target) else scroll.snapTo(from + (target - from).coerceIn(-1f, 1f))
+            moved -= dx / pitch
+            if (held) {
+                scroll.follow(target)
+            } else {
+                val queue = scroll.queue
+                scroll.snapTo((from + moved.coerceIn(-1f, 1f)).coerceIn(queue.first.toFloat(), queue.last.toFloat()))
+            }
         },
         onDragEnd = {
             scroll.dragging = false
             val range = scroll.tracks
             if (range.isEmpty()) return@detectHorizontalDragGestures
-            val to = if (held) target.roundToInt() else from + (target - from).sign.toInt()
-            scroll.settle(to.coerceIn(range))
+            if (held) {
+                scroll.settle(target.roundToInt().coerceIn(range))
+            } else {
+                scroll.settle((from + moved.sign.toInt()).coerceIn(scroll.queue))
+            }
         },
         onDragCancel = {
             scroll.dragging = false
@@ -231,7 +246,7 @@ private val ICICLE_MARGIN = 8.dp
 private const val ICICLE_LENGTH = 0.42f
 
 /** How long a drag may last, in milliseconds, and still be a flick. */
-private const val FLICK_MS = 120L
+private const val FLICK_MS = 125L
 
 private val SETTLE = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
 
