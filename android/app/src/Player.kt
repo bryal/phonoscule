@@ -131,7 +131,7 @@ fun PlayerScreen() {
 @Composable
 private fun NowPlaying(playback: Playback) {
     Column(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
@@ -183,7 +183,7 @@ private fun SeekBar(playback: Playback, accent: Color) {
 private fun Transport(playback: Playback) {
     var shuffling by remember { mutableStateOf(false) }
     Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 24.dp, top = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 14.dp, top = 4.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -207,7 +207,7 @@ private fun Transport(playback: Playback) {
         IconButton(onClick = { App.command { Core.prev() } }) {
             Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", modifier = Modifier.size(36.dp))
         }
-        IconButton(onClick = { App.command { Core.togglePlaying() } }, modifier = Modifier.size(72.dp)) {
+        IconButton(onClick = { App.command { Core.togglePlaying() } }, modifier = Modifier.size(68.dp)) {
             Icon(
                 if (playback.playing) Icons.Default.Pause else Icons.Default.PlayArrow,
                 contentDescription = if (playback.playing) "Pause" else "Play",
