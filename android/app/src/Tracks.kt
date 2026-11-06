@@ -231,7 +231,7 @@ private val ICICLE_MARGIN = 8.dp
 private const val ICICLE_LENGTH = 0.42f
 
 /** How long a drag may last, in milliseconds, and still be a flick. */
-private const val FLICK_MS = 150L
+private const val FLICK_MS = 100L
 
 private val SETTLE = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)
 
