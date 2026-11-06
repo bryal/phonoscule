@@ -59,29 +59,29 @@
       <polygon points="36,22 79.5,14 79.5,25 36,33"/>
     </g>
     <mask id="eighth-light-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
-      <use href="#eighth-shape" fill="#ffffff" transform="translate(-0.9 -0.9)"/>
+      <use href="#eighth-shape" fill="#ffffff" transform="translate(-0.75 -0.75)"/>
       <use href="#eighth-shape" fill="#000000"/>
     </mask>
     <mask id="eighth-dark-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
-      <use href="#eighth-shape" fill="#ffffff" transform="translate(0.9 0.9)"/>
+      <use href="#eighth-shape" fill="#ffffff" transform="translate(0.75 0.75)"/>
       <use href="#eighth-shape" fill="#000000"/>
     </mask>
     <g id="eighth">
       <rect x="-10" y="-10" width="120" height="120" fill="#ffffff" fill-opacity="0.2" mask="url(#eighth-light-rim)"/>
-      <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.38" mask="url(#eighth-dark-rim)"/>
+      <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.48" mask="url(#eighth-dark-rim)"/>
       <use href="#eighth-shape" filter="url(#leather)"/>
     </g>
     <mask id="beamed-eighths-light-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
-      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(-0.9 -0.9)"/>
+      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(-0.75 -0.75)"/>
       <use href="#beamed-eighths-shape" fill="#000000"/>
     </mask>
     <mask id="beamed-eighths-dark-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
-      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(0.9 0.9)"/>
+      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(0.75 0.75)"/>
       <use href="#beamed-eighths-shape" fill="#000000"/>
     </mask>
     <g id="beamed-eighths">
       <rect x="-10" y="-10" width="120" height="120" fill="#ffffff" fill-opacity="0.2" mask="url(#beamed-eighths-light-rim)"/>
-      <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.38" mask="url(#beamed-eighths-dark-rim)"/>
+      <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.48" mask="url(#beamed-eighths-dark-rim)"/>
       <use href="#beamed-eighths-shape" filter="url(#leather)"/>
     </g>
     <!-- The faces: each cover's colour, 0.55 of the way to #2b2b30, in the frame a note is drawn in.
@@ -96,7 +96,7 @@
     </linearGradient>
     <!-- Leather grain, in the same frame: each colour times 0.82 to 1.18 with fine mottled noise. -->
     <filter id="leather" x="-10" y="-10" width="120" height="120" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feTurbulence type="fractalNoise" baseFrequency="1.4" numOctaves="2" seed="11" result="noise"/>
+      <feTurbulence type="fractalNoise" baseFrequency="1.8" numOctaves="2" seed="11" result="noise"/>
       <feColorMatrix in="noise" type="matrix" values="1 0 0 0 0  1 0 0 0 0  1 0 0 0 0  0 0 0 0 1" result="grey"/>
       <feComposite in="SourceGraphic" in2="grey" operator="arithmetic" k1="0.36" k2="0.82"/>
     </filter>
