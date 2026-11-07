@@ -1,0 +1,121 @@
+plugins {
+    id("com.android.application") version "8.13.2"
+    id("org.jetbrains.kotlin.android") version "2.4.10"
+    id("org.jetbrains.kotlin.plugin.compose") version "2.4.10"
+}
+
+// Single source of truth for the version is the crate's Cargo.toml, so the APK
+// and the Rust core can never disagree about what they are.
+val crateVersion: String = rootDir.parentFile.resolve("Cargo.toml").readLines()
+    .first { it.startsWith("version") }
+    .substringAfter('"').substringBefore('"')
+
+// The launcher icon, rendered from the desktop player's artwork rather than committed as a copy.
+val iconRes = layout.buildDirectory.dir("generated/icon/res")
+
+// The desktop player's font, and its licence, which has to travel with it: copied in, not committed as copies.
+val fontRes = layout.buildDirectory.dir("generated/font/res")
+val fontAssets = layout.buildDirectory.dir("generated/font/assets")
+
+android {
+    namespace = "zone.jo.phonoscule"
+    compileSdk = 36
+    ndkVersion = "27.2.12479018"
+
+    defaultConfig {
+        applicationId = "zone.jo.phonoscule"
+        // AAudio wants 26; 29 is what neuma targets too.
+        minSdk = 29
+        targetSdk = 36
+        versionCode = 1
+        versionName = crateVersion
+        // One device, one ABI: no emulator, so no x86_64.
+        ndk { abiFilters += "arm64-v8a" }
+    }
+
+    // Flatten away Gradle's src/main/... convention. Kotlin resolves packages
+    // from the `package` declaration, not the directory path, so the usual
+    // zone/jo/phonoscule/ nesting is unnecessary too.
+    sourceSets["main"].apply {
+        manifest.srcFile("AndroidManifest.xml")
+        kotlin.srcDirs("src")
+        res.srcDirs("res", iconRes, fontRes)
+        assets.srcDirs(fontAssets)
+        jniLibs.srcDirs("jniLibs")
+    }
+
+    buildFeatures { compose = true }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+kotlin {
+    compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
+}
+
+dependencies {
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation(platform("androidx.compose:compose-bom:2026.06.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+    // Pinned: the icon set left the BOM when it stopped growing.
+    implementation("androidx.compose.material:material-icons-extended:1.7.8")
+    implementation("androidx.media3:media3-session:1.11.1")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+}
+
+// Cross-compile the Rust cdylib into jniLibs before AGP packages the APK.
+// Deliberately a plain Exec task rather than a Gradle plugin: a few legible lines
+// beat a `cargo {}` DSL that hides what is actually being run.
+//
+// Always a release build, debug APK or not: an unoptimised Opus decoder cannot
+// keep up with playback on a phone.
+val cargoNdk by tasks.registering(Exec::class) {
+    workingDir = rootDir.parentFile
+    environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+    commandLine("cargo", "ndk", "-t", "arm64-v8a", "-P", "29", "-o", "app/jniLibs", "build", "--release")
+}
+
+tasks.named("preBuild") { dependsOn(cargoNdk) }
+
+// The adaptive icon's foreground (see res/drawable/ic_launcher.xml). Mipmap-free: one raster at the largest launcher
+// density, 108dp, which the launcher scales down. The mark spans 292 of its 432 pixels, which puts its outermost covers
+// at the edges of the 288 a launcher shows. A launcher that crops to a circle clips their corners.
+val renderIcon by tasks.registering(Exec::class) {
+    val svg = rootDir.parentFile.parentFile.resolve("gui/assets/icon/phonoscule-vertical.svg")
+    val png = iconRes.get().file("drawable-xxxhdpi/ic_launcher_foreground.png").asFile
+    inputs.file(svg)
+    outputs.file(png)
+    doFirst {
+        // Nothing but this task's output may be left there, such as the ic_launcher.png it once made.
+        iconRes.get().asFile.deleteRecursively()
+        png.parentFile.mkdirs()
+    }
+    commandLine(
+        "rsvg-convert", "-w", "292", "-h", "292", "--page-width", "432", "--page-height", "432", "--left", "70",
+        "--top", "70", "-o", png.absolutePath, svg.absolutePath,
+    )
+}
+
+tasks.named("preBuild") { dependsOn(renderIcon) }
+
+// Only the face the app draws in; the others are a megabyte and a half each.
+val copyFont by tasks.registering(Sync::class) {
+    val dir = rootDir.parentFile.parentFile.resolve("gui/assets/font-iosevka")
+    into(layout.buildDirectory.dir("generated/font"))
+    from(dir) {
+        include("IosevkaFixedSS05-Regular.ttf")
+        rename { "iosevka.ttf" }
+        into("res/font")
+    }
+    from(dir) {
+        include("LICENSE.md")
+        rename { "iosevka-license.md" }
+        into("assets")
+    }
+}
+
+tasks.named("preBuild") { dependsOn(copyFont) }

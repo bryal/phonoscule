@@ -3,6 +3,41 @@
 //! Works on the album keys alone -- one per queue slot, equal keys meaning the same album -- and
 //! returns a permutation of the slots, so a player applies it to whatever its own queue items are.
 
+use std::ops::Range;
+
+/// The queue's runs: its contiguous stretches of one album, as ranges of slots, given each slot's
+/// album key in order. A cover flow shows one cover per run.
+pub fn runs(albums: impl IntoIterator<Item = u64>) -> Vec<Range<usize>> {
+    let mut runs: Vec<(u64, Range<usize>)> = Vec::new();
+    for (ix, album) in albums.into_iter().enumerate() {
+        match runs.last_mut() {
+            Some((key, run)) if *key == album => run.end = ix + 1,
+            _ => runs.push((album, ix..ix + 1)),
+        }
+    }
+    runs.into_iter().map(|(_, run)| run).collect()
+}
+
+/// The queue's albums, each once, in order of distance from slot `current`: its own, the next
+/// slot's, the previous slot's, the next-but-one's, and so on. The order a cover flow centred on
+/// `current` wants its covers loaded in.
+pub fn outward(albums: &[u64], current: usize) -> Vec<u64> {
+    let mut ids = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let Some(last) = albums.len().checked_sub(1) else { return ids };
+    let current = current.min(last);
+    for d in 0..albums.len() {
+        for ix in [Some(current + d), current.checked_sub(d).filter(|_| d > 0)].into_iter().flatten() {
+            if let Some(&id) = albums.get(ix)
+                && seen.insert(id)
+            {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
 /// What a shuffle permutes: single tracks, or whole albums, each album's tracks staying together and
 /// in their queue order while the albums land in random order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +128,20 @@ mod test {
 
     /// Two albums: slots 0-2 are one, slots 3-4 the other.
     const ALBUMS: [u64; 5] = [1, 1, 1, 2, 2];
+
+    #[test]
+    fn a_run_ends_where_the_album_changes() {
+        assert_eq!(runs([7, 7, 8, 8, 8, 9, 7]), [0..2, 2..5, 5..6, 6..7], "a later return of an album is a run of its own");
+        assert!(runs([]).is_empty());
+    }
+
+    #[test]
+    fn albums_go_outward_from_the_current_slot() {
+        assert_eq!(outward(&[1, 2, 3, 4, 5], 2), [3, 4, 2, 5, 1]);
+        assert_eq!(outward(&[1, 1, 2, 2, 3], 4), [3, 2, 1], "each album once");
+        assert_eq!(outward(&[1, 2], 9), [2, 1], "a current past the end is the last slot");
+        assert!(outward(&[], 0).is_empty());
+    }
 
     /// Whatever the shuffle, every slot is present exactly once -- it is a permutation, and a queue
     /// that lost or duplicated a track would be a bug the caller could not detect.

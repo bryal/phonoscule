@@ -444,7 +444,10 @@ mod testing {
                     .collect(),
             })
             .collect();
-        let engine = player::start(player::Client { name: "phonoscule-tui-test".into(), description: String::new() });
+        let engine = player::start(
+            player::Client { name: "phonoscule-tui-test".into(), description: String::new() },
+            std::sync::Arc::new(phonoscule::fs::Local),
+        );
         let covers = Covers::default();
         Model::restored(conf, covers, engine, albums, session::Restored::default())
     }

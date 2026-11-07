@@ -6,11 +6,12 @@
 //! here), which [`Sink::ensure_rate`] handles by reopening the stream and letting the audio server
 //! resample, so we never resample ourselves.
 //!
-//! Two backends, picked at compile time. Linux speaks PulseAudio through `pulse-simple` (PipeWire
+//! Three backends, picked at compile time. Linux speaks PulseAudio through `pulse-simple` (PipeWire
 //! included, via pipewire-pulse). Windows speaks WASAPI in shared mode, letting the audio engine
 //! convert our rate to the device's (`AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM`) - the same division of
-//! labour. Anywhere else - and on either platform when no device can be opened - playback falls
-//! back to [`Silence`], which paces off the wall clock so the queue still advances in real time.
+//! labour. Android speaks AAudio, whose shared streams resample too. Anywhere else - and on any
+//! platform when no device can be opened - playback falls back to [`Silence`], which paces off the
+//! wall clock so the queue still advances in real time.
 //!
 //! Wants std and an audio device.
 
@@ -57,9 +58,22 @@ impl Sink {
 
     /// Reopens the stream at `rate` if it differs from the current one. The frames we output are
     /// always 16-bit stereo, so the rate is the only thing that can change between tracks.
+    ///
+    /// Also tries for a device again if there was none, so that one failed open - a route still
+    /// changing when the stream was reopened, say - silences a track rather than the rest of the run.
     pub fn ensure_rate(&mut self, rate: u32) {
-        if self.rate != rate {
+        if self.rate != rate || matches!(self.out, Out::Silent(_)) {
             *self = Self::new(&self.client.clone(), rate);
+        }
+    }
+
+    /// Lets the device rest, because nothing will be written for a while: the engine calls this
+    /// before waiting out a pause. The next write wakes it, and what was written before still plays.
+    pub fn rest(&mut self) {
+        match &mut self.out {
+            Out::Device(sink) => sink.rest(),
+            // The clock restarts on the next write rather than counting the pause as time behind.
+            Out::Silent(silence) => *silence = Silence::new(self.rate),
         }
     }
 
@@ -162,6 +176,9 @@ mod backend {
         pub fn stale(&mut self) -> bool {
             false
         }
+
+        /// Nothing to do: Pulse drains an idle stream and holds no device for it.
+        pub fn rest(&mut self) {}
     }
 }
 
@@ -293,6 +310,10 @@ mod backend {
         pub fn stale(&mut self) -> bool {
             self.moved.load(Ordering::Relaxed)
         }
+
+        /// Nothing to do: an underrunning shared-mode stream plays silence, and the audio engine
+        /// stays up for the other sessions on the endpoint regardless.
+        pub fn rest(&mut self) {}
 
         /// Feeds the whole chunk to the device, waiting for room whenever the buffer is full.
         /// Returns once the last frame has been handed over - not once it has been heard.
@@ -433,9 +454,86 @@ mod backend {
     }
 }
 
+/// The AAudio backend. A blocking `AAudioStream_write` is exactly the contract [`Sink::write`]
+/// wants, as with Pulse.
+///
+/// A stream is bound to the device it was opened on, and AAudio disconnects it when the route
+/// changes - headphones plugged in or pulled out - which the next write reports as an error, and
+/// [`Sink::write`] reopens on the new route.
+#[cfg(target_os = "android")]
+mod backend {
+    use super::{Client, Frame};
+    use ndk::audio::{AudioError, AudioFormat, AudioPerformanceMode, AudioStream, AudioStreamBuilder};
+
+    /// How long one write may wait for room before looking again. Only bounds a stalled stream's
+    /// hold on the audio thread; a timeout is not an error.
+    const WAIT_NANOS: i64 = 1_000_000_000;
+
+    pub struct Sink {
+        stream: AudioStream,
+        /// Paused by [`rest`](Sink::rest), to be started again by the next write.
+        resting: bool,
+    }
+
+    // `AudioStream` holds a raw `AAudioStream`, which AAudio lets any one thread at a time use.
+    // `&mut` keeps it to one.
+    unsafe impl Send for Sink {}
+
+    impl Sink {
+        pub fn open(_client: &Client, rate: u32) -> Result<Self, String> {
+            let stream = AudioStreamBuilder::new()
+                .and_then(|builder| {
+                    builder
+                        .format(AudioFormat::PCM_I16)
+                        .channel_count(2)
+                        .sample_rate(rate as i32)
+                        // Large buffers and few wake-ups: a music player has no use for low latency.
+                        .performance_mode(AudioPerformanceMode::PowerSaving)
+                        .open_stream()
+                })
+                .map_err(|e| e.to_string())?;
+            stream.request_start().map_err(|e| e.to_string())?;
+            Ok(Sink { stream, resting: false })
+        }
+
+        pub fn write(&mut self, frames: &[Frame]) -> Result<(), String> {
+            if self.resting {
+                self.stream.request_start().map_err(|e| e.to_string())?;
+                self.resting = false;
+            }
+            let mut rest = frames;
+            while !rest.is_empty() {
+                // `Frame` is interleaved 16-bit little-endian stereo, the PCM_I16 stereo layout the
+                // stream was opened with.
+                let n = match unsafe { self.stream.write(rest.as_ptr().cast(), rest.len() as i32, WAIT_NANOS) } {
+                    Ok(n) => n,
+                    // ndk 0.9 mistakes any count but zero for an error code. Error codes are negative.
+                    Err(AudioError::__Unknown(n)) if n > 0 => n as u32,
+                    Err(e) => return Err(e.to_string()),
+                };
+                rest = &rest[(n as usize).min(rest.len())..];
+            }
+            Ok(())
+        }
+
+        /// Never: a route change disconnects the stream, which the next write reports.
+        pub fn stale(&mut self) -> bool {
+            false
+        }
+
+        /// Pauses the stream, so an idle player does not keep the audio hardware awake. A failure
+        /// is left for the next write to report.
+        pub fn rest(&mut self) {
+            if !self.resting {
+                self.resting = self.stream.request_pause().is_ok();
+            }
+        }
+    }
+}
+
 /// The deviceless fallback for platforms with no backend of their own: opening always fails, so
 /// [`Sink`] plays through [`Silence`].
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
 mod backend {
     use super::{Client, Frame};
 
@@ -453,6 +551,8 @@ mod backend {
         pub fn stale(&mut self) -> bool {
             false
         }
+
+        pub fn rest(&mut self) {}
     }
 }
 

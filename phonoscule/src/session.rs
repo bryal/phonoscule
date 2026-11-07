@@ -16,7 +16,7 @@
 use crate::player::Repeat;
 use crate::sort::SortOrder;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Bumped when [`SavedPlaylist`] changes shape; old or unreadable files restore an empty queue.
 /// (v1 was the pre-split format carrying per-track tags.)
@@ -61,11 +61,13 @@ pub struct Restored {
     pub sort: Option<SortOrder>,
 }
 
-/// Loads and reconciles both files: tracks whose files have vanished since the last run are
-/// dropped (the music directory may have changed in between) with `current` following its item to
-/// its new index, and `current` is clamped to the queue. Missing, outdated, or unreadable files
-/// degrade to their defaults (an empty queue; index 0, repeat off).
-pub async fn load(playlist: Option<PathBuf>, player: Option<PathBuf>) -> Restored {
+/// Loads and reconciles both files: tracks for which `exists` is false are dropped (the music
+/// directory may have changed in between) with `current` following its item to its new index, and
+/// `current` is clamped to the queue. Missing, outdated, or unreadable files degrade to their
+/// defaults (an empty queue; index 0, repeat off).
+///
+/// `exists` is [`Path::exists`] for music on the local filesystem.
+pub async fn load(playlist: Option<PathBuf>, player: Option<PathBuf>, exists: impl Fn(&Path) -> bool) -> Restored {
     let saved: SavedPlaylist =
         read_json(playlist, "playlist").await.filter(|p: &SavedPlaylist| p.version == PLAYLIST_VERSION).unwrap_or_default();
     let saved_state = read_json(player, "player state").await.filter(|p: &SavedPlayer| p.version == PLAYER_VERSION);
@@ -75,7 +77,7 @@ pub async fn load(playlist: Option<PathBuf>, player: Option<PathBuf>) -> Restore
     let mut tracks = Vec::with_capacity(saved.tracks.len());
     let mut current = state.current;
     for (ix, track) in saved.tracks.into_iter().enumerate() {
-        if smol::fs::metadata(&track).await.is_ok() {
+        if exists(&track) {
             tracks.push(track);
         } else if ix < state.current {
             // A dropped track before the current one shifts it back one slot.
@@ -152,7 +154,7 @@ mod test {
             let sort = SortOrder { field: crate::sort::SortField::Year, ..Default::default() };
             save_playlist(playlist.clone(), SavedPlaylist::new(vec![a.clone(), root.join("gone.opus"), b.clone()])).await;
             save_player(player.clone(), SavedPlayer::new(2, Repeat::Album, sort)).await;
-            let restored = load(playlist.clone(), player.clone()).await;
+            let restored = load(playlist.clone(), player.clone(), Path::exists).await;
 
             assert_eq!(restored.tracks, [a, b], "the vanished track is dropped");
             assert_eq!(restored.current, 1, "current follows its item past the dropped one");
@@ -166,7 +168,8 @@ mod test {
     #[test]
     fn missing_files_restore_an_empty_session() {
         let missing = std::env::temp_dir().join("phonoscule-playlist-nonexistent");
-        let restored = smol::block_on(load(Some(missing.join("playlist.json")), Some(missing.join("player.json"))));
+        let restored =
+            smol::block_on(load(Some(missing.join("playlist.json")), Some(missing.join("player.json")), Path::exists));
         assert!(restored.tracks.is_empty());
         assert_eq!(restored.current, 0);
         assert_eq!(restored.repeat, Repeat::Off);

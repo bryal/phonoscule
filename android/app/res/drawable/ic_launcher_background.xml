@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Black with a violet glow behind the covers, as the player draws it before a cover tints it. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient
+        android:type="radial"
+        android:gradientRadius="60%"
+        android:centerY="0.42"
+        android:startColor="#3b2d70"
+        android:centerColor="#17132a"
+        android:endColor="#08070c" />
+</shape>

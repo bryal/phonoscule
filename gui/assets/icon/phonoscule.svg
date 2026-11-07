@@ -1,82 +1,178 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
   <title>Phonoscule</title>
   <!--
-    The Cover Flow, abstracted: the playing album lit up front, its neighbours receding either side,
-    all of it standing on the reflective black floor under the backdrop glow. See ./README.md for
-    how the raster forms are generated, and phonoscule-small.svg for the one small sizes use.
+    The Cover Flow: the playing album square on, two covers either side tilted towards it, each
+    above its reflection. No backdrop: the mark stands on whatever the taskbar or launcher is.
+    See ./README.md for how the raster forms are generated, and phonoscule-small.svg for the one
+    small sizes use.
 
-    The floor is y=150. Every reflection is its shape mirrored about that line, faded out by the
-    `floor` mask.
+    The covers are where the player's own camera (gui/src/coverflow.rs) sees them, so a side
+    cover's outer edge is its nearest and tallest, and its inner edge tucks behind the cover in
+    front of it. Each reflection is its cover mirrored about that cover's bottom edge, as much of it
+    as no nearer reflection hides, and fades down its own length the way the player's does
+    (coverflow.wgsl): from 0.3 at the seam, quadratically, to nothing.
+
+    The covers are linen, with leather notes embossed on the playing cover and on the near pair,
+    which so show in their reflections too. Each note is drawn once, in a cover's own 100-unit
+    square, and put on a tilted cover by the perspective that carries the cover's corners there,
+    taken at the note's middle. Those on the near pair sit in the middle of what shows of their
+    covers.
   -->
   <defs>
-    <linearGradient id="backdrop" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#15131d"/>
-      <stop offset="1" stop-color="#06060a"/>
+    <!-- No real album art, so a colour for each cover, stepping from blue on the left through
+         lavender in the middle to pink on the right: #4b7bff, #7f8cff, #b39dff, #d986da, #ff6eb4.
+         The neighbours are shaded towards the edge that goes behind: their colour times 1 at the
+         outer edge and 0.72 at the inner, or 0.8 and 0.58 for the far pair. -->
+    <linearGradient id="far-left" x1="1" y1="0" x2="61" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3c62cc"/>
+      <stop offset="1" stop-color="#2c4794"/>
+    </linearGradient>
+    <linearGradient id="near-left" x1="21" y1="0" x2="79" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7f8cff"/>
+      <stop offset="1" stop-color="#5b65b8"/>
+    </linearGradient>
+    <linearGradient id="near-right" x1="235" y1="0" x2="177" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d986da"/>
+      <stop offset="1" stop-color="#9c609d"/>
+    </linearGradient>
+    <linearGradient id="far-right" x1="255" y1="0" x2="195" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#cc5890"/>
+      <stop offset="1" stop-color="#944068"/>
     </linearGradient>
 
-    <!-- The accent glow. Off-centre and above the floor, where the player puts it. -->
-    <radialGradient id="glow" cx="0.5" cy="0.40" r="0.46">
-      <stop offset="0" stop-color="#b49bff" stop-opacity="0.55"/>
-      <stop offset="0.5" stop-color="#7c3aed" stop-opacity="0.20"/>
-      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
-    </radialGradient>
-
-    <!-- The playing cover: no real album art, so the warm-to-magenta sweep the glow screenshots
-         run through, which also keeps the mark legible on a light or a dark taskbar. -->
-    <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffd76a"/>
-      <stop offset="0.52" stop-color="#f6603c"/>
-      <stop offset="1" stop-color="#d92b7a"/>
-    </linearGradient>
-
-    <!-- The neighbours, turned away from the light: cool and dimmer than the middle, but still
-         plainly covers rather than shadows, since they carry the whole idea of a queue to flip
-         through. -->
-    <linearGradient id="side-left" x1="1" y1="0" x2="0" y2="0">
-      <stop offset="0" stop-color="#7a6dbe"/>
-      <stop offset="1" stop-color="#332d4d"/>
-    </linearGradient>
-    <linearGradient id="side-right" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#7a6dbe"/>
-      <stop offset="1" stop-color="#332d4d"/>
-    </linearGradient>
-
-    <!-- Luminance fade for the reflections: full at the floor, gone well before the lower edge. -->
-    <linearGradient id="fade" x1="0" y1="150" x2="0" y2="205" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#000000"/>
-    </linearGradient>
-    <mask id="floor">
-      <rect x="0" y="150" width="256" height="72" fill="url(#fade)"/>
+    <!-- Two beamed eighth notes for the playing cover, one eighth for each neighbour, embossed in
+         leather: the face a dusky indigo, grained, lit along its upper left
+         edges and shadowed along its lower right. Each rim is the note nudged that way, less the
+         note itself, so neither shows under the face. The face's colour comes from where the note
+         is put. -->
+    <path id="flag" d="M0,0 C1.5,8 8.5,12 12.5,18 C16.5,24 17.5,33 13.5,42 C15.5,33 12.5,27 7.5,22 C4.5,19 1.5,15 0,11 Z"/>
+    <g id="eighth-shape">
+      <ellipse cx="42" cy="72" rx="15.5" ry="11" transform="rotate(-24 42 72)"/>
+      <rect x="51.5" y="16" width="6" height="56"/>
+      <use href="#flag" transform="translate(57.5 16)"/>
+    </g>
+    <g id="beamed-eighths-shape">
+      <ellipse cx="29" cy="73" rx="13.5" ry="10" transform="rotate(-24 29 73)"/>
+      <ellipse cx="67" cy="66" rx="13.5" ry="10" transform="rotate(-24 67 66)"/>
+      <rect x="36" y="22" width="5.5" height="48"/>
+      <rect x="74" y="15" width="5.5" height="48"/>
+      <polygon points="36,22 79.5,14 79.5,25 36,33"/>
+    </g>
+    <mask id="eighth-light-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
+      <use href="#eighth-shape" fill="#ffffff" transform="translate(-0.75 -0.75)"/>
+      <use href="#eighth-shape" fill="#000000"/>
     </mask>
+    <mask id="eighth-dark-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
+      <use href="#eighth-shape" fill="#ffffff" transform="translate(0.75 0.75)"/>
+      <use href="#eighth-shape" fill="#000000"/>
+    </mask>
+    <g id="eighth">
+      <rect x="-10" y="-10" width="120" height="120" fill="#ffffff" fill-opacity="0.2" mask="url(#eighth-light-rim)"/>
+      <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.48" mask="url(#eighth-dark-rim)"/>
+      <use href="#eighth-shape" filter="url(#leather)"/>
+    </g>
+    <mask id="beamed-eighths-light-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
+      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(-0.75 -0.75)"/>
+      <use href="#beamed-eighths-shape" fill="#000000"/>
+    </mask>
+    <mask id="beamed-eighths-dark-rim" maskUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120">
+      <use href="#beamed-eighths-shape" fill="#ffffff" transform="translate(0.75 0.75)"/>
+      <use href="#beamed-eighths-shape" fill="#000000"/>
+    </mask>
+    <g id="beamed-eighths">
+      <rect x="-10" y="-10" width="120" height="120" fill="#ffffff" fill-opacity="0.2" mask="url(#beamed-eighths-light-rim)"/>
+      <rect x="-10" y="-10" width="120" height="120" fill="#000000" fill-opacity="0.48" mask="url(#beamed-eighths-dark-rim)"/>
+      <use href="#beamed-eighths-shape" filter="url(#leather)"/>
+    </g>
+    <!-- The faces: a dusky indigo, hsl(255, 35%, 35%), in the frame a note is drawn in. The near
+         pair's hues step from it as their covers' do from the playing cover's, to 235 and 301, and
+         they darken with their covers' shading, from the outer edge to the inner. -->
+    <linearGradient id="near-left-face" x1="11.25" y1="0" x2="111.25" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#373b71"/>
+      <stop offset="1" stop-color="#2b2f5a"/>
+    </linearGradient>
+    <linearGradient id="near-right-face" x1="90.25" y1="0" x2="-9.75" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6a336a"/>
+      <stop offset="1" stop-color="#542954"/>
+    </linearGradient>
+    <!-- Leather grain, in the same frame: each colour times 0.82 to 1.18 with fine mottled noise. -->
+    <filter id="leather" x="-10" y="-10" width="120" height="120" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="2.4" numOctaves="2" seed="11" result="noise"/>
+      <feColorMatrix in="noise" type="matrix" values="1 0 0 0 0  1 0 0 0 0  1 0 0 0 0  0 0 0 0 1" result="grey"/>
+      <feComposite in="SourceGraphic" in2="grey" operator="arithmetic" k1="0.36" k2="0.82"/>
+    </filter>
 
-    <!-- Everything stays inside the tile. -->
-    <clipPath id="tile">
-      <rect x="0" y="0" width="256" height="256" rx="56" ry="56"/>
-    </clipPath>
+    <!-- What shows of the near pair's reflections. -->
+    <clipPath id="near-left-shown"><polygon points="23,141 66,130.3 66,213 26,236"/></clipPath>
+    <clipPath id="near-right-shown"><polygon points="233,141 190,130.3 190,213 230,236"/></clipPath>
+
+    <!-- The fade, 0.3 * (1 - v)^2 down a reflection, and where v runs for each: from the middle of
+         its seam, square to the seam, to the middle of its lower edge. -->
+    <linearGradient id="fade" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="0.2" stop-color="#ffffff" stop-opacity="0.192"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0.108"/>
+      <stop offset="0.6" stop-color="#ffffff" stop-opacity="0.048"/>
+      <stop offset="0.8" stop-color="#ffffff" stop-opacity="0.012"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="fade-far-left" href="#fade" x1="32" y1="131.5" x2="50.1" y2="212.4"/>
+    <linearGradient id="fade-near-left" href="#fade" x1="51" y1="134" x2="71.5" y2="215.9"/>
+    <linearGradient id="fade-middle" href="#fade" x1="0" y1="156" x2="0" y2="280"/>
+    <linearGradient id="fade-near-right" href="#fade" x1="205" y1="134" x2="184.5" y2="215.9"/>
+    <linearGradient id="fade-far-right" href="#fade" x1="224" y1="131.5" x2="205.9" y2="212.4"/>
+    <mask id="far-left-reflection" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="300">
+      <rect width="256" height="300" fill="url(#fade-far-left)"/>
+    </mask>
+    <mask id="near-left-reflection" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="300">
+      <rect width="256" height="300" fill="url(#fade-near-left)"/>
+    </mask>
+    <mask id="middle-reflection" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="300">
+      <rect width="256" height="300" fill="url(#fade-middle)"/>
+    </mask>
+    <mask id="near-right-reflection" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="300">
+      <rect width="256" height="300" fill="url(#fade-near-right)"/>
+    </mask>
+    <mask id="far-right-reflection" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="300">
+      <rect width="256" height="300" fill="url(#fade-far-right)"/>
+    </mask>
+    <!-- The covers' linen weave, as fine noise stretched one way crossed with the same stretched
+         the other: each colour times 0.79 to 1.21 with the weave. Every cover is woven from the
+         one field, so the weave runs on from one to the next. -->
+    <filter id="linen" x="0" y="0" width="256" height="300" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="2.7 0.11" numOctaves="2" seed="3" result="warp"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.11 2.7" numOctaves="2" seed="5" result="weft"/>
+      <feComposite in="warp" in2="weft" operator="arithmetic" k2="0.5" k3="0.5" result="noise"/>
+      <feColorMatrix in="noise" type="matrix" values="1 0 0 0 0  1 0 0 0 0  1 0 0 0 0  0 0 0 0 1" result="grey"/>
+      <feComposite in="SourceGraphic" in2="grey" operator="arithmetic" k1="0.42" k2="0.79"/>
+    </filter>
   </defs>
 
-  <g clip-path="url(#tile)">
-    <rect x="0" y="0" width="256" height="256" fill="url(#backdrop)"/>
-    <rect x="0" y="0" width="256" height="256" fill="url(#glow)"/>
-
-    <!-- Reflections first, so the covers sit on top of their own. -->
-    <g mask="url(#floor)" opacity="0.55">
-      <polygon points="79,150 79,220 40,200 40,162" fill="url(#side-left)"/>
-      <polygon points="177,150 177,220 216,200 216,162" fill="url(#side-right)"/>
-      <rect x="87" y="150" width="82" height="82" fill="url(#cover)"/>
+  <!-- Lowered, so the covers look centred, their faint reflections hardly counting. -->
+  <g transform="translate(0 12)">
+    <polygon points="3,138 23,133.5 26,220 6,230" fill="url(#far-left)" filter="url(#linen)" mask="url(#far-left-reflection)"/>
+    <g clip-path="url(#near-left-shown)" mask="url(#near-left-reflection)">
+      <rect width="256" height="256" fill="url(#near-left)" filter="url(#linen)"/>
+      <use href="#eighth" fill="url(#near-left-face)" transform="matrix(0.5796 -0.2399 -0.0213 -0.8829 20.66 235.45)"/>
     </g>
+    <g mask="url(#middle-reflection)">
+      <rect x="66" y="156" width="124" height="124" fill="#b39dff" filter="url(#linen)"/>
+      <use href="#beamed-eighths" fill="#4a3a79" transform="matrix(1.24 0 0 -1.24 66 280)"/>
+    </g>
+    <g clip-path="url(#near-right-shown)" mask="url(#near-right-reflection)">
+      <rect width="256" height="256" fill="url(#near-right)" filter="url(#linen)"/>
+      <use href="#eighth" fill="url(#near-right-face)" transform="matrix(0.5571 0.2305 0.0193 -0.8663 177.75 210.75)"/>
+    </g>
+    <polygon points="253,138 233,133.5 230,220 250,230" fill="url(#far-right)" filter="url(#linen)" mask="url(#far-right-reflection)"/>
 
-    <!-- The neighbours: inner edge tall and near, outer edge short and far. They stop short of the
-         playing cover rather than tucking behind it, so the dark gap between reads as the depth
-         between them; run together, the pair looks like one band with a square on top. -->
-    <polygon points="79,80 79,150 40,138 40,100" fill="url(#side-left)"/>
-    <polygon points="177,80 177,150 216,138 216,100" fill="url(#side-right)"/>
-
-    <!-- The playing cover, square on to us. -->
-    <rect x="87" y="68" width="82" height="82" fill="url(#cover)"/>
-    <!-- A hairline of the glow catching its top edge; lost at small sizes, which is what the
-         small variant is for. -->
-    <rect x="87" y="68" width="82" height="82" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="2"/>
+    <!-- Back to front, so each cover hides what is behind it. -->
+    <polygon points="1,42 60,46 61,125 3,138" fill="url(#far-left)" filter="url(#linen)"/>
+    <polygon points="196,46 255,42 253,138 195,125" fill="url(#far-right)" filter="url(#linen)"/>
+    <polygon points="21,41 78,45 79,127 23,141" fill="url(#near-left)" filter="url(#linen)"/>
+    <use href="#eighth" fill="url(#near-left-face)" transform="matrix(0.5949 -0.0538 0.0157 0.9291 16.11 45.35)"/>
+    <polygon points="178,45 235,41 233,141 177,127" fill="url(#near-right)" filter="url(#linen)"/>
+    <use href="#eighth" fill="url(#near-right-face)" transform="matrix(0.5724 0.0518 -0.0147 0.9114 180.60 40.87)"/>
+    <rect x="66" y="32" width="124" height="124" fill="#b39dff" filter="url(#linen)"/>
+    <use href="#beamed-eighths" fill="#4a3a79" transform="matrix(1.24 0 0 1.24 66 32)"/>
   </g>
 </svg>

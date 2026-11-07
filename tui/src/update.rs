@@ -450,11 +450,9 @@ pub fn update(model: &mut Model, msg: Msg) -> After {
             }
             if applied { After::Redraw } else { After::Idle }
         }
-        Msg::Library(library::ScanEvent::Done { album_ids }) => {
-            let ids: std::collections::HashSet<u64> = album_ids.into_iter().collect();
-            let before = model.albums.len();
-            model.albums.retain(|album| ids.contains(&album.id));
-            model.index_dirty |= model.albums.len() != before;
+        Msg::Library(library::ScanEvent::Progress(_)) => After::Idle,
+        Msg::Library(library::ScanEvent::Done { album_ids, complete }) => {
+            model.index_dirty |= library::drop_missing(&mut model.albums, &album_ids, complete);
             model.scan = ScanState::Complete;
             model.shown_dirty = true;
             if std::mem::take(&mut model.index_dirty) { After::SaveIndex } else { After::Redraw }
@@ -634,36 +632,13 @@ pub fn entries(items: &[QueueItem]) -> Vec<player::Entry> {
 
 /// Upserts a scanned album by id. Rescans re-report every album, the overwhelming majority
 /// unchanged, so an unchanged one is dropped before doing any of the work below.
-fn absorb_album(model: &mut Model, mut album: Album) -> After {
-    match model.albums.iter().position(|a| a.id == album.id) {
-        Some(ix) => {
-            // `cover` and `accent` are runtime-only: scan events never carry them.
-            let Album { id: _, title, artist, genre, year, cover_id, cover: _, accent: _, tracks } = &model.albums[ix];
-            if *title == album.title
-                && *artist == album.artist
-                && *genre == album.genre
-                && *year == album.year
-                && *cover_id == album.cover_id
-                && *tracks == album.tracks
-            {
-                return After::Idle;
-            }
-            model.index_dirty = true;
-            let old = model.albums.remove(ix);
-            // Keep the loaded cover art when the cover is unchanged (the scanner skips re-sending
-            // it); the accent follows the cover.
-            if old.cover_id == album.cover_id {
-                album.cover = old.cover;
-                album.accent = old.accent;
-            }
-        }
-        None => model.index_dirty = true,
+fn absorb_album(model: &mut Model, album: Album) -> After {
+    if !library::upsert(&mut model.albums, album) {
+        return After::Idle;
     }
+    model.index_dirty = true;
     // The queue is re-matched against the library once the burst has landed, not here.
     model.queue_stale = true;
-    let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
-    let ix = model.albums.partition_point(|a| key(a) <= key(&album));
-    model.albums.insert(ix, album);
     // Not re-sorted here: `reconcile` does that once for the whole burst.
     model.shown_dirty = true;
     After::Redraw
@@ -741,6 +716,7 @@ pub enum Scan {
 /// Options for a scan.
 pub fn scan_options(model: &Model, phase: Scan) -> library::ScanOptions {
     library::ScanOptions {
+        fs: std::sync::Arc::new(phonoscule::fs::Local),
         root: model.conf.music_dir.clone(),
         priority: vec![],
         // Re-reading a known cover costs a file read, an RGBA expansion and an accent histogram, all
@@ -1091,7 +1067,10 @@ mod test {
         // Restored with no library at all: the paths are all there is to show.
         let conf = phonoscule::config::Conf::new("tui", "/music".into());
         let covers = crate::covers::Covers::default();
-        let engine = player::start(player::Client { name: "restore-test".into(), description: String::new() });
+        let engine = player::start(
+            player::Client { name: "restore-test".into(), description: String::new() },
+            std::sync::Arc::new(phonoscule::fs::Local),
+        );
         let mut model = Model::restored(conf, covers, engine, vec![], restored);
         assert_eq!(model.queue.len(), paths.len());
         assert!(model.queue.iter().all(|item| item.album_id == 0), "no album is known yet");

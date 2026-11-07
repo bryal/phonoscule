@@ -25,6 +25,7 @@ See [`gui/README.md`](gui/README.md) for more details.
 Alongside it is `phonoscule-tui`, the same album-centric player in a terminal -
 cover art included, where the terminal can draw it.
 See [`tui/README.md`](tui/README.md).
+And for a phone, an Android app; see [`android/README.md`](android/README.md).
 
 ## The framework (`phonoscule`)
 
@@ -72,6 +73,17 @@ Cover art is loaded as it is shown into caches of fixed size, and decoded off th
 thread, so the artwork costs the same however much music you have and scrolling never waits
 for it.
 See [`tui/README.md`](tui/README.md) for its features, configuration, and controls.
+
+## The Android app (`android/`)
+
+<img src="screenshots/android/cover-flow.jpg" width="300" alt="The Android app's vertical Cover Flow">
+
+The same album-centric player on a phone, with the Cover Flow stood on end:
+the queue's albums stacked above and below the playing one.
+A Kotlin/Compose shell over a Rust core that is this library -
+the scan, the decoders, the play engine with an AAudio output, and the saved session -
+reading the music through Android's Storage Access Framework.
+See [`android/README.md`](android/README.md).
 
 ## A minimal example (`phonoscule-cli`)
 

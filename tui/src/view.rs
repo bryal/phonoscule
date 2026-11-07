@@ -370,15 +370,7 @@ fn now_playing(frame: &mut Frame, model: &mut Model, area: Rect) {
 
 /// How many runs of tracks from one album the queue holds -- what the player lists as groups.
 fn album_runs(model: &Model) -> usize {
-    let mut runs = 0;
-    let mut last: Option<u64> = None;
-    for item in &model.queue {
-        if last != Some(item.album_id) {
-            runs += 1;
-            last = Some(item.album_id);
-        }
-    }
-    runs
+    phonoscule::queue::runs(model.queue.iter().map(|item| item.album_id)).len()
 }
 
 /// Which line of the queue listing the playing track sits on, album bylines and blanks included.

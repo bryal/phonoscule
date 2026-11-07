@@ -9,6 +9,7 @@
 //! [`plumbing`](crate::plumbing) directly instead.
 
 use crate::{
+    fs::Fs,
     io::{Skippable, Take},
     opus::{OggOpus, OpusReader},
     plumbing::*,
@@ -17,14 +18,12 @@ use crate::{
     wav::Wav,
 };
 use embedded_io_adapters::futures_03::FromFutures;
-use smol::{
-    channel,
-    fs::File,
-    io::{AsyncReadExt, BufReader},
-};
+use embedded_io_async::{Read as _, Seek as _, SeekFrom};
+use smol::{channel, fs::File, io::BufReader};
 use std::{
     cmp::min,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -113,6 +112,9 @@ pub enum Cmd {
     /// Jump to the given queue index.
     JumpTo(usize),
     TogglePlayPause,
+    /// Play or pause, whichever the engine is doing now. Unlike a toggle, sending the same one twice
+    /// is the same as sending it once, so it is what a system media control should send.
+    SetPlayState(PlayState),
     Next,
     Prev,
     /// Absolute seek within the current track.
@@ -166,7 +168,8 @@ impl Drop for Engine {
 /// [`sink`](crate::sink), where the backends that use it live.
 pub use crate::sink::Client;
 
-pub fn start(client: Client) -> Engine {
+/// Starts the engine, playing the tracks it is queued from `fs`.
+pub fn start(client: Client, fs: Arc<dyn Fs>) -> Engine {
     // Commands come from the (synchronous) application, so the channel is unbounded to make
     // sending non-blocking there.
     let (cmd_tx, cmd_rx) = channel::unbounded::<Cmd>();
@@ -177,12 +180,12 @@ pub fn start(client: Client) -> Engine {
     // when idle. Communication stays on the (`Send`) channels.
     let audio = std::thread::Builder::new()
         .name("phonoscule-audio".into())
-        .spawn(move || smol::block_on(player_loop(client, cmd_rx, event_tx)))
+        .spawn(move || smol::block_on(player_loop(client, &*fs, cmd_rx, event_tx)))
         .expect("cannot spawn the audio thread");
     Engine { cmd: cmd_tx, events: event_rx, _audio: audio }
 }
 
-async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: channel::Sender<Event>) {
+async fn player_loop(client: Client, fs: &dyn Fs, cmd_rx: channel::Receiver<Cmd>, events: channel::Sender<Event>) {
     // Reused across tracks (its blocking writes pace playback to real time), reopened only when a
     // track's sample rate differs from the stream's -- see `ensure_rate` before each track.
     let mut sink = Sink::new(&client, PLAYBACK_SAMPLE_RATE);
@@ -259,6 +262,10 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
                 *play_state = play_state.toggled();
                 AfterCmd::Continue
             }
+            Cmd::SetPlayState(state) => {
+                *play_state = state;
+                AfterCmd::Continue
+            }
             Cmd::Seek(_) => AfterCmd::Continue, // meaningless without an open track
             Cmd::SetRepeat(mode) => {
                 *repeat = mode;
@@ -271,6 +278,7 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
         // Idle when there is nothing (left) to play.
         let Some(path) = queue.get(ix).map(|entry| entry.path.clone()) else {
             play_state = PlayState::Paused;
+            sink.rest();
             if events.send(Event::QueueEnded).await.is_err() {
                 return;
             }
@@ -302,7 +310,7 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
         };
 
         log::debug!("opening file {path:?}");
-        let Some(track) = Track::open(&path).await else {
+        let Some(track) = Track::open(fs, &path).await else {
             log::error!("failed to open {path:?}, skipping");
             ix += 1;
             start_at = 0;
@@ -330,10 +338,13 @@ async fn player_loop(client: Client, cmd_rx: channel::Receiver<Cmd>, events: cha
                 Some(cmd) => Some(cmd),
                 None => match play_state {
                     // Paused: nothing to do but wait for the next command.
-                    PlayState::Paused => match cmd_rx.recv().await {
-                        Ok(cmd) => Some(cmd),
-                        Err(_) => return,
-                    },
+                    PlayState::Paused => {
+                        sink.rest();
+                        match cmd_rx.recv().await {
+                            Ok(cmd) => Some(cmd),
+                            Err(_) => return,
+                        }
+                    }
                     PlayState::Playing => match cmd_rx.try_recv() {
                         Ok(cmd) => Some(cmd),
                         Err(channel::TryRecvError::Empty) => None,
@@ -508,10 +519,11 @@ struct Track {
 }
 
 impl Track {
-    async fn open(path: &Path) -> Option<Track> {
+    async fn open(fs: &dyn Fs, path: &Path) -> Option<Track> {
+        let mut f = Skippable(FromFutures::new(BufReader::new(File::from(fs.open(path).await.ok()?))));
         let mut magic = [0u8; 4];
-        File::open(path).await.ok()?.read_exact(&mut magic).await.ok()?;
-        let f = Skippable(FromFutures::new(BufReader::new(File::open(path).await.ok()?)));
+        f.read_exact(&mut magic).await.ok()?;
+        f.seek(SeekFrom::Start(0)).await.ok()?;
         match &magic {
             b"RIFF" => {
                 // Playback doesn't use the tags (the queue items carry them): drop them.

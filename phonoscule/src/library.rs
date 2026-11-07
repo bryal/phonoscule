@@ -16,22 +16,29 @@
 //! Tags are cached persistently (validated by file mtime + size), so only new or changed files
 //! are actually opened; re-scans of an unchanged library cost directory reads and stats. Album
 //! and cover ids are stable content-derived hashes, so consumers can reconcile a re-scan against
-//! previous state: upsert albums by id as they arrive, keep already-loaded cover art when the
+//! previous state: [`upsert`] albums as they arrive, which keeps already-loaded cover art when the
 //! cover id is unchanged (pass it in [`ScanOptions::known_covers`] to skip its decoding
-//! entirely), and finally retain only [`ScanEvent::Done::album_ids`].
+//! entirely), and finally [`drop_missing`] those [`ScanEvent::Done`] did not find.
 
 use std::{
     collections::{HashMap, HashSet},
     fmt,
     future::Future,
     hash::{DefaultHasher, Hash, Hasher},
+    mem,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
     thread,
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
-use crate::{io::Skippable, metadata::Tag, opus, wav::Wav};
+use crate::{
+    fs::{DirEntry, Fs},
+    io::Skippable,
+    metadata::Tag,
+    opus,
+    wav::Wav,
+};
 use embedded_io_adapters::futures_03::FromFutures;
 use embedded_io_async::{Read as _, Seek as _, SeekFrom};
 use futures::{StreamExt, stream};
@@ -131,12 +138,93 @@ pub enum ScanEvent {
         /// mostly a path and an id -- does not keep these as well without meaning to.
         encoded: Arc<[u8]>,
     },
+    /// How far the scan has come. Each stage is reported as it starts, then a few times a second
+    /// at most.
+    Progress(ScanProgress),
     /// The scan is complete: every album has been reported. Albums absent from `album_ids` no
-    /// longer exist and should be dropped.
-    Done { album_ids: Vec<u64> },
+    /// longer exist and should be dropped, if the scan was `complete`: one that could not list
+    /// some directory says not, and an album it did not find may be in what it could not read.
+    /// [`drop_missing`] does that.
+    Done { album_ids: Vec<u64>, complete: bool },
+}
+
+/// Puts a scanned `album` into `albums`, which it keeps in order by artist and then title, in
+/// place of the album with the same id. That album's loaded art and accent carry over when the
+/// cover is the same, as a scan does not send them again. Returns whether anything changed: a
+/// rescan reports every album again, nearly all of them as they were.
+pub fn upsert(albums: &mut Vec<Album>, mut album: Album) -> bool {
+    if let Some(ix) = albums.iter().position(|a| a.id == album.id) {
+        // `cover` and `accent` are not the scan's to report, so they do not count as a change.
+        let Album { id: _, title, artist, genre, year, cover_id, cover: _, accent: _, tracks } = &albums[ix];
+        if *title == album.title
+            && *artist == album.artist
+            && *genre == album.genre
+            && *year == album.year
+            && *cover_id == album.cover_id
+            && *tracks == album.tracks
+        {
+            return false;
+        }
+        let old = albums.remove(ix);
+        if old.cover_id == album.cover_id {
+            album.cover = old.cover;
+            album.accent = old.accent;
+        }
+    }
+    let key = |a: &Album| (a.artist.to_lowercase(), a.title.to_lowercase());
+    let ix = albums.partition_point(|a| key(a) <= key(&album));
+    albums.insert(ix, album);
+    true
+}
+
+/// Applies a scan's [`ScanEvent::Done`]: drops from `albums` those not in `album_ids`, unless the
+/// scan was not `complete`. Returns whether any went.
+pub fn drop_missing(albums: &mut Vec<Album>, album_ids: &[u64], complete: bool) -> bool {
+    if !complete {
+        return false;
+    }
+    let found: HashSet<u64> = album_ids.iter().copied().collect();
+    let before = albums.len();
+    albums.retain(|album| found.contains(&album.id));
+    albums.len() != before
+}
+
+/// The stages of a scan, in order. Covers load during and after [`ScanProgress::Reading`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanProgress {
+    /// Listing the directories under the root: `listed` so far, of about `expected`, which is how
+    /// many held music or a directory that did, as of the last scan. `None` with no last scan to
+    /// go by.
+    Listing { listed: usize, expected: Option<usize> },
+    /// Reading the tags in the directories holding audio files: `read` of `total` directories.
+    Reading { read: usize, total: usize },
+}
+
+/// The least time between two [`ScanEvent::Progress`] reports of one stage.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Decides which progress is worth a [`ScanEvent::Progress`]: the first of each stage, then one per
+/// [`PROGRESS_INTERVAL`].
+#[derive(Default)]
+struct ProgressPacer {
+    last: Option<(mem::Discriminant<ScanProgress>, Instant)>,
+}
+
+impl ProgressPacer {
+    fn due(&mut self, progress: &ScanProgress) -> bool {
+        let (stage, now) = (mem::discriminant(progress), Instant::now());
+        let due = self.last.is_none_or(|(last, at)| last != stage || now - at >= PROGRESS_INTERVAL);
+        if due {
+            self.last = Some((stage, now));
+        }
+        due
+    }
 }
 
 pub struct ScanOptions {
+    /// Where the music is read from. The caches below are read and written as local paths
+    /// regardless.
+    pub fs: Arc<dyn Fs>,
     pub root: PathBuf,
     /// Album ids whose directories are scanned (and thus whose covers load) before everything
     /// else, in this order -- e.g. the restored queue's albums, circularly outward from the
@@ -248,7 +336,7 @@ pub async fn load_index(path: Option<PathBuf>) -> Vec<Album> {
 
 /// Saves the album index (snapshotting `albums` eagerly, so the write can run detached).
 /// Best-effort atomic, like the tag cache; failure only costs the next launch its instant grid.
-pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output = ()> + Send + 'static {
+pub fn save_index(path: Option<PathBuf>, albums: &[Album]) -> impl Future<Output = ()> + Send + use<> {
     let index = AlbumIndex {
         version: INDEX_VERSION,
         albums: albums
@@ -332,8 +420,9 @@ impl Pixels {
     }
 }
 
-/// A decode to run: the artwork, the square edge to fit it to, and what to hand back.
-type Request = (PathBuf, u32, Pixels, futures::channel::oneshot::Sender<Option<Vec<u8>>>);
+/// A decode to run: the artwork opened, its path for the log, the square edge to fit it to, and what
+/// to hand back.
+type Request = (std::fs::File, PathBuf, u32, Pixels, futures::channel::oneshot::Sender<Option<Vec<u8>>>);
 
 /// Decodes a cover from its original artwork to `edge`²  in `pixels`, center-cropped.
 ///
@@ -345,7 +434,7 @@ type Request = (PathBuf, u32, Pixels, futures::channel::oneshot::Sender<Option<V
 /// the *whole* source image -- several tens of megabytes for a large sleeve -- and a pool that grows
 /// on demand will happily hold a hundred of them at once. Requests queue; the queue is cheap, the
 /// concurrency is what costs.
-pub async fn decode_cover(file: PathBuf, edge: u32, pixels: Pixels) -> Option<Vec<u8>> {
+pub async fn decode_cover(fs: &dyn Fs, file: &Path, edge: u32, pixels: Pixels) -> Option<Vec<u8>> {
     use futures::channel::oneshot;
     static DECODER_THREADS: LazyLock<(channel::Sender<Request>, [thread::JoinHandle<()>; DECODER_THREAD_COUNT])> =
         LazyLock::new(|| {
@@ -353,8 +442,11 @@ pub async fn decode_cover(file: PathBuf, edge: u32, pixels: Pixels) -> Option<Ve
             let threads = std::array::from_fn(|_thread_ix| {
                 let req_rx = req_rx.clone();
                 thread::spawn(move || {
-                    while let Ok((file, edge, pixels, resp_tx)) = req_rx.recv_blocking() {
-                        let decoded = image::open(&file)
+                    while let Ok((opened, file, edge, pixels, resp_tx)) = req_rx.recv_blocking() {
+                        let decoded = image::ImageReader::new(std::io::BufReader::new(opened))
+                            .with_guessed_format()
+                            .map_err(image::ImageError::IoError)
+                            .and_then(|reader| reader.decode())
                             .inspect_err(|e| log::warn!("could not decode cover {file:?}: {e}"))
                             .ok()
                             .map(|img| {
@@ -374,11 +466,14 @@ pub async fn decode_cover(file: PathBuf, edge: u32, pixels: Pixels) -> Option<Ve
             (req_tx, threads)
         });
 
+    let opened = fs.open(file).await.inspect_err(|e| log::warn!("could not open cover {file:?}: {e}")).ok()?;
     let (resp_tx, resp_rx) = oneshot::channel();
     let (req_tx, _) = &*DECODER_THREADS;
     // Never blocks in practice: the channel is unbounded. Keep it that way, or this needs to become
     // an await.
-    req_tx.send_blocking((file, edge, pixels, resp_tx)).expect("decoder threads should never exit on their own accord");
+    req_tx
+        .send_blocking((opened, file.to_path_buf(), edge, pixels, resp_tx))
+        .expect("decoder threads should never exit on their own accord");
     resp_rx.await.ok().flatten()
 }
 
@@ -690,6 +785,7 @@ async fn emit_albums(
 
 async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     log::info!("scanning {:?}", options.root);
+    let fs = &*options.fs;
     let cache = match &options.cache_file {
         Some(path) => load_cache(path).await,
         None => Cache::default(),
@@ -698,11 +794,42 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     // Phase 1: walk the tree, collecting each directory's audio files (with stat data) and its
     // cover image candidate in a single directory listing. Covers are kept for every directory,
     // even file-less ones -- a parent directory's cover can dress the albums below it.
-    let mut dirs = vec![options.root];
+    let expected = (!cache.files.is_empty()).then(|| {
+        let dirs =
+            cache.files.keys().flat_map(|file| file.ancestors().skip(1).take_while(|dir| dir.starts_with(&options.root)));
+        dirs.collect::<HashSet<_>>().len()
+    });
+    // Several directories are listed at once: through a provider like Android's, a listing is
+    // mostly waiting on another process.
+    let started = Instant::now();
+    let mut pacer = ProgressPacer::default();
+    let mut unlisted = vec![options.root];
+    let mut listing = stream::FuturesUnordered::new();
     let mut jobs = Vec::new();
     let mut covers = HashMap::new();
-    while let Some(dir) = dirs.pop() {
-        let Some(mut job) = dir_job(&dir, &mut dirs).await else { continue };
+    let mut listed = 0;
+    // Directories that could not be listed, whose albums the scan cannot vouch for.
+    let mut unlisted_failed = 0;
+    loop {
+        while listing.len() < concurrency()
+            && let Some(dir) = unlisted.pop()
+        {
+            listing.push(async move {
+                let mut subdirs = Vec::new();
+                (dir_job(fs, &dir, &mut subdirs).await, subdirs)
+            });
+        }
+        let progress = ScanProgress::Listing { listed, expected };
+        if pacer.due(&progress) && tx.send(ScanEvent::Progress(progress)).await.is_err() {
+            return;
+        }
+        let Some((job, subdirs)) = listing.next().await else { break };
+        unlisted.extend(subdirs);
+        let Some(mut job) = job else {
+            unlisted_failed += 1;
+            continue;
+        };
+        listed += 1;
         if let Some(cover) = job.cover.take() {
             covers.insert(job.dir.clone(), cover);
         }
@@ -710,6 +837,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
             jobs.push(job);
         }
     }
+    log::info!("listed {listed} directories in {:.1?}", started.elapsed());
 
     // Order the jobs so covers stream in usefully: prioritized albums first (in their given
     // order), then the way the grid sorts (artist, then album title) so the visible top of an
@@ -718,13 +846,15 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     // (a cache miss) fall back to their name, which usually approximates the artist anyway.
     let rank: HashMap<u64, usize> = options.priority.iter().enumerate().map(|(rank, &id)| (id, rank)).collect();
     jobs.sort_by_cached_key(|job| {
-        job.files.first().and_then(|file| cache.files.get(&file.path)).map_or_else(
+        let (rank, artist, album) = job.files.first().and_then(|file| cache.files.get(&file.path)).map_or_else(
             || (usize::MAX, job.dir.file_name().unwrap_or_default().to_string_lossy().to_lowercase(), String::new()),
             |entry| {
                 let (artist, album) = album_key(entry);
                 (rank.get(&album_id(entry)).copied().unwrap_or(usize::MAX), artist.to_lowercase(), album.to_lowercase())
             },
-        )
+        );
+        // The walk finds directories in no particular order, so ties must not fall back on it.
+        (rank, artist, album, job.dir.clone())
     });
 
     let mut asm = Assembler::new(&jobs, &cache, covers, options.known_covers);
@@ -738,14 +868,22 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     let mut n_parsed = 0usize;
 
     let cache = &cache;
+    let total = jobs.len();
     let read_tags_phase = async {
+        let mut read = 0;
         let mut per_dir = futures::stream::iter(jobs)
             .map(|job| async move {
-                let read = read_dir_tags(&job, cache).await;
+                let read = read_dir_tags(fs, &job, cache).await;
                 (job, read)
             })
             .buffer_unordered(concurrency());
-        while let Some((job, (entries, parsed))) = per_dir.next().await {
+        loop {
+            let progress = ScanProgress::Reading { read, total };
+            if (read == total || pacer.due(&progress)) && tx.send(ScanEvent::Progress(progress)).await.is_err() {
+                return;
+            }
+            let Some((job, (entries, parsed))) = per_dir.next().await else { break };
+            read += 1;
             n_parsed += parsed;
             asm.absorb(&job.dir, &entries);
             fresh.extend(entries);
@@ -777,7 +915,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
             cover_rx
                 .map(|(ids, path, mtime)| {
                     let id = stable_id((&path, mtime));
-                    async move { (ids, id, load_cover(path, covers_dir, id, thumb_edge).await) }
+                    async move { (ids, id, load_cover(fs, path, covers_dir, id, thumb_edge).await) }
                 })
                 .buffer_unordered(concurrency())
         );
@@ -803,7 +941,7 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
             full_rx
                 .map(|(id, file)| async move {
                     let Some(dir) = full_covers_dir else { return };
-                    cache_full_cover((*file).clone(), cover_file(dir, id, FULL_FORMAT), FULL).await;
+                    cache_full_cover(fs, &file, cover_file(dir, id, FULL_FORMAT), FULL).await;
                 })
                 .buffer_unordered(concurrency())
         );
@@ -814,21 +952,25 @@ async fn drive(options: ScanOptions, tx: channel::Sender<ScanEvent>) {
     let album_ids: Vec<u64> = asm.assembled.keys().copied().collect();
     log::info!("scan done: found {} albums ({n_parsed} files (re)parsed)", album_ids.len());
 
+    if unlisted_failed > 0 {
+        log::warn!("{unlisted_failed} directories could not be listed, so the scan is not complete");
+        // Their files' tags are still good: keep them for the scan that can read them.
+        for (path, entry) in &cache.files {
+            fresh.entry(path.clone()).or_insert_with(|| entry.clone());
+        }
+    }
     if let Some(path) = &options.cache_file
         && (n_parsed > 0 || fresh.len() != cache.files.len())
     {
         save_cache(path, &Cache { version: CACHE_VERSION, files: fresh }).await;
     }
-    let _ = tx.send(ScanEvent::Done { album_ids }).await;
+    let _ = tx.send(ScanEvent::Done { album_ids, complete: unlisted_failed == 0 }).await;
 }
 
 /// Lists one directory: collects audio files with their stat data, spots a cover image, and
 /// pushes subdirectories onto `dirs`.
-async fn dir_job(dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<DirJob> {
-    const COVER_STEMS: [&str; 4] = ["cover", "folder", "front", "albumart"];
-    const COVER_EXTS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
-
-    let mut entries = match smol::fs::read_dir(dir).await {
+async fn dir_job(fs: &dyn Fs, dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<DirJob> {
+    let entries = match fs.read_dir(dir, |path| is_audio(path) || is_cover(path)).await {
         Ok(entries) => entries,
         Err(e) => {
             log::warn!("could not read directory {dir:?}: {e}");
@@ -836,34 +978,37 @@ async fn dir_job(dir: &Path, dirs: &mut Vec<PathBuf>) -> Option<DirJob> {
         }
     };
     let mut job = DirJob { dir: dir.to_path_buf(), files: Vec::new(), cover: None };
-    while let Some(Ok(entry)) = entries.next().await {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type().await else { continue };
-        if file_type.is_dir() {
+    for DirEntry { path, is_dir, mtime, size } in entries {
+        if is_dir {
             dirs.push(path);
             continue;
         }
-        let ext = extension(&path).unwrap_or_default();
-        if matches!(ext.as_str(), "wav" | "opus") {
-            let Ok(meta) = entry.metadata().await else { continue };
-            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            job.files.push(AudioFile { path, mtime, size: meta.len() });
-        } else if job.cover.is_none()
-            && COVER_EXTS.contains(&ext.as_str())
-            && COVER_STEMS.contains(&path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase().as_str())
-        {
-            let Ok(meta) = entry.metadata().await else { continue };
-            job.cover = Some((path, meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
+        if is_audio(&path) {
+            job.files.push(AudioFile { path, mtime, size });
+        } else if job.cover.is_none() {
+            job.cover = Some((path, mtime));
         }
     }
     job.files.sort_by(|a, b| a.path.cmp(&b.path));
     Some(job)
 }
 
+fn is_audio(path: &Path) -> bool {
+    matches!(extension(path).as_deref(), Some("wav" | "opus"))
+}
+
+/// Whether `path` is named as a directory's cover image would be, such as `Folder.jpg`.
+fn is_cover(path: &Path) -> bool {
+    const COVER_STEMS: [&str; 4] = ["cover", "folder", "front", "albumart"];
+    const COVER_EXTS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
+    extension(path).is_some_and(|ext| COVER_EXTS.contains(&ext.as_str()))
+        && COVER_STEMS.contains(&path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase().as_str())
+}
+
 /// Reads the tags of each of the directory's files, from the cache when it is still valid.
 /// Returns the resolved entries (fallbacks applied) and how many files were actually parsed;
 /// grouping into albums is the [`Assembler`]'s job.
-async fn read_dir_tags(job: &DirJob, cache: &Cache) -> (Vec<(PathBuf, CacheEntry)>, usize) {
+async fn read_dir_tags(fs: &dyn Fs, job: &DirJob, cache: &Cache) -> (Vec<(PathBuf, CacheEntry)>, usize) {
     let mut entries = Vec::with_capacity(job.files.len());
     let mut n_parsed = 0usize;
 
@@ -873,7 +1018,7 @@ async fn read_dir_tags(job: &DirJob, cache: &Cache) -> (Vec<(PathBuf, CacheEntry
             Some(entry) => entry.clone(),
             None => {
                 n_parsed += 1;
-                let Some(tags) = read_tags(&file.path).await else {
+                let Some(tags) = read_tags(fs, &file.path).await else {
                     log::warn!("could not parse {:?}", file.path);
                     continue;
                 };
@@ -953,8 +1098,8 @@ fn year(s: &str) -> Option<u32> {
     s.split(|c: char| !c.is_ascii_digit()).find(|run| run.len() == 4).and_then(|run| run.parse().ok())
 }
 
-async fn read_tags(path: &Path) -> Option<FileTags> {
-    let mut f = Skippable(FromFutures::new(BufReader::new(File::open(path).await.ok()?)));
+async fn read_tags(fs: &dyn Fs, path: &Path) -> Option<FileTags> {
+    let mut f = Skippable(FromFutures::new(BufReader::new(File::from(fs.open(path).await.ok()?))));
     let mut magic = [0u8; 4];
     f.read_exact(&mut magic).await.ok()?;
     f.seek(SeekFrom::Start(0)).await.ok()?;
@@ -988,9 +1133,15 @@ pub async fn read_thumbnail(covers_dir: &Path, id: u64) -> Option<(Arc<[u8]>, u3
 /// [`THUMB_FORMAT`]), and its accent color. Reads the cached thumbnail when there is one, and
 /// otherwise decodes the original and caches the result. The decoded pixels are not handed back --
 /// the accent is all the scan needs them for, and a consumer that wants them has the cache.
-async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64, edge: u32) -> Option<(PathBuf, Arc<[u8]>, Rgb)> {
+async fn load_cover(
+    fs: &dyn Fs,
+    path: PathBuf,
+    covers_dir: Option<&Path>,
+    id: u64,
+    edge: u32,
+) -> Option<(PathBuf, Arc<[u8]>, Rgb)> {
     // Absolute, so consumers (e.g. the MPRIS art URL) don't depend on our working directory.
-    let file = smol::fs::canonicalize(path).await.ok()?;
+    let file = fs.canonicalize(&path).await.ok()?;
     let cache_path = covers_dir.map(|dir| cover_file(dir, id, THUMB_FORMAT));
 
     if let Some(cache_path) = &cache_path
@@ -1009,7 +1160,7 @@ async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64, edge: u32
         }
     }
 
-    let rgb = decode_thumbnail(file.clone(), edge).await?;
+    let rgb = decode_thumbnail(fs, &file, edge).await?;
     let encoded = encode_thumbnail(&rgb, edge)?;
     if let Some(cache_path) = &cache_path
         && let Err(e) = smol::fs::write(cache_path, &encoded).await
@@ -1028,7 +1179,7 @@ async fn load_cover(path: PathBuf, covers_dir: Option<&Path>, id: u64, edge: u32
 /// from, and the reason to have a cache at these sizes at all: a sleeve is some 1700 pixels square,
 /// so decoding one costs about six times what decoding this does, and holds a buffer several times
 /// the size of the answer while it works. Both of those are paid on every miss.
-pub async fn load_full_cover(file: PathBuf, cache_path: Option<PathBuf>, edge: u32) -> Option<Arc<[u8]>> {
+pub async fn load_full_cover(fs: &dyn Fs, file: &Path, cache_path: Option<PathBuf>, edge: u32) -> Option<Arc<[u8]>> {
     if let Some(cache_path) = &cache_path
         && let Ok(encoded) = smol::fs::read(cache_path).await
     {
@@ -1043,7 +1194,7 @@ pub async fn load_full_cover(file: PathBuf, cache_path: Option<PathBuf>, edge: u
     }
 
     // RGB from the decoder, because that is what gets encoded; the caller's alpha is added last.
-    let rgb = decode_cover(file, edge, Pixels::Rgb).await?;
+    let rgb = decode_cover(fs, file, edge, Pixels::Rgb).await?;
     let rgba = rgb_to_rgba(&rgb);
     if let Some(cache_path) = cache_path {
         write_full_cover(rgb, edge, cache_path).await;
@@ -1056,23 +1207,32 @@ pub async fn load_full_cover(file: PathBuf, cache_path: Option<PathBuf>, edge: u
 /// What fills the cache for a library rather than for a screen: [`load_full_cover`] only ever asks
 /// for the cover it is about to draw, so left to it the cache holds wherever the listener has been.
 /// A scan is the one pass that sees every album, and it is holding the artwork's path anyway.
-pub async fn cache_full_cover(file: PathBuf, cache_path: PathBuf, edge: u32) {
+pub async fn cache_full_cover(fs: &dyn Fs, file: &Path, cache_path: PathBuf, edge: u32) {
     // Existence is the whole question -- a readable entry of the wrong size is `load_full_cover`'s
     // to notice and overwrite, and reading every cover back to check would defeat the point.
     if smol::fs::metadata(&cache_path).await.is_ok() {
         return;
     }
-    let Some(rgb) = decode_cover(file, edge, Pixels::Rgb).await else { return };
+    let Some(rgb) = decode_cover(fs, file, edge, Pixels::Rgb).await else { return };
     write_full_cover(rgb, edge, cache_path).await;
 }
 
 /// Encodes `edge`²  RGB pixels into the full-size cache. Best-effort, like the thumbnails': a
 /// failure just means the cover is decoded from its artwork again next time.
+///
+/// Atomic, because a reader takes an entry that exists for a whole one: the scan fills the cache
+/// while a player may be asking for the same cover. Each write has a partial file of its own, so two
+/// writers of one cover cannot interleave either.
 async fn write_full_cover(rgb: Vec<u8>, edge: u32, cache_path: PathBuf) {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     smol::unblock(move || match encode_full_cover(&rgb, edge) {
         Some(encoded) => {
-            if let Err(e) = std::fs::write(&cache_path, &encoded) {
+            let partial = cache_path.with_extension(format!("{n}.partial"));
+            let write = std::fs::write(&partial, &encoded).and_then(|()| std::fs::rename(&partial, &cache_path));
+            if let Err(e) = write {
                 log::warn!("could not cache cover {cache_path:?}: {e}");
+                let _ = std::fs::remove_file(&partial);
             }
         }
         None => log::warn!("could not encode cover {cache_path:?}"),
@@ -1107,8 +1267,8 @@ fn encode_thumbnail(rgb: &[u8], edge: u32) -> Option<Vec<u8>> {
 ///
 /// RGB, not RGBA: this is what the cache stores, and an alpha channel on a cover is a channel of
 /// 255s.
-async fn decode_thumbnail(file: PathBuf, edge: u32) -> Option<Vec<u8>> {
-    decode_cover(file, edge, Pixels::Rgb).await
+async fn decode_thumbnail(fs: &dyn Fs, file: &Path, edge: u32) -> Option<Vec<u8>> {
+    decode_cover(fs, file, edge, Pixels::Rgb).await
 }
 
 /// Expands packed RGB triplets to fully opaque RGBA quartets. The cache stores RGB, a third
@@ -1231,18 +1391,18 @@ mod test {
 
         let green = |pixels: &Arc<[u8]>| pixels[1] > 200 && pixels[0] < 60;
 
-        let hit = smol::block_on(load_full_cover(artwork.clone(), Some(cached(EDGE)), EDGE)).expect("decodes");
+        let hit = smol::block_on(load_full_cover(&crate::fs::Local, &artwork, Some(cached(EDGE)), EDGE)).expect("decodes");
         assert_eq!(hit.len() as u32, EDGE * EDGE * 4, "RGBA at the edge asked for");
         assert!(green(&hit), "the cache entry, not the artwork");
 
         // The wrong edge is ignored, and the artwork is decoded and written over it instead.
         let wrong = cached(EDGE / 2);
-        let miss = smol::block_on(load_full_cover(artwork.clone(), Some(wrong.clone()), EDGE)).expect("decodes");
+        let miss = smol::block_on(load_full_cover(&crate::fs::Local, &artwork, Some(wrong.clone()), EDGE)).expect("decodes");
         assert_eq!(miss.len() as u32, EDGE * EDGE * 4, "still RGBA at the edge asked for");
         assert!(!green(&miss), "the artwork, not the cache entry of the wrong size");
         // The cache now holds the right size, so this load is a hit -- on the artwork's colours
         // rather than the green, and only approximately equal to the first load, this being JPEG.
-        let rewritten = smol::block_on(load_full_cover(artwork, Some(wrong), EDGE)).expect("decodes");
+        let rewritten = smol::block_on(load_full_cover(&crate::fs::Local, &artwork, Some(wrong), EDGE)).expect("decodes");
         assert!(!green(&rewritten), "still the artwork");
         let worst = rewritten.iter().zip(miss.iter()).map(|(a, b)| a.abs_diff(*b)).max().expect("not empty");
         assert!(worst < 16, "within a re-encode of the first load, off by at most {worst}");
@@ -1377,8 +1537,9 @@ mod test {
                             album.cover = Some(art.clone());
                         }
                     }
-                    ScanEvent::Done { album_ids } => {
-                        albums.retain(|a| album_ids.contains(&a.id));
+                    ScanEvent::Progress(_) => (),
+                    ScanEvent::Done { album_ids, complete } => {
+                        drop_missing(albums, &album_ids, complete);
                         break;
                     }
                 }
@@ -1470,6 +1631,7 @@ mod test {
     /// Cache-less scan options for a test library at `root`.
     fn plain_options(root: &Path) -> ScanOptions {
         ScanOptions {
+            fs: Arc::new(crate::fs::Local),
             thumb_edge: 64,
             full_covers_dir: None,
             root: root.to_path_buf(),
@@ -1539,12 +1701,103 @@ mod test {
             while let Some(event) = stream.next().await {
                 match event {
                     ScanEvent::Album(album) => reports.push(album.tracks.len()),
-                    ScanEvent::Cover { .. } => (),
+                    ScanEvent::Cover { .. } | ScanEvent::Progress(_) => (),
                     ScanEvent::Done { .. } => break,
                 }
             }
         });
         assert_eq!(reports, [2], "one report, already holding both discs' tracks");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A directory the scan cannot list is not a directory that is gone: the scan says it is not
+    /// complete, so its albums stay, until a scan that reads everything finds them gone.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_keeps_its_albums() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("phonoscule-unreadable-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (dir, title, album) in [("A", "One", "First"), ("B", "Uno", "Second")] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("t.wav"), wav_bytes(title, "Artist", album, Some(1))).unwrap();
+        }
+        let mut albums = Vec::new();
+        scan_and_apply(&mut albums, plain_options(&root));
+        assert_eq!(albums.len(), 2);
+
+        std::fs::set_permissions(root.join("B"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        scan_and_apply(&mut albums, plain_options(&root));
+        std::fs::set_permissions(root.join("B"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(albums.len(), 2, "the unreadable directory's album is kept");
+
+        std::fs::remove_dir_all(root.join("B")).unwrap();
+        scan_and_apply(&mut albums, plain_options(&root));
+        assert_eq!(albums.len(), 1, "the missing directory's album is dropped");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rescan reports every album again: [`upsert`] tells the unchanged ones apart, and keeps
+    /// an album's art where its cover is the same.
+    #[test]
+    fn upsert_keeps_unchanged_albums_and_their_art() {
+        let album = |title: &str, cover_id| Album {
+            id: 1,
+            title: title.into(),
+            artist: "Artist".into(),
+            genre: String::new(),
+            year: None,
+            cover_id,
+            cover: None,
+            accent: None,
+            tracks: Vec::new(),
+        };
+        let mut albums = Vec::new();
+        assert!(upsert(&mut albums, album("One", Some(7))));
+        albums[0].accent = Some(Rgb { r: 0.1, g: 0.2, b: 0.3 });
+        assert!(!upsert(&mut albums, album("One", Some(7))), "the same album again changes nothing");
+        assert!(upsert(&mut albums, album("Uno", Some(7))));
+        assert_eq!((albums.len(), albums[0].title.as_str()), (1, "Uno"));
+        assert!(albums[0].accent.is_some(), "the art stays with the cover");
+        assert!(upsert(&mut albums, album("Uno", Some(8))));
+        assert!(albums[0].accent.is_none(), "and goes with it");
+    }
+
+    /// Progress starts with the listing, which expects the directories that held music or held one
+    /// that did, and ends with every music directory read.
+    #[test]
+    fn progress_runs_from_listing_to_reading() {
+        let root = std::env::temp_dir().join(format!("phonoscule-progress-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Scans")).unwrap();
+        for (dir, title, track) in [("Spread/CD1", "One", 1), ("Spread/CD2", "Two", 2)] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("t.wav"), wav_bytes(title, "Artist", "Spread", Some(track))).unwrap();
+        }
+        let progress = || {
+            let options = ScanOptions { cache_file: Some(root.join("cache.json")), ..plain_options(&root) };
+            let mut reports = Vec::new();
+            smol::block_on(async {
+                let mut stream = std::pin::pin!(scan(options));
+                while let Some(event) = stream.next().await {
+                    match event {
+                        ScanEvent::Progress(progress) => reports.push(progress),
+                        ScanEvent::Done { .. } => break,
+                        _ => (),
+                    }
+                }
+            });
+            reports
+        };
+
+        let cold = progress();
+        assert_eq!(cold.first(), Some(&ScanProgress::Listing { listed: 0, expected: None }));
+        assert_eq!(cold.last(), Some(&ScanProgress::Reading { read: 2, total: 2 }));
+        // The root, Spread and its two discs, but not Scans.
+        let warm = progress();
+        assert_eq!(warm.first(), Some(&ScanProgress::Listing { listed: 0, expected: Some(4) }));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1659,6 +1912,7 @@ mod test {
         }
         let cache_file = root.join("cache.json");
         let options = || ScanOptions {
+            fs: Arc::new(crate::fs::Local),
             root: root.clone(),
             priority: vec![],
             known_covers: Default::default(),
