@@ -76,6 +76,8 @@ See [`tui/README.md`](tui/README.md) for its features, configuration, and contro
 
 ## The Android app (`android/`)
 
+<img src="screenshots/android/cover-flow.jpg" width="300" alt="The Android app's vertical Cover Flow">
+
 The same album-centric player on a phone, with the Cover Flow stood on end:
 the queue's albums stacked above and below the playing one.
 A Kotlin/Compose shell over a Rust core that is this library -

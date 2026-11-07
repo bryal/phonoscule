@@ -40,6 +40,25 @@ Features
   when another app takes the audio or the headphones come out.
 
 
+Screenshots
+------------------------------------------------------------
+> <img src="../screenshots/android/browse-albums.jpg" width="300" alt="Library grid of album covers under a translucent header">
+> <img src="../screenshots/android/filtered.jpg" width="300" alt="Library narrowed to one genre and two artists">
+>
+> The *Library*, tinted with the playing cover's colour. Pick genres and artists
+> to narrow it, and tap a picked one's chip to let it go again.
+
+> <img src="../screenshots/android/pick-artists.jpg" width="300" alt="Artists picker with three artists picked">
+> <img src="../screenshots/android/album.jpg" width="300" alt="An album's cover, tags, Play and Enqueue, and its tracks">
+>
+> The artist picker, and an album to play or enqueue whole or a track at a time.
+
+> <img src="../screenshots/android/cover-flow.jpg" width="300" alt="Vertical Cover Flow with the playing album's track names hanging from the top">
+>
+> The *Player*: the queue as a Cover Flow stood on end, and the playing album's
+> tracks hanging over it. Drag sideways anywhere on the flow to pick a track.
+
+
 Architecture
 ------------------------------------------------------------
 A Rust core with a thin Kotlin/Compose shell, talking over a single JNI
